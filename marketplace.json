@@ -1,0 +1,76 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH Plugins",
+    "zh": "DSH 插件集"
+  },
+  "description": {
+    "en": "Plugins for DeepSeek Harness, by kadaliao.",
+    "zh": "kadaliao 为 DeepSeek Harness 写的插件。"
+  },
+  "metadata": {
+    "categories": {
+      "input": {
+        "title": {
+          "en": "Input & prompts",
+          "zh": "输入与提示词"
+        }
+      }
+    },
+    "labels": {
+      "bilingual": {
+        "title": {
+          "en": "Bilingual",
+          "zh": "双语"
+        }
+      }
+    },
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "@kadaliao/dsh-prompt-en",
+      "title": {
+        "en": "Prompt EN",
+        "zh": "Prompt EN"
+      },
+      "description": {
+        "en": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English.",
+        "zh": "在每条 prompt 下方写一行英文：用其他语言写的给出英文，用英文写的给出纠错或更地道的说法。"
+      },
+      "icon": "./plugins/prompt-en/icon.svg",
+      "author": "kadaliao",
+      "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/prompt-en",
+      "repository": {
+        "url": "https://github.com/kadaliao/dsh-plugins",
+        "directory": "plugins/prompt-en"
+      },
+      "metadata": {
+        "category": "input",
+        "keywords": [
+          "english",
+          "translation",
+          "prompt",
+          "review",
+          "bilingual"
+        ],
+        "labels": [
+          "bilingual"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1792855428,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/kadaliao/dsh-plugins",
+            "commit": "ba17b55833e19dd7484fe13a13075aa903ddfb59",
+            "path": "plugins/prompt-en"
+          }
+        }
+      ]
+    }
+  ]
+}
