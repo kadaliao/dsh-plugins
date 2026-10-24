@@ -2,29 +2,10 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
+A growing collection of plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —
+small, focused additions to the chat, the composer, and the workspace.
 
-## Prompt EN
-
-**English under every prompt you send.** Write in Chinese and get the English underneath. Write in
-English and get a correction — or, if it already reads well, two other ways to say it.
-
-```
-> 帮我看看这个构建为什么失败
-  EN  help me check why this build fails
-
-> please help me check why the build is failed
-  EN ✎  please help me check why the build failed · remove "is": "failed" is intransitive here
-
-> Could you make this function async?
-  EN ✓  also Make this function async. · Would you mind making this function async?
-```
-
-The line is for you only: the model still reads your prompt exactly as you typed it.
-
-[Install Prompt EN →](plugins/prompt-en)
-
-## Install a plugin
+## Install
 
 1. Turn on the marketplace once: **Plugins → Experimental plugins → Custom plugin markets**.
 2. Open the new **Discover** tab, then **Sources**, and add:
@@ -41,16 +22,31 @@ Already know what you want? Paste the plugin's Git spec into the plugin manager 
 git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 ```
 
+## Plugins
+
+| Plugin | What it does |
+| --- | --- |
+| [Prompt EN](plugins/prompt-en) · 0.1.0 | English under every prompt: a translation when you write in another language, or a review with corrections and better alternatives when you write in English. |
+
+More plugins are added here as they are ready. Each one installs and is versioned on its own, and
+the index pins the exact commit it releases from, so new plugins never change an old install.
+
+## What they have in common
+
+- They run in the **Web UI** (the desktop app, or `dsh web`).
+- They are display-only unless their README says otherwise: no writes to the Session log and
+  nothing added to what the conversation model reads.
+- Plain JavaScript, MIT, source in this repository.
+
 ## Requirements
 
-- DeepSeek Harness 0.2.x with the **Web UI** (the desktop app, or `dsh web`). These are chat and
-  composer plugins; the headless profile has no transcript to draw in.
+- DeepSeek Harness 0.2.x with the Web UI.
 - A model configured in Harness. Plugins reuse your session's model unless their README says
   otherwise.
 
 ## Common questions
 
-**The Discover tab is missing.** DeepSeek Harness ships custom markets as an experimental feature.
+**The Discover tab is missing.** Custom markets are an experimental feature in DeepSeek Harness.
 Enable **Custom plugin markets** under **Plugins → Experimental plugins** first.
 
 **A plugin installed but does nothing.** Check it is enabled in **Plugins → Installed**. Client-side
@@ -62,8 +58,8 @@ calls. Nothing a plugin computes is added to your conversation unless the README
 
 ## Contributing
 
-Issues and pull requests are welcome. Repository layout, how to add a plugin, tests, and the
-release checklist live in [DEVELOPMENT.md](DEVELOPMENT.md).
+Issues, plugin ideas and pull requests are welcome. Repository layout, how to add a plugin, tests,
+and the release checklist live in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
