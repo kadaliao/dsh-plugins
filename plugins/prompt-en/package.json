@@ -1,0 +1,52 @@
+{
+  "name": "@kadaliao/dsh-prompt-en",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/prompt.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kadaliao/dsh-plugins.git",
+    "directory": "plugins/prompt-en"
+  },
+  "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/prompt-en",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "english",
+    "translation",
+    "prompt",
+    "review"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "title": "Prompt EN",
+    "description": "Draws English under each prompt: a translation of what you wrote in another language, or a review of what you wrote in English."
+  },
+  "label": "EN",
+  "translating": "translating…",
+  "condensing": "condensing…",
+  "reviewing": "reviewing…",
+  "noTranslation": "no translation",
+  "noReview": "no review",
+  "readsNaturally": "reads naturally",
+  "gist": "gist of {chars} chars",
+  "more": "more",
+  "less": "less"
+}

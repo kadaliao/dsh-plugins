@@ -1,0 +1,6 @@
+- insert:
+    - id: prompt-en
+      name: '@local/dsh-prompt-en'
+      config:
+        enabled: true
+        reviewEnglish: true

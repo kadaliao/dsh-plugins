@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "title": "Prompt EN",
+    "description": "在每条 prompt 下方写一行英文：用其他语言写的给出英文，用英文写的给出纠错或更地道的说法。"
+  },
+  "label": "EN",
+  "translating": "翻译中…",
+  "condensing": "压缩中…",
+  "reviewing": "审阅中…",
+  "noTranslation": "没有译文",
+  "noReview": "没有审阅",
+  "readsNaturally": "表达自然",
+  "gist": "要点，原文 {chars} 字符",
+  "more": "展开",
+  "less": "收起"
+}
