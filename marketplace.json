@@ -66,7 +66,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/kadaliao/dsh-plugins",
-            "commit": "277d3edd2c9da26b4c9b895e76847ab78df1f9cd",
+            "commit": "a5f8d660e33a197e93bafe4dd8ba3a4cf3902508",
             "path": "plugins/prompt-en"
           }
         }
