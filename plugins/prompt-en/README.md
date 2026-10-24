@@ -1,5 +1,7 @@
 # Prompt EN — DeepSeek Harness plugin
 
+English | [简体中文](README.zh-CN.md)
+
 English under every prompt in the Chat transcript.
 
 - **Written in another language**, the prompt gets its English under it.
@@ -48,7 +50,7 @@ in the Web UI. It needs the Web profile (the Composer and Chat transcript), not 
   question and constraint kept, with a dim `· gist of 2.5k chars` after it.
 - **Long English gets its main fixes** (up to 5, `"add timeout" → "add a timeout"`) instead of a
   full rewrite.
-- **At most 4 rows** shown; click the line or **more** to expand.
+- **At most 4 lines** shown; click the line or **more** to expand.
 
 Prompts of fewer than 3 English words (`ok`, `commit it`), slash commands, and delegated
 subagent work are left alone.
@@ -86,8 +88,9 @@ Row config in the profile patch (`cordis.patch.yml`):
   once: the answer is cached in `$DSH_HOME/cache/prompt-en/cache.json` (newest 800), so a
   repeated `继续` costs nothing and a resumed Session shows the line again.
 - Your own words are sent up to 6,000 characters; past that the answer covers the start.
-- A failed request leaves one dim line, `no translation (overloaded)` or `no review (…)`, with
-  no retry. Submitting the same text again retries it.
+- A provider that ends a stream with no text is retried once, silently. A failed request leaves
+  one dim line, `no translation (overloaded)` or `no review (…)`, with no retry; submitting the
+  same text again retries it.
 - The language is told by script: a prompt in French or Spanish is reviewed as English.
 - Prompts sent before the plugin was installed have no line (no request is spent on history).
 
@@ -110,17 +113,3 @@ Ported from [kadaliao/claude-mods · prompt-en](https://github.com/kadaliao/clau
 (MIT), the same author's Claude Code mod: the paste folding, language detection, gist/fixes
 rules, review parser and word diff are the same; the placement and the Host/Client split are
 DSH-native.
-
-## 中文
-
-在 DeepSeek Harness 的对话里，每条 prompt 下方多一行英文：
-
-- 你用中文（或其他非拉丁文字）写，它给出英文译文；
-- 你用英文写，它给出一句审阅：改错（新词标绿并说明原因），或者给两种更地道的说法。
-
-这一行只给你看，不会发给对话模型——模型看到的仍是你的原文。粘贴的大段代码、日志会被折叠成
-`[TypeScript code, 60 lines]` 这样的标签；长中文只给要点，长英文只列主要修改；超过 4 行可点
-“展开”。少于 3 个英文单词的短句、斜杠命令、子代理的 prompt 都不处理。
-
-答案会缓存在 `$DSH_HOME/cache/prompt-en/cache.json`，重复的 prompt 与恢复的会话不再花钱。
-安装插件之前已经发过的 prompt 不会补翻译。

@@ -1,20 +1,23 @@
 # DSH Plugins
 
+English | [简体中文](README.zh-CN.md)
+
 Plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — the ones I use
 daily, published as a small collection.
 
 ## Install
 
 DeepSeek Harness reads **plugin market indexes**: any HTTPS URL serving a format-1 JSON index.
-Add this repository's index once in **Plugins → Discover → Sources**:
+Enable the Discover tab once (**Plugins → Experimental plugins → Custom plugin markets**), then
+add this repository's index under **Discover → Sources**:
 
 ```
 https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 ```
 
-Then install any plugin from the Discover list. Every entry is pinned to an exact commit in this
-repository, so installing later cannot silently pick up different code; each plugin also declares
-its own version.
+and install any plugin from the list. Every entry is pinned to an exact commit in this repository,
+so installing later cannot silently pick up different code; each plugin also declares its own
+version.
 
 Without the market, install a plugin directory directly with the plugin manager, or from a
 commit-pinned Git spec:
