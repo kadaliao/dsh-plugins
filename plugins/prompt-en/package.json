@@ -1,7 +1,6 @@
 {
   "name": "@kadaliao/dsh-prompt-en",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English.",
   "exports": {
