@@ -2,6 +2,8 @@
 
 [English](README.md) | 简体中文
 
+[![test](https://github.com/kadaliao/dsh-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/kadaliao/dsh-plugins/actions/workflows/test.yml)
+
 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件合集——每个插件都很小，只增强
 对话、输入框或工作区里的一个点。
 

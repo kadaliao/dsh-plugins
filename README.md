@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
+[![test](https://github.com/kadaliao/dsh-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/kadaliao/dsh-plugins/actions/workflows/test.yml)
+
 A growing collection of plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —
 small, focused additions to the chat, the composer, and the workspace.
 
