@@ -1,17 +1,15 @@
-# Prompt EN — DeepSeek Harness 插件
+# Prompt EN
 
 [English](README.md) | 简体中文
 
-在 Chat 对话里，每条 prompt 下面多一行英文。
+**每条 prompt 下面多一行英文。**
 
-- **你用其他语言写**，它给出英文译文。
-- **你用英文写**，它给一句审阅：改错或润色，新词标绿并说明原因；如果写得很地道，就给两种其他说法。
-
-它写出来的东西不会发给对话模型——模型读到的仍然是你原样输入的 prompt。这一行只是给你看的。
+用中文（或其他语言）写，能看到自己想表达的英文是什么；用英文写，会得到一次检查：改掉错误，或者给出
+两种更自然的说法。
 
 ```
-> 我想要创建一个插件，把我本轮的 prompt 翻译成英文
-  EN  I want to build a plugin that translates my prompt for this turn into English.
+> 帮我看看这个构建为什么失败
+  EN  help me check why this build fails
 
 > please help me check why the build is failed
   EN ✎  please help me check why the build failed · remove "is": "failed" is intransitive here
@@ -20,50 +18,63 @@
   EN ✓  also Make this function async. · Would you mind making this function async?
 ```
 
-`✎` 黄色表示有错，`✎` 蓝色表示语法没错但母语者会换个说法，`✓` 表示表达自然。聊天式的简短写法
-（全小写、句尾不加句号、“fixed it”）不会被挑错。
+这一行只是给你的说明，不属于对话：模型收到的仍然是你原样输入的 prompt。
 
 ## 安装
 
-在 **Plugins → Discover → Sources** 里加入本仓库的市场索引：
+在 DeepSeek Harness 里加入本仓库的索引（**Plugins → Discover → Sources**）：
 
 ```
 https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
 ```
 
-然后在列表里安装 **Prompt EN**。不用市场的话，也可以把本目录（`plugins/prompt-en`）交给 Harness
-插件管理器安装，或使用索引里给出的、钉死 commit 的 Git spec。
+然后安装 **Prompt EN**。Discover 属于实验功能 **Custom plugin markets**，看不到的话先在
+**Plugins → Experimental plugins** 里打开。
 
-这个插件是一个 bundle、两个半：`index.js` 跑在 Host，`client.js` 在 Web UI 里画那一行。它需要
-Web profile（有输入框和对话记录），headless profile 用不了。
+不用 Discover 的话，把 Git spec 贴进插件管理器：
+
+```
+git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
+```
+
+装完刷新一次页面。
+
+## 会看到什么
+
+| 标记 | 含义 |
+| --- | --- |
+| `EN` | 你用其他语言写的 prompt 的英文。 |
+| `EN ✎` 黄色 | 英文有错；改动的词标绿，并说明原因。 |
+| `EN ✎` 蓝色 | 语法没错，但母语者会换个说法。 |
+| `EN ✓` | 表达自然；后面跟两种其他说法。 |
+
+聊天式的简短写法——全小写、句尾不加句号、`fixed it`——不会被当成错误。
+
+行太长时点它或点 **more** 展开。
 
 ## 长 prompt
 
-- **粘贴的内容先折叠再发送。** 围栏代码块、以及看起来像代码的成段无围栏文本，各自变成一个标签，
-  例如 `[TypeScript code, 60 lines]`。五万字符的粘贴只会花几个词。
-- **长段非英文只给要点**：最多 4 句，保留每个请求、问题和约束，后面跟一个暗色的
-  `· gist of 2.5k chars`。
-- **长英文只列主要修改**（最多 5 条，`"add timeout" → "add a timeout"`），不整篇重写。
-- **最多显示 4 行**，点这一行或 **more** 展开。
+- **大胆粘贴。** 代码块和日志在发送前会被折叠成一个标签，例如 `[TypeScript code, 60 lines]`，
+  再长的粘贴也只花几个词。
+- **长段非英文只给要点**——最多四句，保留每个请求和约束，并标上 `· gist of 2.5k chars`。
+- **长英文只列主要修改**（最多五条，`"add timeout" → "add a timeout"`），不整篇重写。
 
-少于 3 个英文单词的短句（`ok`、`commit it`）、斜杠命令、子代理的 prompt 都不处理。
+少于三个英文单词的短句（`ok`、`commit it`）、斜杠命令、子代理的工作都不处理。
 
-## 开关
+## 关掉
 
-在输入框里输入 `/prompt-en` 即可切换（`/prompt-en on`、`/prompt-en off`）；选择记在
-`$DSH_HOME/cache/prompt-en/enabled.json`，从下一条 prompt 开始生效。
+在输入框输入 `/prompt-en` 切换（`/prompt-en on`、`/prompt-en off`），选择会记住。
 
 ## 设置
 
-在 profile patch（`cordis.patch.yml`）里配置这一行：
+在 profile patch（`cordis.patch.yml`）里这个插件对应的行上设置：
 
-| 键 | 默认 | 含义 |
+| 键 | 默认 | 作用 |
 | --- | --- | --- |
-| `enabled` | `true` | 整个功能开关。 |
-| `reviewEnglish` | `true` | 设为 `false` 时只翻译，不审阅英文。 |
-| `provider` | 跟随会话 | 这次额外请求用的 provider。省略则用当前 Session 的模型。 |
-| `model` | 跟随会话 | 这次请求的模型 id（想用更便宜的模型就在这里指定）。 |
-| `reasoningEffort` | 不设置 | 固定推理档位，例如 `low`。 |
+| `enabled` | `true` | 不卸载也能关掉功能。 |
+| `reviewEnglish` | `true` | 设为 `false` 只翻译，不审阅英文。 |
+| `provider` / `model` | 跟随会话 | 用哪个模型写这一行。两个都填就能换成更便宜的模型。 |
+| `reasoningEffort` | 模型默认 | 固定推理档位，例如 `low`。 |
 
 ```yaml
 - id: prompt-en
@@ -75,29 +86,30 @@ Web profile（有输入框和对话记录），headless profile 用不了。
     # reasoningEffort: low
 ```
 
-## 限制
+## 费用
 
-- 每读一条 prompt 发一次模型请求，按普通请求计费。同样文本只读一次：答案缓存在
-  `$DSH_HOME/cache/prompt-en/cache.json`（最近 800 条），重复的“继续”不花钱，恢复的 Session 也能
-  重新显示。
-- 你自己的话最多发送 6,000 字符，超出部分只覆盖开头。
-- provider 以空文本结束流时会自动静默重试一次；其他失败只留一行暗色提示，例如
-  `no translation (overloaded)`、`no review (…)`，不重试。再次提交同样文本会重试。
-- 语言按文字判断：法语、西班牙语写的 prompt 会被当成英文审阅。
-- 安装插件之前发过的 prompt 没有这一行（不会为历史补请求）。
+每条需要显示的 prompt 发一次小请求，按普通请求计费。相同的 prompt 文本只读一次并缓存，所以重复发
+`继续`、重新打开会话都不会再花钱。
+
+## 看起来不对时
+
+- **`no translation (empty-reply)`**——模型这次没有返回文本。会自动重试一次；仍然失败的话，重发这条
+  prompt 或稍微改一下措辞即可。
+- **完全没有这一行**——安装之前发过的 prompt 不会补跑；少于三个英文单词的 prompt 是故意跳过的。也确认
+  一下 **Plugins → Installed** 里插件是启用状态。
+- **位置不对或更新后消失**——刷新页面；这一行由 Web Client 半渲染。
+- **法语、西班牙语被当成英文审阅**——语言按文字判断，不经过语言模型，所以只有非拉丁文字才会被翻译。
 
 ## 实现
 
-Host 半监听 `session/event` 的 `user/message`，折叠粘贴内容，然后用一句“翻译它、不要回答它”的
-system prompt 调一次 `ctx.llm`。答案存在内存和 JSON 缓存里，通过两条本地路由提供：
+Host 半看到每条提交的用户消息，折叠粘贴内容，调一次你的模型去翻译或审阅。答案缓存在本地磁盘并提供给
+页面；Client 半把它画在 prompt 下面。它不写会话日志，也不改变对话模型看到的内容。
 
-- `GET /__dsh_prompt_en/state?session=<id>` — 某个 Session 的全部缓存行；
-- `POST /__dsh_prompt_en/answer` — 对旧 prompt 的一次显式补算。
+<details>
+<summary>开发</summary>
 
-Client 半注册一个 Conversation 事件定义，匹配每条真人 `user/message`，构建一个 `prompt-en` Chat
-行，锚点紧跟其后（`seq + 0.1`），再从 Host 路由取内容画出来。DSH 的用户气泡内部没有可插入的插槽，
-所以这一行是紧挨着的独立行，而不是气泡里的 padding；对齐到 prompt 的右边缘，宽度上限与气泡一致。
+仓库结构、测试和发布清单见 [DEVELOPMENT.zh-CN.md](../../DEVELOPMENT.zh-CN.md)。本插件是同一作者的
+Claude Code mod [prompt-en](https://github.com/kadaliao/claude-mods/tree/main/prompt-en)（MIT）的
+DeepSeek Harness 移植版。
 
-移植自同一作者的 Claude Code mod
-[kadaliao/claude-mods · prompt-en](https://github.com/kadaliao/claude-mods/tree/main/prompt-en)（MIT）：
-粘贴折叠、语言判定、要点/修改规则、审阅解析和词级 diff 与原版一致；位置和 Host/Client 拆分是 DSH 原生实现。
+</details>

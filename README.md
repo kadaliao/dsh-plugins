@@ -2,70 +2,69 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — the ones I use
-daily, published as a small collection.
+Plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).
 
-## Install
+## Prompt EN
 
-DeepSeek Harness reads **plugin market indexes**: any HTTPS URL serving a format-1 JSON index.
-Enable the Discover tab once (**Plugins → Experimental plugins → Custom plugin markets**), then
-add this repository's index under **Discover → Sources**:
+**English under every prompt you send.** Write in Chinese and get the English underneath. Write in
+English and get a correction — or, if it already reads well, two other ways to say it.
 
 ```
-https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
+> 帮我看看这个构建为什么失败
+  EN  help me check why this build fails
+
+> please help me check why the build is failed
+  EN ✎  please help me check why the build failed · remove "is": "failed" is intransitive here
+
+> Could you make this function async?
+  EN ✓  also Make this function async. · Would you mind making this function async?
 ```
 
-and install any plugin from the list. Every entry is pinned to an exact commit in this repository,
-so installing later cannot silently pick up different code; each plugin also declares its own
-version.
+The line is for you only: the model still reads your prompt exactly as you typed it.
 
-Without the market, install a plugin directory directly with the plugin manager, or from a
-commit-pinned Git spec:
+[Install Prompt EN →](plugins/prompt-en)
 
-```
-git+https://github.com/kadaliao/dsh-plugins.git#<commit>&path:/plugins/prompt-en
-```
+## Install a plugin
 
-## Plugins
+1. Turn on the marketplace once: **Plugins → Experimental plugins → Custom plugin markets**.
+2. Open the new **Discover** tab, then **Sources**, and add:
 
-| Plugin | What it does |
-| --- | --- |
-| [Prompt EN](plugins/prompt-en) | English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English. |
+   ```
+   https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
+   ```
 
-## How a plugin is laid out
+3. Install the plugin you want from Discover.
 
-Every directory under `plugins/` is a complete DSH bundle:
+Already know what you want? Paste the plugin's Git spec into the plugin manager instead:
 
 ```
-plugins/<name>/
-  package.json         # name, exports, dsh.bundle.patch, dsh.client
-  cordis.patch.yml     # the Loader rows the bundle inserts
-  index.js             # Host half
-  client.js            # Web Client half (window.__ModuleLoader__)
-  lib/                 # host-side modules
-  locale/*.json        # display metadata and UI dictionaries
-  icon.svg
-  README.md            # behavior, settings, limits
-  test/                # pure-logic and client-render tests
+git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 ```
 
-The Host half registers routes and event listeners on its plugin fiber; the Client half registers
-Conversation rows or slots. Neither writes to the Session log, and nothing a plugin computes is
-sent to the conversation's model unless its README says so.
+## Requirements
 
-## Development
+- DeepSeek Harness 0.2.x with the **Web UI** (the desktop app, or `dsh web`). These are chat and
+  composer plugins; the headless profile has no transcript to draw in.
+- A model configured in Harness. Plugins reuse your session's model unless their README says
+  otherwise.
 
-Each plugin is plain JavaScript with no build step. Tests run with Node's test runner:
+## Common questions
 
-```bash
-cd plugins/prompt-en
-node --test test/*.test.mjs
-```
+**The Discover tab is missing.** DeepSeek Harness ships custom markets as an experimental feature.
+Enable **Custom plugin markets** under **Plugins → Experimental plugins** first.
 
-To load a working copy, install its directory with the Harness plugin manager; a linked directory
-updates on the next plugin reload.
+**A plugin installed but does nothing.** Check it is enabled in **Plugins → Installed**. Client-side
+plugins need one page refresh after installation; prompts sent before the install are not
+backfilled.
+
+**What gets sent where?** Each plugin's README states exactly what it reads and which model it
+calls. Nothing a plugin computes is added to your conversation unless the README says so.
+
+## Contributing
+
+Issues and pull requests are welcome. Repository layout, how to add a plugin, tests, and the
+release checklist live in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
-MIT. Prompt EN is a DeepSeek Harness port of [prompt-en](https://github.com/kadaliao/claude-mods/tree/main/prompt-en),
-the same author's Claude Code mod.
+MIT.
