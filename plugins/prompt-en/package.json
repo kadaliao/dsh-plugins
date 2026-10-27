@@ -1,8 +1,8 @@
 {
   "name": "@kadaliao/dsh-prompt-en",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English.",
+  "description": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English, and a vocabulary book to review them.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -12,7 +12,7 @@
   "files": [
     "index.js",
     "client.js",
-    "lib/prompt.mjs",
+    "lib/*.mjs",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -29,7 +29,10 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-locale"
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-commands"
       ]
     }
   },
@@ -47,6 +50,8 @@
     "english",
     "translation",
     "prompt",
-    "review"
+    "review",
+    "vocabulary",
+    "flashcards"
   ]
 }

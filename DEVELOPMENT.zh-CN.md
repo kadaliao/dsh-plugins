@@ -45,6 +45,18 @@ node --test test/*.test.mjs
 用 Harness 插件管理器安装插件目录（Plugins → 从文件夹安装，或 `plugin_manager` 工具）。以 link 方式
 安装的目录在下次插件重载时生效；Client 半的改动还需要刷新页面，除非 Web 开发 watcher 正在运行。
 
+想试改动又不碰自己的 profile，可以用桌面应用自带的 CLI 把插件 link 进一个临时的 Harness home，再启动它：
+
+```bash
+DSH=/Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/cli/bin/dsh
+export DSH_HOME=$(mktemp -d)
+"$DSH" plugin --profile web add "$PWD/plugins/prompt-en"
+"$DSH" web --no-open --port 3917   # 打开它打印出的 URL
+```
+
+它没有模型凭据，所以只能检查不需要模型的界面（比如生词本标签页，卡片可以预先写进
+`$DSH_HOME/cache/prompt-en/vocab.json`）。
+
 发布前要按市场索引给出的、钉死 commit 的 Git spec 安装一遍——这也是用户唯一的安装路径。
 
 ## 新增插件

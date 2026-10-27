@@ -4,3 +4,4 @@
       config:
         enabled: true
         reviewEnglish: true
+        collectVocab: true

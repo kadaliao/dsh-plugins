@@ -48,6 +48,19 @@ Install the plugin directory with the Harness plugin manager (Plugins → instal
 the `plugin_manager` tool). A linked directory is picked up on the next plugin reload; a Client-half
 change also needs a page refresh unless the Web dev watcher is running.
 
+To try a change without touching your own profile, link the plugin into a throwaway Harness home
+with the desktop app's CLI, then boot it:
+
+```bash
+DSH=/Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/cli/bin/dsh
+export DSH_HOME=$(mktemp -d)
+"$DSH" plugin --profile web add "$PWD/plugins/prompt-en"
+"$DSH" web --no-open --port 3917   # open the printed URL
+```
+
+It has no model credentials, so UI that needs no model (the vocabulary tab, with cards seeded into
+`$DSH_HOME/cache/prompt-en/vocab.json`) is what it can check.
+
 For a release, install the commit-pinned Git spec exactly as the market index lists it — that is
 also the only path users take, so test it before publishing a version.
 

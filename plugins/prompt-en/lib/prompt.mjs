@@ -23,8 +23,25 @@ export const MIN_WORDS = 3;
 
 // Letters outside the Latin script: Han, kana, Hangul, Cyrillic, Arabic, ...
 const FOREIGN = /[^\P{L}\p{Script=Latin}]/gu;
-const countForeign = (s) => s.match(FOREIGN)?.length ?? 0;
+export const countForeign = (s) => s.match(FOREIGN)?.length ?? 0;
 const MARKER = /\[\[M(\d+)\]\]/g;
+
+// What a host writes into the prompt for the model alone, such as a
+// <system-reminder> note. Only a closed block counts, so a prompt that just
+// mentions the tag keeps it.
+const HOST_NOTE = /<system-reminder\b[^>]*>[\s\S]*?<\/system-reminder>/g;
+
+/**
+ * The person's own words: the prompt with the host's notes left out. A prompt
+ * with no note comes back as it is, so its key, and the answer cached under it,
+ * stay the same.
+ * @param {string} text
+ * @returns {string}
+ */
+export function ownWords(text) {
+  const own = text.replace(HOST_NOTE, '');
+  return own === text ? text : own.trim();
+}
 
 // Wide East Asian letters: 2.5 English characters of meaning.
 const WIDE =
@@ -119,7 +136,7 @@ export function keyOf(text) {
 }
 
 const pastedLabel = (materials, n) => `[pasted, ${materials[Number(n) - 1]?.lines ?? '?'} lines]`;
-const withLabels = (s, materials) => s.replace(MARKER, (_, n) => pastedLabel(materials, n));
+export const withLabels = (s, materials) => s.replace(MARKER, (_, n) => pastedLabel(materials, n));
 
 function describePastes(p) {
   if (p.materials.length === 0) return '';
@@ -293,12 +310,14 @@ export function markChanges(before, after) {
 
 /**
  * Everything the host needs to answer one prompt, minus the request itself.
+ * Judged by the person's own words, host notes left out.
  * @param {string} text
  * @returns {{mode: 'translate'|'review', key: string, prepared: ReturnType<typeof prepare>} | null}
  */
 export function classify(text) {
-  const prepared = prepare(text);
-  const mode = modeOf(text, prepared);
+  const own = ownWords(text);
+  const prepared = prepare(own);
+  const mode = modeOf(own, prepared);
   if (mode === null) return null;
-  return { mode, key: keyOf(text), prepared };
+  return { mode, key: keyOf(own), prepared };
 }
