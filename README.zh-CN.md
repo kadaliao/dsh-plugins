@@ -28,7 +28,7 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 
 | 插件 | 作用 |
 | --- | --- |
-| [Prompt EN](plugins/prompt-en/README.zh-CN.md) · 0.1.0 | 在每条 prompt 下方写一行英文：用其他语言写的给出译文，用英文写的给出纠错和更地道的替代说法。 |
+| [Prompt EN](plugins/prompt-en/README.zh-CN.md) · 0.2.0 | 在每条 prompt 下方写一行英文：用其他语言写的给出译文，用英文写的给出纠错和更地道的替代说法。教过你的说法收进生词本，用 `/vocab` 复习。 |
 
 之后做好的插件会陆续加进来。每个插件独立安装、独立版本；索引钉死发布所用的 commit，新增插件不会改变
 已有插件的安装。

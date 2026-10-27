@@ -35,8 +35,8 @@
         "zh": "Prompt EN"
       },
       "description": {
-        "en": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English.",
-        "zh": "在每条 prompt 下方写一行英文：用其他语言写的给出英文，用英文写的给出纠错或更地道的说法。"
+        "en": "English under every prompt: a translation when you write in another language, a correction or other ways to say it when you write in English, and a vocabulary book to review what it taught.",
+        "zh": "在每条 prompt 下方写一行英文：用其他语言写的给出英文，用英文写的给出纠错或更地道的说法；教过你的说法收进生词本复习。"
       },
       "icon": "./plugins/prompt-en/icon.svg",
       "author": "kadaliao",
@@ -52,7 +52,9 @@
           "translation",
           "prompt",
           "review",
-          "bilingual"
+          "bilingual",
+          "vocabulary",
+          "flashcards"
         ],
         "labels": [
           "bilingual"
@@ -60,6 +62,16 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1793099787,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/kadaliao/dsh-plugins",
+            "commit": "f6b35ce3feac014ac2a421e5a97f3d4f792d0ec2",
+            "path": "plugins/prompt-en"
+          }
+        },
         {
           "version": "0.1.0",
           "publishTimestamp": 1792855428,
