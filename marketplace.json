@@ -15,6 +15,12 @@
           "en": "Input & prompts",
           "zh": "输入与提示词"
         }
+      },
+      "media": {
+        "title": {
+          "en": "Images & media",
+          "zh": "图片与媒体"
+        }
       }
     },
     "labels": {
@@ -23,11 +29,62 @@
           "en": "Bilingual",
           "zh": "双语"
         }
+      },
+      "tool": {
+        "title": {
+          "en": "Agent tool",
+          "zh": "模型工具"
+        }
       }
     },
     "sortKeys": {}
   },
   "plugins": [
+    {
+      "name": "@kadaliao/dsh-images",
+      "title": {
+        "en": "Images",
+        "zh": "图片"
+      },
+      "description": {
+        "en": "Ask for a picture and get one: a generate_image tool for the model, backed by your provider's image model, with the picture shown in the conversation and an Images panel collecting everything drawn as a gallery to browse, enlarge and download.",
+        "zh": "要一张图就给一张图：给模型一个 generate_image 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。"
+      },
+      "icon": "./plugins/images/icon.svg",
+      "author": "kadaliao",
+      "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/images",
+      "repository": {
+        "url": "https://github.com/kadaliao/dsh-plugins",
+        "directory": "plugins/images"
+      },
+      "metadata": {
+        "category": "media",
+        "keywords": [
+          "image",
+          "image generation",
+          "gallery",
+          "gpt-image",
+          "tool",
+          "draw"
+        ],
+        "labels": [
+          "tool"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794151002,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/kadaliao/dsh-plugins",
+            "commit": "57c813e22b2d7a188f37892b871d306aa8775947",
+            "path": "plugins/images"
+          }
+        }
+      ]
+    },
     {
       "name": "@kadaliao/dsh-prompt-en",
       "title": {
