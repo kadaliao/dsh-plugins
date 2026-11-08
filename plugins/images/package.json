@@ -1,0 +1,59 @@
+{
+  "name": "@kadaliao/dsh-images",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Ask for a picture and get one: a generate_image tool for the conversation model, backed by your provider's image model, and an Images panel that shows everything it drew as a gallery you can browse, enlarge and download.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-commands"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kadaliao/dsh-plugins.git",
+    "directory": "plugins/images"
+  },
+  "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/images",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "image",
+    "image-generation",
+    "gallery",
+    "tool",
+    "gpt-image"
+  ]
+}

@@ -1,0 +1,10 @@
+- insert:
+    - id: images
+      name: '@kadaliao/dsh-images'
+      config:
+        enabled: true
+        # The image model your provider serves, e.g. gpt-image-1. Required.
+        model: ''
+        # The provider route to send it to; empty means the session's own.
+        provider: ''
+        size: 1024x1024

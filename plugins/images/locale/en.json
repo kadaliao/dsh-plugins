@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Images",
+    "description": "Ask for a picture and get one: a generate_image tool for the model, backed by your provider's image model, and an Images panel showing everything it drew as a gallery to browse, enlarge and download."
+  }
+}
