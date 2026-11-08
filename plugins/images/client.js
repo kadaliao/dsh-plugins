@@ -258,13 +258,25 @@ window.__ModuleLoader__.load({
         ...(onDelete ? [{ id: 'delete', run: () => onDelete(item), danger: true }] : []),
       ];
       const showControls = hover || menu;
+      // With a height cap, the tile is as wide as the picture at that height, so a
+      // portrait image gets a narrow tile and a landscape one a wide tile.
+      const fitWidth = maxHeight && item.width > 0 && item.height > 0 ? Math.round((maxHeight * item.width) / item.height) : undefined;
       return h(
         'figure',
         {
           'data-dsh-images-tile': item.id,
           onMouseEnter: () => setHover(true),
           onMouseLeave: () => setHover(false),
-          style: { position: 'relative', margin: 0, breakInside: 'avoid', borderRadius: radius, overflow: 'hidden', background: C.layer2, border: `1px solid ${C.border1}` },
+          style: {
+            position: 'relative',
+            margin: 0,
+            breakInside: 'avoid',
+            borderRadius: radius,
+            overflow: 'hidden',
+            background: C.layer2,
+            border: `1px solid ${C.border1}`,
+            ...(fitWidth !== undefined ? { width: `min(${fitWidth}px, 100%)` } : {}),
+          },
         },
         h(
           'div',
@@ -279,7 +291,7 @@ window.__ModuleLoader__.load({
                 onOpen?.(item);
               }
             },
-            style: { position: 'relative', display: 'block', cursor: 'zoom-in', aspectRatio: ratio, maxHeight, lineHeight: 0 },
+            style: { position: 'relative', display: 'block', cursor: 'zoom-in', aspectRatio: ratio, ...(fitWidth === undefined ? { maxHeight } : {}), lineHeight: 0 },
           },
           h('img', {
             src: item.src,
@@ -287,7 +299,7 @@ window.__ModuleLoader__.load({
             loading: 'lazy',
             decoding: 'async',
             draggable: false,
-            style: { display: 'block', width: '100%', height: maxHeight ? '100%' : 'auto', maxHeight, objectFit: 'cover' },
+            style: { display: 'block', width: '100%', height: ratio ? '100%' : 'auto', ...(fitWidth === undefined ? { maxHeight } : {}), objectFit: 'cover' },
           }),
           h(
             'div',
@@ -548,8 +560,8 @@ window.__ModuleLoader__.load({
           shown.map((img) =>
             h(
               'div',
-              { key: img.id, style: { width: shown.length > 1 ? 'min(260px, 100%)' : 'min(420px, 100%)' } },
-              h(Tile, { t, item: img, onOpen: (item) => box.open(shown, item), maxHeight: 420 }),
+              { key: img.id, style: { maxWidth: '100%', minWidth: 0 } },
+              h(Tile, { t, item: img, onOpen: (item) => box.open(shown, item), maxHeight: shown.length > 1 ? 260 : 420 }),
             ),
           ),
         );
@@ -641,8 +653,8 @@ window.__ModuleLoader__.load({
         shown.map((img) =>
           h(
             'div',
-            { key: img.id, style: { width: shown.length > 1 ? 'min(260px, 100%)' : 'min(480px, 100%)' } },
-            h(Tile, { t, item: img, onOpen: (item) => box.open(shown, item), maxHeight: 480 }),
+            { key: img.id, style: { maxWidth: '100%', minWidth: 0 } },
+            h(Tile, { t, item: img, onOpen: (item) => box.open(shown, item), maxHeight: shown.length > 1 ? 260 : 480 }),
           ),
         ),
         box.at >= 0 ? h(Lightbox, { t, items: shown, index: box.at, onClose: box.close, onStep: box.step }) : null,
