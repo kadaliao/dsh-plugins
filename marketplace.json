@@ -47,8 +47,8 @@
         "zh": "图片"
       },
       "description": {
-        "en": "Ask for a picture and get one: a generate_image tool for the model, backed by your provider's image model, with the picture shown in the conversation and an Images panel collecting everything drawn as a gallery to browse, enlarge and download. A settings drawer picks the provider, key and model; every picture shows what it cost.",
-        "zh": "要一张图就给一张图：给模型一个 generate_image 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型，每张图都标出费用。"
+        "en": "Ask for a picture and get one: a generate_image tool for the model, backed by your provider's image model, with the picture shown in the conversation and an Images panel collecting everything drawn as a gallery to browse, enlarge and download. A settings drawer picks the provider, key and model (searchable as you type); every picture shows what it cost, with the public LiteLLM price list covering models the provider does not price.",
+        "zh": "要一张图就给一张图：给模型一个 generate_image 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型（输入即可模糊搜索），每张图都标出费用；供应商不给价的模型用公开的 LiteLLM 价目表兜底。"
       },
       "icon": "./plugins/images/icon.svg",
       "author": "kadaliao",
@@ -73,6 +73,16 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.3.0",
+          "publishTimestamp": 1794194281,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/kadaliao/dsh-plugins",
+            "commit": "a2d90ca597c08422027982231febb16c9bcf0eb8",
+            "path": "plugins/images"
+          }
+        },
         {
           "version": "0.2.0",
           "publishTimestamp": 1794191559,
