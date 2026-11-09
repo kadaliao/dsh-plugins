@@ -369,3 +369,129 @@ test('a generate_image result gets its own row at turn level, outside the proces
   assert.equal(img.props.src, '/__dsh_images/file/k1');
   assert.equal(img.props.alt, 'a star');
 });
+
+test('every picture shows its model and cost; the header sums what was spent', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const row = seen.slots.find((s) => s.options.name === 'conversation.chat.node').component;
+  const attachment = { attachmentId: 'sha256:abc', mediaType: 'image/png', bytes: 10, width: 1024, height: 1536 };
+  const node = { data: { callId: 'c1', content: [{ type: 'image', attachment }], isError: false, meta: { ids: ['k1'], prompt: 'p', model: 'gpt-image-1.5', cost: { amount: 0.1355, currency: 'USD', source: 'usage' } } } };
+  hooks.reset();
+  const text = collect(row({ node, sessionId: 's1' })).join(' ');
+  assert.match(text, /gpt-image-1\.5 · 1024×1536 · ≈ \$0\.136/);
+
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  globalThis.fetch = async (url) => {
+    const path = String(url);
+    if (path.startsWith('/__dsh_images/state')) return { ok: true, json: async () => ({ total: 2, totals: { USD: 0.27, CNY: 0.4 } }) };
+    return {
+      ok: true,
+      json: async () => ({
+        total: 2,
+        hasMore: false,
+        items: [
+          { id: 'a', url: '/__dsh_images/file/a', width: 1, height: 1, prompt: 'x', model: 'gpt-image-1.5', cost: { amount: 0.07, currency: 'USD', source: 'list' }, createdAt: Date.now() },
+          { id: 'b', url: '/__dsh_images/file/b', width: 1, height: 1, prompt: 'y', model: 'seedream', cost: { amount: 0.4, currency: 'CNY', source: 'manual' }, createdAt: Date.now() },
+        ],
+      }),
+    };
+  };
+  hooks.reset();
+  panel({});
+  await flush();
+  await flush();
+  hooks.rewind();
+  const tree = panel({});
+  const all = collect(tree).join(' ');
+  assert.match(all, /2 images · spent \$0\.27 · ¥0\.4/);
+  assert.match(all, /gpt-image-1\.5 · 1×1 · ≈ \$0\.07/);
+  assert.match(all, /seedream · 1×1 · ≈ ¥0\.4/);
+  hooks.runCleanups();
+});
+
+test('the settings drawer shows what is in force, tests the connection, and saves without echoing the key', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  const posts = [];
+  const info = {
+    values: { provider: '', baseURL: '', model: 'gpt-image-1', size: '1024x1024', quality: '', pricePerImage: 0, currency: 'USD' },
+    defaults: { provider: '', baseURL: '', model: 'gpt-image-1', size: '1024x1024', quality: '' },
+    effective: { provider: 'magpie', baseURL: 'http://127.0.0.1:3425/v1', model: 'gpt-image-1', keySource: 'provider', keyHint: '····test' },
+    problem: '',
+    storedKey: null,
+    providers: [{ id: 'magpie', name: 'Magpie', baseURL: 'http://127.0.0.1:3425/v1', hasKey: true }],
+    sessionProvider: 'magpie',
+    priceListDate: '2026-11-09',
+    stats: { total: 3, totals: { USD: 0.5 }, byModel: { 'gpt-image-1': { count: 3, totals: { USD: 0.5 } } } },
+  };
+  globalThis.fetch = async (url, init) => {
+    const path = String(url);
+    if (init?.method === 'POST') {
+      posts.push({ path, body: JSON.parse(init.body) });
+      if (path === '/__dsh_images/models') return { ok: true, json: async () => ({ ok: true, baseURL: 'http://127.0.0.1:3425/v1', keySource: 'stored', models: [{ id: 'gpt-image-1.5', isImage: true }, { id: 'gpt-4o', isImage: false }] }) };
+      return { ok: true, json: async () => ({ ok: true, ...info, stats: { ...info.stats, totals: { USD: 0.9 } } }) };
+    }
+    if (path.startsWith('/__dsh_images/settings?model=')) return { ok: true, json: async () => ({ model: 'gpt-image-1', source: 'list', family: 'gpt-image-1', perImage: { amount: 0.167, currency: 'USD' }, samples: [{ size: '1024x1024', price: { amount: 0.167, currency: 'USD' } }, { size: '1536x1024', price: { amount: 0.25, currency: 'USD' } }], priceListDate: '2026-11-09' }) };
+    if (path === '/__dsh_images/settings') return { ok: true, json: async () => info };
+    if (path.startsWith('/__dsh_images/state')) return { ok: true, json: async () => ({ total: 0, totals: {} }) };
+    return { ok: true, json: async () => ({ items: [], hasMore: false, total: 0 }) };
+  };
+  hooks.reset();
+  panel({});
+  await flush();
+  hooks.rewind();
+  let tree = panel({});
+  findAll(tree, (n) => n.props['data-dsh-images-settings-button'])[0].props.onClick();
+  hooks.rewind();
+  tree = panel({});
+  await flush();
+  await flush();
+  hooks.rewind();
+  tree = panel({});
+  let drawer = findAll(tree, (n) => n.props['data-dsh-images-drawer'])[0];
+  assert.ok(drawer, 'the drawer is open');
+  // The price preview is asked a moment after the model settles.
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  hooks.rewind();
+  tree = panel({});
+  drawer = findAll(tree, (n) => n.props['data-dsh-images-drawer'])[0];
+  let text = collect(drawer).join(' ');
+  assert.match(text, /Image generation/);
+  assert.match(text, /3 images so far/);
+  assert.match(text, /Built-in list for gpt-image-1: 1024×1024 \$0\.167 · 1536×1024 \$0\.25/);
+  const keyInput = findAll(drawer, (n) => n.props['data-dsh-images-field'] === 'apiKey')[0];
+  assert.equal(keyInput.props.type, 'password');
+  assert.match(keyInput.props.placeholder, /Using the provider's key ····test/);
+
+  // Test the connection: the models come back and are offered as chips.
+  findAll(drawer, (n) => n.props['data-dsh-images-probe'])[0].props.onClick();
+  await flush();
+  hooks.rewind();
+  tree = panel({});
+  drawer = findAll(tree, (n) => n.props['data-dsh-images-drawer'])[0];
+  text = collect(drawer).join(' ');
+  assert.match(text, /Connected: 2 models, 1 of them image models/);
+  assert.equal(posts[0].path, '/__dsh_images/models');
+
+  // Type a key and a model, save: the key goes in the POST once, nothing shows it back.
+  findAll(drawer, (n) => n.props['data-dsh-images-field'] === 'apiKey')[0].props.onChange({ target: { value: 'sk-new-key-0000' } });
+  findAll(drawer, (n) => n.props['data-dsh-images-field'] === 'model')[0].props.onChange({ target: { value: 'gpt-image-1.5' } });
+  hooks.rewind();
+  tree = panel({});
+  drawer = findAll(tree, (n) => n.props['data-dsh-images-drawer'])[0];
+  findAll(drawer, (n) => n.props['data-dsh-images-save'])[0].props.onClick();
+  await flush();
+  const saved = posts.find((p) => p.path === '/__dsh_images/settings');
+  assert.equal(saved.body.apiKey, 'sk-new-key-0000');
+  assert.equal(saved.body.model, 'gpt-image-1.5');
+  hooks.rewind();
+  tree = panel({});
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-images-drawer']).length, 0, 'the drawer closed');
+  const after = collect(tree).join(' ');
+  assert.match(after, /Settings saved/);
+  assert.doesNotMatch(after, /sk-new-key/);
+  hooks.runCleanups();
+});

@@ -28,7 +28,7 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 
 | 插件 | 作用 |
 | --- | --- |
-| [图片](plugins/images/README.zh-CN.md) · 0.1.0 | 要一张图就给一张图：给模型一个 `generate_image` 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。 |
+| [图片](plugins/images/README.zh-CN.md) · 0.2.0 | 要一张图就给一张图：给模型一个 `generate_image` 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型，每张图都标出费用。 |
 | [Prompt EN](plugins/prompt-en/README.zh-CN.md) · 0.2.0 | 在每条 prompt 下方写一行英文：用其他语言写的给出译文，用英文写的给出纠错和更地道的替代说法。教过你的说法收进生词本，用 `/vocab` 复习。 |
 
 之后做好的插件会陆续加进来。每个插件独立安装、独立版本；索引钉死发布所用的 commit，新增插件不会改变

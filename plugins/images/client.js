@@ -24,6 +24,11 @@ window.__ModuleLoader__.load({
     const LIST_ROUTE = '/__dsh_images/list';
     const FILE_ROUTE = '/__dsh_images/file/';
     const DELETE_ROUTE = '/__dsh_images/delete';
+    const STATE_ROUTE = '/__dsh_images/state';
+    const SETTINGS_ROUTE = '/__dsh_images/settings';
+    const MODELS_ROUTE = '/__dsh_images/models';
+    const SIZES = ['1024x1024', '1536x1024', '1024x1536'];
+    const QUALITIES = ['low', 'medium', 'high'];
     const PAGE = 40;
     const POLL_MS = 4000;
 
@@ -82,6 +87,25 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** `$0.13` / `¥0.20`, rounded to what matters. */
+    function fmtMoney(amount, currency) {
+      const n = Number(amount);
+      if (!Number.isFinite(n)) return '';
+      const sign = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : currency === 'EUR' ? '€' : `${currency ?? ''} `;
+      const digits = n >= 1 ? 2 : n >= 0.01 ? 3 : 4;
+      return `${sign}${n.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '')}`;
+    }
+    const fmtCost = (cost) => (cost && Number.isFinite(cost.amount) ? `≈ ${fmtMoney(cost.amount, cost.currency)}` : '');
+    /** `≈ $1.23 · ¥4.5` over a `{USD: n, CNY: n}` map, '' when empty. */
+    const fmtTotals = (totals) =>
+      Object.entries(totals ?? {})
+        .filter(([, v]) => Number.isFinite(v) && v > 0)
+        .map(([c, v]) => fmtMoney(v, c))
+        .join(' · ');
+    /** The line under a picture: model · size · cost. */
+    const metaLine = (t, item) =>
+      [item.model, item.width && item.height ? `${item.width}×${item.height}` : null, fmtCost(item.cost), item.createdAt ? fmtWhen(t, item.createdAt) : null].filter(Boolean).join(' · ');
+
     function fmtWhen(t, at, now = Date.now()) {
       const ms = Math.max(0, now - at);
       if (ms < 60_000) return t('justNow');
@@ -117,6 +141,8 @@ window.__ModuleLoader__.load({
     const DotsIcon = ({ size = 16 }) => svg(size, ['M5 12h.01M12 12h.01M19 12h.01'], { strokeWidth: 3 });
     const DownloadIcon = ({ size = 16 }) => svg(size, ['M12 4v11', 'M7 10l5 5 5-5', 'M4 19h16']);
     const CloseIcon = ({ size = 16 }) => svg(size, ['M6 6l12 12', 'M18 6L6 18']);
+    const GearIcon = ({ size = 15 }) =>
+      svg(size, ['M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z', 'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z']);
     const ChevronIcon = ({ size = 20, dir = 1 }) => svg(size, [dir > 0 ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7']);
     function ImagesGlyph(props) {
       const size = Number(props?.size) > 0 ? Number(props.size) : 18;
@@ -347,9 +373,7 @@ window.__ModuleLoader__.load({
         };
       }, [index, items.length]);
       if (!item) return null;
-      const meta = [item.model, item.width && item.height ? `${item.width}×${item.height}` : null, item.createdAt ? fmtWhen(t, item.createdAt) : null]
-        .filter(Boolean)
-        .join(' · ');
+      const meta = metaLine(t, item);
       const nav = (dir) =>
         h(
           'button',
@@ -463,6 +487,7 @@ window.__ModuleLoader__.load({
           height: ref?.height ?? 0,
           prompt: typeof meta.prompt === 'string' ? meta.prompt : undefined,
           model: typeof meta.model === 'string' ? meta.model : undefined,
+          cost: meta.cost && typeof meta.cost === 'object' && count > 0 ? { ...meta.cost, amount: Number(meta.cost.amount) / count } : undefined,
         });
       }
       return out;
@@ -517,7 +542,9 @@ window.__ModuleLoader__.load({
         'div',
         { style: { display: 'flex', alignItems: 'baseline', gap: 8, fontSize: SMALL, color: C.muted, minWidth: 0 } },
         h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, color: settled && !block.isError ? C.label : C.faint, fontWeight: 600, flex: 'none' } }, h(ImagesGlyph, { size: 14, active: settled && !block.isError }), t('toolTitle')),
-        settled && !block.isError && shown[0]?.model ? h('span', { style: { color: C.faint, flex: 'none' } }, shown[0].model) : null,
+        settled && !block.isError && shown[0]?.model
+          ? h('span', { style: { color: C.faint, flex: 'none' } }, [shown[0].model, block.meta?.cost ? fmtCost(block.meta.cost) : null].filter(Boolean).join(' · '))
+          : null,
         !settled ? h('span', { style: { color: C.faint, fontStyle: 'italic' } }, t(phase === 'preparing' ? 'preparing' : 'generating')) : null,
       );
 
@@ -655,6 +682,7 @@ window.__ModuleLoader__.load({
             'div',
             { key: img.id, style: { maxWidth: '100%', minWidth: 0 } },
             h(Tile, { t, item: img, onOpen: (item) => box.open(shown, item), maxHeight: shown.length > 1 ? 260 : 480 }),
+            h('div', { style: { marginTop: 5, fontSize: 11.5, color: C.faint, letterSpacing: 0.1 } }, metaLine(t, img)),
           ),
         ),
         box.at >= 0 ? h(Lightbox, { t, items: shown, index: box.at, onClose: box.close, onStep: box.step }) : null,
@@ -670,6 +698,9 @@ window.__ModuleLoader__.load({
       const [total, setTotal] = useState(0);
       const [failed, setFailed] = useState(false);
       const [loadingMore, setLoadingMore] = useState(false);
+      const [totals, setTotals] = useState({});
+      const [settingsOpen, setSettingsOpen] = useState(false);
+      const [toast, setToast] = useState('');
       const box = useLightbox();
       const alive = useRef(true);
       const itemsRef = useRef(items);
@@ -688,6 +719,7 @@ window.__ModuleLoader__.load({
             }
             setFailed(false);
             setTotal(body.total ?? body.items.length);
+            getJson(STATE_ROUTE).then((st) => alive.current && st?.totals && setTotals(st.totals)).catch(() => {});
             const fresh = body.items.map(decorate);
             const known = itemsRef.current;
             if (known === null) {
@@ -760,17 +792,10 @@ window.__ModuleLoader__.load({
           },
         },
         h('span', { style: { fontSize: 15.5, fontWeight: 640, color: C.primary } }, t('title')),
-        h('span', { style: { fontSize: SMALL, color: C.faint } }, total > 0 ? t('count', { n: total }) : ''),
+        h('span', { style: { fontSize: SMALL, color: C.faint } }, [total > 0 ? t('count', { n: total }) : null, fmtTotals(totals) ? t('spent', { amount: fmtTotals(totals) }) : null].filter(Boolean).join(' · ')),
         h('span', { style: { flex: 1 } }),
-        h(
-          'button',
-          {
-            type: 'button',
-            onClick: refresh,
-            style: { font: 'inherit', fontSize: SMALL, color: C.muted, background: C.layer2, border: `1px solid ${C.border1}`, borderRadius: 9, padding: '5px 12px', cursor: 'pointer' },
-          },
-          t('refresh'),
-        ),
+        h(HeaderButton, { onClick: refresh }, t('refresh')),
+        h(HeaderButton, { onClick: () => setSettingsOpen(true), icon: h(GearIcon), 'data-dsh-images-settings-button': true }, t('settings')),
       );
 
       let body;
@@ -796,7 +821,7 @@ window.__ModuleLoader__.load({
                   item.prompt
                     ? h('div', { title: item.prompt, style: { color: C.primary, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' } }, item.prompt)
                     : null,
-                  h('div', { style: { marginTop: 3, color: C.faint, fontSize: 11.5, display: 'flex', gap: 6, flexWrap: 'wrap' } }, [item.model, item.width && item.height ? `${item.width}×${item.height}` : null, item.createdAt ? fmtWhen(t, item.createdAt) : null].filter(Boolean).join(' · ')),
+                  h('div', { style: { marginTop: 3, color: C.faint, fontSize: 11.5 } }, metaLine(t, item)),
                 ),
               }),
             ),
@@ -817,12 +842,375 @@ window.__ModuleLoader__.load({
           ref: scroller,
           onScroll,
           'data-dsh-images-panel': true,
-          style: { height: '100%', width: '100%', overflowY: 'auto', background: C.base, color: C.primary, fontSize: FONT, boxSizing: 'border-box' },
+          style: { position: 'relative', height: '100%', width: '100%', overflowY: 'auto', background: C.base, color: C.primary, fontSize: FONT, boxSizing: 'border-box' },
         },
         header,
         body,
         box.at >= 0 && items ? h(Lightbox, { t, items, index: box.at, onClose: box.close, onStep: box.step }) : null,
+        settingsOpen
+          ? h(SettingsDrawer, {
+              t,
+              onClose: () => setSettingsOpen(false),
+              onSaved: (body) => {
+                setSettingsOpen(false);
+                setToast(t('saved'));
+                if (body?.stats?.totals) setTotals(body.stats.totals);
+              },
+            })
+          : null,
+        toast ? h(PanelToast, { text: toast, onDone: () => setToast('') }) : null,
       );
+    }
+
+    function HeaderButton({ onClick, icon, children, ...rest }) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          onClick,
+          ...rest,
+          style: { display: 'inline-flex', alignItems: 'center', gap: 6, font: 'inherit', fontSize: SMALL, color: C.muted, background: C.layer2, border: `1px solid ${C.border1}`, borderRadius: 9, padding: '5px 12px', cursor: 'pointer' },
+        },
+        icon ?? null,
+        children,
+      );
+    }
+
+    function PanelToast({ text, onDone }) {
+      useEffect(() => {
+        const timer = setTimeout(onDone, 2600);
+        return () => clearTimeout(timer);
+      }, [text]);
+      return h(
+        'div',
+        { role: 'status', style: { position: 'absolute', left: '50%', bottom: 28, transform: 'translateX(-50%)', padding: '8px 14px', borderRadius: 10, fontSize: SMALL, background: 'var(--dsw-alias-bg-elevated, rgba(30,30,30,.92))', color: 'var(--dsw-alias-label-primary, #fff)', boxShadow: '0 4px 16px rgba(0,0,0,.18)', zIndex: 20 } },
+        text,
+      );
+    }
+
+    // --- the settings drawer ---------------------------------------------------------
+
+    const field = { display: 'flex', flexDirection: 'column', gap: 6 };
+    const labelStyle = { fontSize: 12, color: C.muted, fontWeight: 500 };
+    const inputStyle = {
+      font: 'inherit',
+      fontSize: 13,
+      color: C.primary,
+      background: C.layer1,
+      border: `1px solid ${C.border}`,
+      borderRadius: 9,
+      padding: '8px 11px',
+      outline: 'none',
+      width: '100%',
+      boxSizing: 'border-box',
+    };
+    const hintStyle = { fontSize: 11.5, color: C.faint, lineHeight: 1.5 };
+    const sectionTitle = (text) => h('div', { style: { fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase', color: C.faint, fontWeight: 600, marginTop: 6 } }, text);
+
+    function Segmented({ value, options, onChange }) {
+      return h(
+        'div',
+        { role: 'radiogroup', style: { display: 'inline-flex', padding: 3, gap: 2, background: C.layer2, borderRadius: 9, border: `1px solid ${C.border1}` } },
+        options.map((o) =>
+          h(
+            'button',
+            {
+              key: o.value,
+              type: 'button',
+              role: 'radio',
+              'aria-checked': o.value === value,
+              onClick: () => onChange(o.value),
+              style: {
+                font: 'inherit',
+                fontSize: 12,
+                padding: '4px 10px',
+                border: 'none',
+                borderRadius: 7,
+                cursor: 'pointer',
+                background: o.value === value ? C.layer1 : 'transparent',
+                color: o.value === value ? C.primary : C.muted,
+                boxShadow: o.value === value ? '0 1px 3px rgba(0,0,0,.12)' : 'none',
+                fontWeight: o.value === value ? 600 : 400,
+              },
+            },
+            o.label,
+          ),
+        ),
+      );
+    }
+
+    function SettingsDrawer({ t, onClose, onSaved }) {
+      const [info, setInfo] = useState(null);
+      const [draft, setDraft] = useState(null);
+      const [apiKey, setApiKey] = useState('');
+      const [clearKey, setClearKey] = useState(false);
+      const [models, setModels] = useState(null);
+      const [probe, setProbe] = useState(null); // {state:'busy'|'ok'|'bad', text}
+      const [preview, setPreview] = useState(null);
+      const [saving, setSaving] = useState(false);
+      const alive = useRef(true);
+      const previewTimer = useRef(null);
+
+      useEffect(() => {
+        alive.current = true;
+        getJson(SETTINGS_ROUTE)
+          .then((body) => {
+            if (!alive.current || !body) return;
+            setInfo(body);
+            setDraft({ ...body.values });
+          })
+          .catch(() => {});
+        return () => {
+          alive.current = false;
+        };
+      }, []);
+
+      useEffect(() => {
+        if (typeof document === 'undefined') return undefined;
+        const key = (e) => {
+          if (e.key === 'Escape') onClose();
+        };
+        document.addEventListener('keydown', key, true);
+        return () => document.removeEventListener('keydown', key, true);
+      }, []);
+
+      // How the typed model would be billed; asked a moment after typing stops.
+      useEffect(() => {
+        if (!draft) return undefined;
+        if (previewTimer.current) clearTimeout(previewTimer.current);
+        const model = draft.model || info?.defaults?.model || '';
+        if (!model) {
+          setPreview(null);
+          return undefined;
+        }
+        previewTimer.current = setTimeout(() => {
+          getJson(`${SETTINGS_ROUTE}?model=${encodeURIComponent(model)}&size=${encodeURIComponent(draft.size || '')}&quality=${encodeURIComponent(draft.quality || '')}`)
+            .then((body) => alive.current && setPreview(body))
+            .catch(() => {});
+        }, 250);
+        return () => clearTimeout(previewTimer.current);
+      }, [draft?.model, draft?.size, draft?.quality]);
+
+      if (!info || !draft) {
+        return h(DrawerFrame, { t, onClose }, h('div', { style: { color: C.faint } }, '…'));
+      }
+
+      const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
+      const providerOptions = [
+        { value: '', label: info.sessionProvider ? t('providerSession', { name: info.sessionProvider }) : t('providerSessionNone') },
+        ...info.providers.filter((p) => p.id !== '').map((p) => ({ value: p.id, label: p.name === p.id ? p.id : `${p.name} (${p.id})` })),
+        { value: 'custom', label: t('providerCustom') },
+      ];
+      const pickedProvider = info.providers.find((p) => p.id === (draft.provider || info.sessionProvider));
+      const baseURLPlaceholder = draft.provider === 'custom' ? 'https://api.openai.com/v1' : pickedProvider?.baseURL || info.effective.baseURL || 'https://…/v1';
+      const keyPlaceholder = info.storedKey
+        ? t('keyStored', { hint: info.storedKey })
+        : info.effective.keySource === 'provider' || info.effective.keySource === 'env'
+          ? t('keyFromProvider', { hint: info.effective.keyHint })
+          : t('keyNone');
+
+      const runProbe = () => {
+        setProbe({ state: 'busy', text: t('probing') });
+        postJson(MODELS_ROUTE, { provider: draft.provider, baseURL: draft.baseURL, ...(apiKey ? { apiKey } : {}) })
+          .then((body) => {
+            if (!alive.current) return;
+            if (!body || body.ok !== true) {
+              setProbe({ state: 'bad', text: body?.reason ? t('probeFailed', { reason: body.reason }) : t('probeFailed', { reason: '?' }) });
+              return;
+            }
+            setModels(body.models);
+            const imageCount = body.models.filter((m) => m.isImage).length;
+            setProbe({ state: 'ok', text: imageCount > 0 ? t('probeOk', { n: body.models.length, images: imageCount }) : t('probeOkNoImages', { n: body.models.length }) });
+          })
+          .catch(() => alive.current && setProbe({ state: 'bad', text: t('probeFailed', { reason: 'network' }) }));
+      };
+
+      const save = () => {
+        setSaving(true);
+        const body = { ...draft };
+        if (clearKey) body.apiKey = null;
+        else if (apiKey.trim() !== '') body.apiKey = apiKey.trim();
+        postJson(SETTINGS_ROUTE, body)
+          .then((res) => {
+            if (!alive.current) return;
+            setSaving(false);
+            if (res?.ok) onSaved(res);
+          })
+          .catch(() => alive.current && setSaving(false));
+      };
+
+      const previewText = (() => {
+        if (!preview) return '';
+        if (preview.source === 'provider') return t('priceProvider', { price: fmtMoney(preview.perImage.amount, preview.perImage.currency) });
+        if (preview.source === 'list') {
+          const samples = (preview.samples ?? []).map((r) => `${r.size.replace('x', '×')} ${fmtMoney(r.price.amount, r.price.currency)}`).join(' · ');
+          return t('priceList', { family: preview.family, samples, date: preview.priceListDate });
+        }
+        if (preview.source === 'manual') return t('priceManual', { price: fmtMoney(preview.perImage.amount, preview.perImage.currency) });
+        return t('priceUnknown');
+      })();
+
+      const stats = info.stats ?? { total: 0, totals: {}, byModel: {} };
+      const modelRows = Object.entries(stats.byModel ?? {}).sort((a, b) => b[1].count - a[1].count);
+
+      return h(
+        DrawerFrame,
+        {
+          t,
+          onClose,
+          footer: h(
+            'div',
+            { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' } },
+            h(DrawerButton, { onClick: onClose }, t('cancel')),
+            h(DrawerButton, { onClick: save, primary: true, disabled: saving, 'data-dsh-images-save': true }, saving ? '…' : t('save')),
+          ),
+        },
+        info.problem ? h('div', { style: { fontSize: 12.5, color: C.error, background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary, #f25a5a) 10%, transparent)', border: `1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary, #f25a5a) 30%, transparent)`, borderRadius: 9, padding: '8px 11px', lineHeight: 1.5 } }, info.problem) : null,
+
+        sectionTitle(t('secProvider')),
+        h(
+          'label',
+          { style: field },
+          h('span', { style: labelStyle }, t('provider')),
+          h(
+            'select',
+            { value: draft.provider ?? '', onChange: (e) => set({ provider: e.target.value, baseURL: e.target.value === 'custom' ? draft.baseURL : '' }), style: { ...inputStyle, appearance: 'auto' }, 'data-dsh-images-field': 'provider' },
+            providerOptions.map((o) => h('option', { key: o.value, value: o.value }, o.label)),
+          ),
+        ),
+        h(
+          'label',
+          { style: field },
+          h('span', { style: labelStyle }, t('baseURL')),
+          h('input', { type: 'url', value: draft.baseURL ?? '', placeholder: baseURLPlaceholder, onChange: (e) => set({ baseURL: e.target.value }), style: inputStyle, spellCheck: false, 'data-dsh-images-field': 'baseURL' }),
+          draft.provider !== 'custom' ? h('span', { style: hintStyle }, t('baseURLHint')) : null,
+        ),
+        h(
+          'label',
+          { style: field },
+          h('span', { style: { ...labelStyle, display: 'flex', justifyContent: 'space-between' } }, t('apiKey'), info.storedKey && !clearKey ? h('button', { type: 'button', onClick: () => setClearKey(true), style: { font: 'inherit', fontSize: 11.5, color: C.error, background: 'none', border: 'none', padding: 0, cursor: 'pointer' } }, t('clearKey')) : null),
+          h('input', { type: 'password', value: apiKey, placeholder: clearKey ? t('keyWillClear') : keyPlaceholder, onChange: (e) => { setApiKey(e.target.value); if (e.target.value) setClearKey(false); }, style: inputStyle, autoComplete: 'off', spellCheck: false, 'data-dsh-images-field': 'apiKey' }),
+          h('span', { style: hintStyle }, t('apiKeyHint')),
+        ),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+          h(DrawerButton, { onClick: runProbe, disabled: probe?.state === 'busy', 'data-dsh-images-probe': true }, t('probe')),
+          probe ? h('span', { style: { fontSize: 12, color: probe.state === 'bad' ? C.error : probe.state === 'ok' ? 'var(--dsw-alias-state-success-primary, #22c55e)' : C.faint } }, probe.text) : null,
+        ),
+
+        sectionTitle(t('secModel')),
+        h(
+          'label',
+          { style: field },
+          h('span', { style: labelStyle }, t('model')),
+          h('input', { list: 'dsh-images-models', value: draft.model ?? '', placeholder: info.defaults.model || 'gpt-image-1.5', onChange: (e) => set({ model: e.target.value }), style: inputStyle, spellCheck: false, 'data-dsh-images-field': 'model' }),
+          models ? h('datalist', { id: 'dsh-images-models' }, models.map((m) => h('option', { key: m.id, value: m.id }, m.isImage ? `🖼 ${m.name ?? m.id}` : m.name ?? m.id))) : null,
+          h('span', { style: { ...hintStyle, color: preview?.source === 'unknown' ? 'var(--dsw-alias-state-warn-primary, #f59e0b)' : C.faint } }, previewText || (models ? t('modelHintListed') : t('modelHint'))),
+        ),
+        models && models.some((m) => m.isImage)
+          ? h(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', gap: 6 } },
+              models.filter((m) => m.isImage).slice(0, 12).map((m) =>
+                h('button', { key: m.id, type: 'button', onClick: () => set({ model: m.id }), style: { font: 'inherit', fontSize: 11.5, padding: '3px 9px', borderRadius: 999, border: `1px solid ${draft.model === m.id ? C.label : C.border}`, color: draft.model === m.id ? C.label : C.muted, background: 'transparent', cursor: 'pointer' } }, m.id),
+              ),
+            )
+          : null,
+        h(
+          'div',
+          { style: { display: 'flex', gap: 18, flexWrap: 'wrap' } },
+          h('div', { style: field }, h('span', { style: labelStyle }, t('size')), h(Segmented, { value: draft.size || 'auto', options: [...SIZES.map((v) => ({ value: v, label: v.replace('x', '×') })), { value: 'auto', label: t('auto') }], onChange: (v) => set({ size: v }) })),
+          h('div', { style: field }, h('span', { style: labelStyle }, t('quality')), h(Segmented, { value: draft.quality || '', options: [{ value: '', label: t('default') }, ...QUALITIES.map((v) => ({ value: v, label: v }))], onChange: (v) => set({ quality: v }) })),
+        ),
+
+        sectionTitle(t('secBilling')),
+        h(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 96px', gap: 10, alignItems: 'end' } },
+          h('label', { style: field }, h('span', { style: labelStyle }, t('pricePerImage')), h('input', { type: 'number', min: 0, step: 0.001, value: draft.pricePerImage || '', placeholder: '0', onChange: (e) => set({ pricePerImage: e.target.value === '' ? '' : Number(e.target.value) }), style: inputStyle, 'data-dsh-images-field': 'pricePerImage' })),
+          h('label', { style: field }, h('span', { style: labelStyle }, t('currency')), h('select', { value: draft.currency || 'USD', onChange: (e) => set({ currency: e.target.value }), style: { ...inputStyle, appearance: 'auto' } }, ['USD', 'CNY', 'EUR'].map((c) => h('option', { key: c, value: c }, c)))),
+        ),
+        h('span', { style: hintStyle }, t('pricePerImageHint', { date: info.priceListDate })),
+
+        stats.total > 0
+          ? h(
+              'div',
+              { style: { marginTop: 4, padding: '10px 12px', borderRadius: 10, background: C.layer2, border: `1px solid ${C.border1}`, display: 'flex', flexDirection: 'column', gap: 6 } },
+              h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: C.primary, fontWeight: 600 } }, h('span', null, t('statsTotal', { n: stats.total })), h('span', null, fmtTotals(stats.totals) ? `≈ ${fmtTotals(stats.totals)}` : t('statsNoCost'))),
+              modelRows.map(([model, row]) =>
+                h('div', { key: model, style: { display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, color: C.muted } }, h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, model), h('span', { style: { flex: 'none' } }, `${row.count} · ${fmtTotals(row.totals) ? `≈ ${fmtTotals(row.totals)}` : '—'}`)),
+              ),
+            )
+          : null,
+      );
+    }
+
+    function DrawerButton({ onClick, children, primary = false, disabled = false, ...rest }) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          onClick,
+          disabled,
+          ...rest,
+          style: {
+            font: 'inherit',
+            fontSize: 13,
+            fontWeight: primary ? 600 : 500,
+            padding: '7px 14px',
+            borderRadius: 9,
+            cursor: disabled ? 'default' : 'pointer',
+            opacity: disabled ? 0.6 : 1,
+            border: primary ? 'none' : `1px solid ${C.border}`,
+            background: primary ? C.label : 'transparent',
+            color: primary ? 'var(--dsw-alias-label-on-brand, #fff)' : C.primary,
+          },
+        },
+        children,
+      );
+    }
+
+    /** The drawer's chrome: a dimmed panel behind, a sheet sliding in from the right. */
+    function DrawerFrame({ t, onClose, footer, children }) {
+      const node = h(
+        'div',
+        { 'data-dsh-images-drawer': true, style: { position: 'fixed', inset: 0, zIndex: 1500, display: 'flex', justifyContent: 'flex-end' } },
+        h('style', null, '@keyframes dsh-images-slide{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}@keyframes dsh-images-fade{from{opacity:0}to{opacity:1}}'),
+        h('div', { onClick: onClose, style: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,.28)', animation: 'dsh-images-fade .18s ease-out' } }),
+        h(
+          'div',
+          {
+            role: 'dialog',
+            'aria-modal': true,
+            'aria-label': t('settingsTitle'),
+            style: {
+              position: 'relative',
+              width: 'min(420px, 100vw)',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              background: C.base,
+              borderLeft: `1px solid ${C.border1}`,
+              boxShadow: '-12px 0 40px rgba(0,0,0,.18)',
+              animation: 'dsh-images-slide .22s cubic-bezier(.2,.8,.2,1)',
+              color: C.primary,
+              fontSize: FONT,
+            },
+          },
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px 12px', borderBottom: `1px solid ${C.border1}` } },
+            h(ImagesGlyph, { size: 16, active: true }),
+            h('span', { style: { fontSize: 15, fontWeight: 640 } }, t('settingsTitle')),
+            h('span', { style: { flex: 1 } }),
+            h('button', { type: 'button', 'aria-label': t('close'), onClick: onClose, style: { display: 'inline-flex', width: 28, height: 28, alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 8, background: 'transparent', color: C.muted, cursor: 'pointer' } }, h(CloseIcon, { size: 16 })),
+          ),
+          h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 20px 20px', display: 'flex', flexDirection: 'column', gap: 14 } }, children),
+          footer ? h('div', { style: { padding: '12px 20px 16px', borderTop: `1px solid ${C.border1}`, background: C.base } }, footer) : null,
+        ),
+      );
+      return ReactDOM && typeof ReactDOM.createPortal === 'function' && typeof document !== 'undefined' ? ReactDOM.createPortal(node, document.body) : node;
     }
 
     // --- dictionaries -------------------------------------------------------------------
@@ -831,6 +1219,49 @@ window.__ModuleLoader__.load({
       en: {
         title: 'Images',
         count: '{n} images',
+        spent: 'spent {amount}',
+        settings: 'Settings',
+        settingsTitle: 'Image generation',
+        saved: 'Settings saved. The next picture uses them.',
+        secProvider: 'Connection',
+        secModel: 'Model',
+        secBilling: 'Billing',
+        provider: 'Provider',
+        providerSession: 'The session\'s provider ({name})',
+        providerSessionNone: 'The session\'s provider',
+        providerCustom: 'Custom base URL',
+        baseURL: 'Base URL',
+        baseURLHint: 'Leave empty to use the provider\'s own URL; the request goes to <base URL>/images/generations.',
+        apiKey: 'API key',
+        apiKeyHint: 'Stored in the Harness credential store on this machine, never shown again. Leave empty to keep using the provider\'s key.',
+        keyStored: 'Saved {hint} — leave empty to keep it',
+        keyFromProvider: 'Using the provider\'s key {hint} — enter one to override',
+        keyNone: 'No key yet',
+        keyWillClear: 'The saved key will be removed on save',
+        clearKey: 'Remove saved key',
+        probe: 'Test connection & list models',
+        probing: 'Connecting…',
+        probeOk: 'Connected: {n} models, {images} of them image models.',
+        probeOkNoImages: 'Connected: {n} models, none of them listed as an image model — type the image model\'s id below; gateways often serve it without listing it.',
+        probeFailed: 'Could not connect: {reason}',
+        model: 'Image model',
+        modelHint: 'As the provider names it, e.g. gpt-image-1.5. Test the connection to pick from a list.',
+        modelHintListed: 'Pick from the list, or type any id the provider serves.',
+        size: 'Default size',
+        quality: 'Quality',
+        auto: 'auto',
+        default: 'default',
+        pricePerImage: 'Price per image',
+        currency: 'Currency',
+        pricePerImageHint: 'Only used when the provider reports no usage and the model is not in the built-in price list (checked {date}).',
+        priceProvider: 'The provider states {price} per image.',
+        priceList: 'Built-in list for {family}: {samples} per image at this quality (as of {date}). Exact when the provider reports token usage.',
+        priceManual: 'Unknown to the price list; your price of {price} per image applies.',
+        priceUnknown: 'Unknown to the price list and the provider; set a price per image below, or costs stay blank.',
+        statsTotal: '{n} images so far',
+        statsNoCost: 'no cost recorded',
+        cancel: 'Cancel',
+        save: 'Save',
         toolTitle: 'Image',
         preparing: 'preparing…',
         generating: 'generating…',
@@ -858,6 +1289,49 @@ window.__ModuleLoader__.load({
       zh: {
         title: '图片',
         count: '{n} 张',
+        spent: '累计 {amount}',
+        settings: '设置',
+        settingsTitle: '生图设置',
+        saved: '已保存，下一张图开始生效。',
+        secProvider: '连接',
+        secModel: '模型',
+        secBilling: '计费',
+        provider: '供应商',
+        providerSession: '跟随会话（{name}）',
+        providerSessionNone: '跟随会话所用的供应商',
+        providerCustom: '自定义地址',
+        baseURL: '接口地址',
+        baseURLHint: '留空则用供应商自己的地址；请求发往 <地址>/images/generations。',
+        apiKey: 'API 密钥',
+        apiKeyHint: '保存在本机的 Harness 凭据库里，不会再显示。留空则继续用供应商配置的密钥。',
+        keyStored: '已保存 {hint}，留空保持不变',
+        keyFromProvider: '使用供应商的密钥 {hint}，填写则覆盖',
+        keyNone: '尚未设置',
+        keyWillClear: '保存时将删除已保存的密钥',
+        clearKey: '删除已保存的密钥',
+        probe: '测试连接并拉取模型',
+        probing: '连接中…',
+        probeOk: '连接成功：{n} 个模型，其中 {images} 个是生图模型。',
+        probeOkNoImages: '连接成功：{n} 个模型，列表里没有标为生图的；直接在下面填生图模型的 id 即可，网关常常不把它列出来。',
+        probeFailed: '连不上：{reason}',
+        model: '生图模型',
+        modelHint: '按供应商的叫法填写，如 gpt-image-1.5；先测试连接可从列表里选。',
+        modelHintListed: '从列表里选，或直接填供应商提供的任意模型 id。',
+        size: '默认尺寸',
+        quality: '质量',
+        auto: '自动',
+        default: '默认',
+        pricePerImage: '每张单价',
+        currency: '币种',
+        pricePerImageHint: '只在供应商不返回用量、且模型不在内置价目表（{date} 核对）时使用。',
+        priceProvider: '供应商报价 {price} / 张。',
+        priceList: '内置价目表 {family}：该质量下 {samples} / 张（{date}）。供应商返回用量时按用量精确计算。',
+        priceManual: '价目表里没有这个模型，按你填的 {price} / 张计。',
+        priceUnknown: '价目表和供应商都没有它的价格；在下面填一个单价，否则费用留空。',
+        statsTotal: '已生成 {n} 张',
+        statsNoCost: '没有费用记录',
+        cancel: '取消',
+        save: '保存',
         toolTitle: '生图',
         preparing: '准备中…',
         generating: '生成中…',

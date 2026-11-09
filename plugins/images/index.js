@@ -11,11 +11,12 @@
  * @module @kadaliao/dsh-images
  */
 
-import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, createReadStream, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildRequest, dimensionsOf, extensionOf, imagesEndpoint, parseReply, errorMessage, sniffMediaType, SIZES } from './lib/provider.mjs';
+import { costFromList, estimateCost, familyOf, looksLikeImageModel, providerPerImage, totalsOf, PRICE_LIST_DATE } from './lib/pricing.mjs';
 import { createStore, newId } from './lib/store.mjs';
 
 // The registry wants the compiled definition `defineTool` makes. Outside a
@@ -38,6 +39,13 @@ const LIST_ROUTE = '/__dsh_images/list';
 const FILE_ROUTE = '/__dsh_images/file';
 const DELETE_ROUTE = '/__dsh_images/delete';
 const STATE_ROUTE = '/__dsh_images/state';
+const SETTINGS_ROUTE = '/__dsh_images/settings';
+const MODELS_ROUTE = '/__dsh_images/models';
+
+/** The credential reference the stored API key lives under. */
+export const KEY_REF = 'DSH_IMAGES_API_KEY';
+/** Fields the settings panel may set; everything else on the row stays as configured. */
+const PANEL_FIELDS = ['provider', 'baseURL', 'model', 'size', 'quality', 'pricePerImage', 'currency'];
 
 /** An image request that has not answered by then is given up. */
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -60,8 +68,31 @@ export function settingsOf(config) {
     apiKeyEnv: str(c.apiKeyEnv),
     size: str(c.size) || '1024x1024',
     quality: str(c.quality),
+    pricePerImage: Number.isFinite(Number(c.pricePerImage)) && Number(c.pricePerImage) > 0 ? Number(c.pricePerImage) : 0,
+    currency: str(c.currency).toUpperCase() || 'USD',
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS,
   };
+}
+
+/**
+ * The settings in force: what the panel saved on top of the row's config. A
+ * saved empty string means "back to the row's value".
+ * @param {object} base - `settingsOf(config)`.
+ * @param {object} saved - the panel's file.
+ */
+export function mergeSettings(base, saved) {
+  const out = { ...base };
+  const panel = saved && typeof saved === 'object' ? saved : {};
+  for (const key of PANEL_FIELDS) {
+    const value = panel[key];
+    if (value === undefined || value === null || value === '') continue;
+    if (key === 'pricePerImage') {
+      const n = Number(value);
+      if (Number.isFinite(n) && n >= 0) out.pricePerImage = n;
+    } else if (key === 'currency') out.currency = String(value).toUpperCase();
+    else out[key] = String(value).trim();
+  }
+  return out;
 }
 
 /** The DSH home the gallery lives under. */
@@ -140,28 +171,151 @@ async function keyOf(ctx, ref) {
 
 /**
  * Where an image request goes, and with what. Throws a readable message when
- * the plugin is not set up.
+ * the plugin is not set up. The panel's stored key wins over the provider's.
+ * @param {object} keys - `{read(): Promise<string>}` for the stored key.
  */
-export async function targetOf(ctx, settings, exec) {
-  const provider = providerFor(ctx, settings, exec);
+export async function targetOf(ctx, settings, exec, keys) {
+  const provider = settings.provider === 'custom' ? '' : providerFor(ctx, settings, exec);
   const profile = profileOf(ctx, provider);
   const baseURL = settings.baseURL || String(profile?.baseURL ?? '');
   if (settings.model === '') {
     throw new Error(
-      'No image model is configured. On the images plugin row in cordis.patch.yml set `model` to an image model your provider serves (for example gpt-image-1), and `provider` if it is not the session\'s own.',
+      'No image model is configured. Open the Images panel and pick one in Settings, or set `model` on the images plugin row in cordis.patch.yml.',
     );
   }
   if (baseURL === '') {
     throw new Error(
       provider === ''
-        ? 'No provider to send the image request to: set `provider` (and `model`) on the images plugin row.'
-        : `Provider "${provider}" has no baseURL the images plugin can read; set \`baseURL\` on the images plugin row.`,
+        ? 'No provider to send the image request to: set the base URL in the Images panel\'s Settings (or `provider` on the plugin row).'
+        : `Provider "${provider}" has no baseURL the images plugin can read; set one in the Images panel\'s Settings.`,
     );
   }
-  const ref = settings.apiKeyEnv || String(profile?.apiKeyEnv ?? '');
-  const apiKey = await keyOf(ctx, ref);
+  let apiKey = keys ? await keys.read() : '';
+  let keySource = apiKey !== '' ? 'stored' : '';
+  if (apiKey === '') {
+    const ref = settings.apiKeyEnv || String(profile?.apiKeyEnv ?? '');
+    apiKey = await keyOf(ctx, ref);
+    keySource = apiKey !== '' ? (settings.apiKeyEnv ? 'env' : 'provider') : 'none';
+  }
   const headers = profile?.headers && typeof profile.headers === 'object' ? { ...profile.headers } : {};
-  return { provider, model: settings.model, baseURL, apiKey, headers };
+  return { provider: provider || (settings.baseURL ? 'custom' : ''), model: settings.model, baseURL, apiKey, keySource, headers };
+}
+
+/** The last four characters of a key, for the panel to show which one is in use. */
+export function hintOf(key) {
+  const k = String(key ?? '');
+  return k.length < 6 ? (k === '' ? '' : '····') : `····${k.slice(-4)}`;
+}
+
+/**
+ * The stored API key: in the Harness credentials service when one is mounted,
+ * else a file only the user can read. The value never leaves the host.
+ */
+export function keyStore(ctx, dir) {
+  const file = join(dir, 'key.json');
+  const credentials = () => {
+    try {
+      const c = ctx.get('credentials');
+      return c && typeof c.set === 'function' && typeof c.resolve === 'function' ? c : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return {
+    async read() {
+      const c = credentials();
+      if (c) {
+        try {
+          const hit = await c.resolve(KEY_REF);
+          if (typeof hit?.value === 'string' && hit.value !== '') return hit.value;
+        } catch {
+          // Fall through to the file.
+        }
+      }
+      try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8'));
+        return typeof parsed?.key === 'string' ? parsed.key : '';
+      } catch {
+        return '';
+      }
+    },
+    async write(value) {
+      const key = String(value ?? '').trim();
+      const c = credentials();
+      if (key === '') {
+        if (c) {
+          for (const name of ['unset', 'delete', 'remove']) {
+            if (typeof c[name] === 'function') {
+              try {
+                await c[name](KEY_REF);
+                break;
+              } catch {
+                // Try the next spelling.
+              }
+            }
+          }
+        }
+        rmSync(file, { force: true });
+        return;
+      }
+      if (c) {
+        try {
+          await c.set(KEY_REF, key);
+          rmSync(file, { force: true });
+          return;
+        } catch {
+          // The file below.
+        }
+      }
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, JSON.stringify({ key }), { encoding: 'utf8', mode: 0o600 });
+      try {
+        chmodSync(file, 0o600);
+      } catch {
+        // Best effort on a filesystem without modes.
+      }
+    },
+  };
+}
+
+/**
+ * The provider's model list, image models first, with any per-image price it
+ * states. Throws with the provider's message when it refuses.
+ * @param {{baseURL: string, apiKey: string, headers: object}} target
+ */
+export async function listModels(target, signal) {
+  const base = String(target.baseURL).replace(/\/+$/, '');
+  const url = /\/v\d+[a-z]*$/i.test(base) ? `${base}/models` : `${base}/v1/models`;
+  const headers = { accept: 'application/json', ...target.headers };
+  if (target.apiKey) headers.authorization = `Bearer ${target.apiKey}`;
+  const res = await fetch(url, { headers, signal });
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  if (!res.ok) throw new Error(`${res.status}: ${json ? errorMessage(json) : text.slice(0, 200)}`);
+  const rows = Array.isArray(json?.data) ? json.data : Array.isArray(json?.models) ? json.models : Array.isArray(json) ? json : [];
+  const models = rows
+    .map((r) => {
+      const id = typeof r === 'string' ? r : String(r?.id ?? r?.name ?? '');
+      if (id === '') return null;
+      const record = typeof r === 'object' && r !== null ? r : {};
+      const outputs = record.modalities?.output ?? record.output_modalities ?? record.architecture?.output_modalities;
+      const imageOut = Array.isArray(outputs) && outputs.some((o) => String(o).toLowerCase() === 'image');
+      const price = providerPerImage(record);
+      return {
+        id,
+        name: typeof record.display_name === 'string' ? record.display_name : typeof record.name === 'string' && record.name !== id ? record.name : undefined,
+        isImage: imageOut || looksLikeImageModel(id),
+        ...(price ? { perImage: price } : {}),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => Number(b.isImage) - Number(a.isImage) || a.id.localeCompare(b.id));
+  return models;
 }
 
 /** Fetch bytes from a URL the provider returned. */
@@ -175,10 +329,10 @@ async function download(url, signal) {
  * Generate the images one call asks for, save them, and describe them.
  * @returns the tool's canonical value.
  */
-export async function generate(ctx, settings, store, args, exec) {
+export async function generate(ctx, settings, store, args, exec, keys, priceOf) {
   const prompt = String(args.prompt ?? '').trim();
   if (prompt === '') throw new Error('prompt must be a non-empty description of the image');
-  const target = await targetOf(ctx, settings, exec);
+  const target = await targetOf(ctx, settings, exec, keys);
   const body = buildRequest({
     model: target.model,
     prompt,
@@ -211,6 +365,17 @@ export async function generate(ctx, settings, store, args, exec) {
     throw new Error(`${target.provider || 'provider'} answered ${res.status}: ${json ? errorMessage(json) : text.slice(0, 300)}`);
   }
   const replies = parseReply(json);
+  const usage = json && typeof json === 'object' && json.usage && typeof json.usage === 'object' ? json.usage : undefined;
+  const cost = estimateCost({
+    model: target.model,
+    size: body.size ?? 'auto',
+    quality: body.quality ?? '',
+    n: replies.length,
+    usage,
+    providerRecord: priceOf ? priceOf(target.model) : undefined,
+    manual: settings.pricePerImage > 0 ? { amount: settings.pricePerImage, currency: settings.currency } : undefined,
+  });
+  const perImageCost = cost ? { amount: cost.perImage, currency: cost.currency, source: cost.source } : undefined;
 
   const attachments = ctx.get('attachments');
   const sessionId = String(exec?.agent?.session?.id ?? '');
@@ -245,6 +410,8 @@ export async function generate(ctx, settings, store, args, exec) {
       sessionId,
       createdAt: Date.now(),
       ...(ref ? { attachmentId: ref.attachmentId } : {}),
+      ...(perImageCost ? { cost: perImageCost } : {}),
+      ...(usage ? { usage } : {}),
     };
     store.add(item);
     images.push({
@@ -272,8 +439,18 @@ export async function generate(ctx, settings, store, args, exec) {
     model: target.model,
     prompt,
     ...(replies[0].revisedPrompt ? { revisedPrompt: replies[0].revisedPrompt } : {}),
+    ...(cost ? { cost: { amount: cost.amount, currency: cost.currency, source: cost.source } } : {}),
     images,
   };
+}
+
+/** `$0.13` / `¥0.20`, rounded to what matters. */
+export function fmtMoney(amount, currency) {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return '';
+  const sign = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : currency === 'EUR' ? '€' : `${currency} `;
+  const digits = n >= 1 ? 2 : n >= 0.01 ? 3 : 4;
+  return `${sign}${n.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '')}`;
 }
 
 /** The model-facing content of one result: a line per image, then the images themselves. */
@@ -283,7 +460,8 @@ export function renderResult(_args, value) {
     const dims = img.width && img.height ? `${img.width}×${img.height}` : 'unknown size';
     return `${images.length > 1 ? `Image ${i + 1}: ` : ''}${dims} ${img.mediaType}, saved at ${img.path}`;
   });
-  const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} image${images.length > 1 ? 's' : ''} with ${value.model}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked.`;
+  const spent = value?.cost ? ` (≈ ${fmtMoney(value.cost.amount, value.cost.currency)})` : '';
+  const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} image${images.length > 1 ? 's' : ''} with ${value.model}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked.`;
   const revised = value?.revisedPrompt ? `\nThe provider rewrote the prompt as: ${value.revisedPrompt}` : '';
   const blocks = [{ type: 'text', text: [head, ...lines].join('\n') + revised }];
   for (const img of images) {
@@ -292,8 +470,11 @@ export function renderResult(_args, value) {
   return blocks;
 }
 
-/** The tool definition. */
-export function buildTool(ctx, settings, store) {
+/**
+ * The tool definition. `runtime.settings` is read on every call, so what the
+ * panel saves applies to the next picture without a reload.
+ */
+export function buildTool(ctx, runtime, store, keys, priceOf) {
   return defineTool({
     name: TOOL_NAME,
     description:
@@ -313,6 +494,11 @@ export function buildTool(ctx, settings, store) {
           model: { type: 'string', required: true },
           prompt: { type: 'string', required: true },
           revisedPrompt: { type: 'string' },
+          cost: {
+            type: 'object',
+            additionalProperties: false,
+            properties: { amount: { type: 'number', required: true }, currency: { type: 'string', required: true }, source: { type: 'string', required: true } },
+          },
           images: {
             type: 'array',
             required: true,
@@ -336,10 +522,11 @@ export function buildTool(ctx, settings, store) {
         ids: (value?.images ?? []).map((img) => img.id),
         prompt: value?.prompt ?? '',
         model: value?.model ?? '',
+        ...(value?.cost ? { cost: value.cost } : {}),
       }),
     },
     isConcurrencySafe: () => true,
-    execute: (args, exec) => generate(ctx, settings, store, args, exec),
+    execute: (args, exec) => generate(ctx, runtime.settings, store, args, exec, keys, priceOf),
   });
 }
 
@@ -349,22 +536,31 @@ export function buildTool(ctx, settings, store) {
  * @param {unknown} config - the Loader row's config.
  */
 export function apply(ctx, config) {
-  const settings = settingsOf(config);
+  const base = settingsOf(config);
   const dir = join(homeDir(), 'cache', 'images');
   const store = createStore(dir);
   const enabledFile = join(dir, 'enabled.json');
-  const runtime = { enabled: settings.enabled };
-  try {
-    const saved = JSON.parse(readFileSync(enabledFile, 'utf8'));
-    if (typeof saved?.enabled === 'boolean') runtime.enabled = saved.enabled;
-  } catch {
-    // No saved toggle yet.
-  }
+  const settingsFile = join(dir, 'settings.json');
+  const keys = keyStore(ctx, dir);
+  const readJson = (file) => {
+    try {
+      return JSON.parse(readFileSync(file, 'utf8'));
+    } catch {
+      return {};
+    }
+  };
+  const runtime = { enabled: base.enabled, saved: readJson(settingsFile), settings: base };
+  runtime.settings = mergeSettings(base, runtime.saved);
+  if (typeof readJson(enabledFile).enabled === 'boolean') runtime.enabled = readJson(enabledFile).enabled;
+  // Per-image prices the provider stated for its models, from the last model listing.
+  const providerPrices = new Map();
+  const priceOf = (model) => providerPrices.get(model);
+  const settings = runtime.settings;
 
   let disposeTool = null;
   function mountTool() {
     if (disposeTool !== null || !runtime.enabled || typeof ctx.tools?.register !== 'function') return;
-    const dispose = ctx.tools.register(buildTool(ctx, settings, store));
+    const dispose = ctx.tools.register(buildTool(ctx, runtime, store, keys, priceOf));
     disposeTool = typeof dispose === 'function' ? dispose : () => {};
   }
   function unmountTool() {
@@ -399,7 +595,7 @@ export function apply(ctx, config) {
             return {
               kind: 'success',
               text: runtime.enabled
-                ? `images is on: the model can call ${TOOL_NAME}${settings.model ? ` (${settings.model})` : ' once a model is configured'}.`
+                ? `images is on: the model can call ${TOOL_NAME}${runtime.settings.model ? ` (${runtime.settings.model})` : ' once a model is configured'}.`
                 : `images is off: ${TOOL_NAME} is no longer offered to the model.`,
             };
           }
@@ -424,9 +620,10 @@ export function apply(ctx, config) {
         handler: (_req, res) =>
           serveJson(res, () => ({
             enabled: runtime.enabled,
-            model: settings.model,
-            provider: settings.provider,
+            model: runtime.settings.model,
+            provider: runtime.settings.provider,
             total: store.size(),
+            totals: totalsOf(store.list({ limit: 100_000 }).items),
           })),
       }),
     );
@@ -448,6 +645,135 @@ export function apply(ctx, config) {
         kind: 'prefix',
         path: FILE_ROUTE,
         handler: (req, res) => serveFile(store, req, res),
+      }),
+    );
+    /** How a model would be billed, for the panel while a model is being typed. */
+    const previewPrice = (model, size, quality) => {
+      const provider = priceOf(model);
+      const perImage = provider ? providerPerImage(provider) : undefined;
+      if (perImage) return { model, source: 'provider', perImage, family: familyOf(model) };
+      const family = familyOf(model);
+      const sizes = ['1024x1024', '1536x1024'];
+      const listed = family ? sizes.map((sz) => ({ size: sz, price: costFromList(family, sz, quality) })).filter((r) => r.price) : [];
+      if (listed.length > 0) {
+        const chosen = costFromList(family, size || runtime.settings.size, quality);
+        return { model, source: 'list', family, perImage: chosen, samples: listed, priceListDate: PRICE_LIST_DATE };
+      }
+      const manual = runtime.settings.pricePerImage > 0 ? { amount: runtime.settings.pricePerImage, currency: runtime.settings.currency } : undefined;
+      return { model, source: manual ? 'manual' : 'unknown', family, ...(manual ? { perImage: manual } : {}) };
+    };
+    /** What the panel's Settings shows: the values in force, where the key comes from, the providers to pick from. */
+    const describeSettings = async () => {
+      const s = runtime.settings;
+      let target = null;
+      let problem = '';
+      try {
+        target = await targetOf(ctx, s, undefined, keys);
+      } catch (error) {
+        problem = error?.message ?? String(error);
+      }
+      const stored = await keys.read();
+      const providers = [];
+      try {
+        const rows = ctx.get('settings')?.describe?.({ redactSecrets: true }) ?? [];
+        for (const row of rows) {
+          const list = row?.value?.providers;
+          if (!list || typeof list !== 'object') continue;
+          for (const [id, profile] of Object.entries(list)) {
+            providers.push({ id, name: String(profile?.displayName ?? id), baseURL: String(profile?.baseURL ?? ''), hasKey: Boolean(profile?.apiKeyEnv) });
+          }
+        }
+      } catch {
+        // No settings service: the panel offers a custom base URL only.
+      }
+      const items = store.list({ limit: 100_000 }).items;
+      const byModel = {};
+      for (const it of items) {
+        const row = (byModel[it.model] ??= { count: 0, totals: {} });
+        row.count += 1;
+        if (it.cost) row.totals[it.cost.currency] = (row.totals[it.cost.currency] ?? 0) + it.cost.amount;
+      }
+      return {
+        values: {
+          provider: s.provider,
+          baseURL: s.baseURL,
+          model: s.model,
+          size: s.size,
+          quality: s.quality,
+          pricePerImage: s.pricePerImage,
+          currency: s.currency,
+        },
+        defaults: { provider: base.provider, baseURL: base.baseURL, model: base.model, size: base.size, quality: base.quality },
+        effective: target
+          ? { provider: target.provider, baseURL: target.baseURL, model: target.model, keySource: target.keySource, keyHint: hintOf(target.apiKey) }
+          : { provider: '', baseURL: '', model: s.model, keySource: 'none', keyHint: '' },
+        problem,
+        storedKey: stored === '' ? null : hintOf(stored),
+        providers,
+        sessionProvider: providerFor(ctx, { ...s, provider: '' }, undefined),
+        priceListDate: PRICE_LIST_DATE,
+        stats: { total: items.length, totals: totalsOf(items), byModel },
+      };
+    };
+    scope.effect(() =>
+      webServer.register({
+        kind: 'exact',
+        path: SETTINGS_ROUTE,
+        handler: (req, res) => {
+          if (req.method === 'GET') {
+            const url = new URL(req.url ?? '/', 'http://localhost');
+            const model = url.searchParams.get('model');
+            if (model !== null) {
+              serveJson(res, () => previewPrice(model, url.searchParams.get('size') ?? '', url.searchParams.get('quality') ?? ''));
+              return;
+            }
+            serveJson(res, describeSettings);
+            return;
+          }
+          postJson(req, res, async (body) => {
+            const next = { ...runtime.saved };
+            for (const key of PANEL_FIELDS) {
+              if (!(key in body)) continue;
+              const value = body[key];
+              if (value === null || value === '') delete next[key];
+              else if (key === 'pricePerImage') {
+                const n = Number(value);
+                if (Number.isFinite(n) && n >= 0) next[key] = n;
+              } else next[key] = String(value).trim();
+            }
+            if ('apiKey' in body) await keys.write(body.apiKey === null ? '' : String(body.apiKey));
+            runtime.saved = next;
+            runtime.settings = mergeSettings(base, next);
+            try {
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(settingsFile, JSON.stringify(next, null, 2), 'utf8');
+            } catch {
+              // The change still applies to this process.
+            }
+            return { ok: true, ...(await describeSettings()) };
+          });
+        },
+      }),
+    );
+    /** The provider's models, for the picker; also the connection test. Draft values may be sent. */
+    scope.effect(() =>
+      webServer.register({
+        kind: 'exact',
+        path: MODELS_ROUTE,
+        handler: (req, res) => {
+          postJson(req, res, async (body) => {
+            const draft = mergeSettings(runtime.settings, { provider: body.provider, baseURL: body.baseURL, model: 'x' });
+            const draftKeys = typeof body.apiKey === 'string' && body.apiKey.trim() !== '' ? { read: async () => body.apiKey.trim() } : keys;
+            try {
+              const target = await targetOf(ctx, draft, undefined, draftKeys);
+              const models = await listModels(target, AbortSignal.timeout(20_000));
+              for (const m of models) if (m.perImage) providerPrices.set(m.id, { pricing: { per_image: m.perImage.amount, currency: m.perImage.currency } });
+              return { ok: true, baseURL: target.baseURL, keySource: target.keySource, models };
+            } catch (error) {
+              return { ok: false, reason: error?.message ?? String(error) };
+            }
+          });
+        },
       }),
     );
     scope.effect(() =>

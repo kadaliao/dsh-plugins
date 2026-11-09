@@ -28,7 +28,7 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 
 | Plugin | What it does |
 | --- | --- |
-| [Images](plugins/images) · 0.1.0 | Ask for a picture and get one: a `generate_image` tool for the model, backed by your provider's image model, with the picture shown in the conversation and an **Images** panel collecting everything drawn as a gallery to browse, enlarge and download. |
+| [Images](plugins/images) · 0.2.0 | Ask for a picture and get one: a `generate_image` tool for the model, backed by your provider's image model, with the picture shown in the conversation and an **Images** panel collecting everything drawn as a gallery to browse, enlarge and download. A settings drawer picks the provider, key and model, and every picture shows what it cost. |
 | [Prompt EN](plugins/prompt-en) · 0.2.0 | English under every prompt: a translation when you write in another language, or a review with corrections and better alternatives when you write in English. What it teaches goes into a vocabulary book you review with `/vocab`. |
 
 More plugins are added here as they are ready. Each one installs and is versioned on its own, and

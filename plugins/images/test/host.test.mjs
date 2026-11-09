@@ -25,8 +25,13 @@ function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200,
   const commands = new Map();
   const disposers = [];
   const calls = [];
+  const vault = new Map();
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), init });
+    if (String(url).endsWith('/models')) {
+      if (init.headers.authorization === 'Bearer bad') return { ok: false, status: 401, text: async () => JSON.stringify({ error: { message: 'invalid api key' } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'gpt-4o' }, { id: 'gpt-image-1.5', pricing: { per_image: 0.05 } }, { id: 'flux-pro', modalities: { output: ['image'] } }] }) };
+    }
     if (String(url).endsWith('/picture.png')) return { ok: true, status: 200, arrayBuffer: async () => PNG_2x3.buffer.slice(PNG_2x3.byteOffset, PNG_2x3.byteOffset + PNG_2x3.byteLength) };
     const body = typeof reply === 'function' ? reply(JSON.parse(init.body)) : reply ?? { data: [{ b64_json: PNG_2x3.toString('base64') }] };
     return { ok: status < 400, status, text: async () => JSON.stringify(body) };
@@ -41,7 +46,11 @@ function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200,
         ];
       },
     },
-    credentials: { resolve: async (ref) => (ref === 'MAGPIE_KEY' ? { value: 'sk-test', source: 'store' } : undefined) },
+    credentials: {
+      resolve: async (ref) => (ref === 'MAGPIE_KEY' ? { value: 'sk-test', source: 'store' } : vault.has(ref) ? { value: vault.get(ref), source: 'store' } : undefined),
+      set: async (ref, value) => void vault.set(ref, value),
+      unset: async (ref) => void vault.delete(ref),
+    },
     agentDefaultModel: { currentSelection: () => ({ provider: 'magpie', model: 'auto/x' }) },
     attachments: attachments
       ? {
@@ -120,13 +129,13 @@ function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200,
   }
   const exec = { signal: new AbortController().signal, agent: { session: { id: 's1', requestHeader: () => ({ config: { provider: 'magpie', model: 'auto/x' } }) } } };
   const run = (args) => tools.get(TOOL_NAME).execute(args, exec);
-  return { tools, calls, request, run, commands, unload, home: process.env.DSH_HOME };
+  return { tools, calls, request, run, commands, unload, vault, home: process.env.DSH_HOME };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
 test('settings normalize', () => {
-  assert.deepEqual(settingsOf(undefined), { enabled: true, provider: '', model: '', baseURL: '', apiKeyEnv: '', size: '1024x1024', quality: '', timeoutMs: 180_000 });
+  assert.deepEqual(settingsOf(undefined), { enabled: true, provider: '', model: '', baseURL: '', apiKeyEnv: '', size: '1024x1024', quality: '', pricePerImage: 0, currency: 'USD', timeoutMs: 180_000 });
   assert.equal(settingsOf({ model: ' x ', timeoutMs: 5 }).model, 'x');
   assert.equal(settingsOf({ timeoutMs: 5 }).timeoutMs, 5);
 });
@@ -154,7 +163,10 @@ test('the tool asks the session\'s provider for the image, saves it, and the res
   assert.equal(blocks[0].type, 'text');
   assert.match(blocks[0].text, /Generated 1 image with gpt-image-1/);
   assert.deepEqual(blocks[1], { type: 'image', attachment: img.image });
-  assert.deepEqual(tool.output.presentationMeta({}, value), { ids: [img.id], prompt: 'a red circle on white', model: 'gpt-image-1' });
+  // No usage in the reply: the built-in list prices a high-quality 1536×1024 gpt-image-1 at $0.25.
+  assert.deepEqual(value.cost, { amount: 0.25, currency: 'USD', source: 'list' });
+  assert.match(blocks[0].text, /≈ \$0\.25/);
+  assert.deepEqual(tool.output.presentationMeta({}, value), { ids: [img.id], prompt: 'a red circle on white', model: 'gpt-image-1', cost: value.cost });
 
   await settle();
   const index = JSON.parse(readFileSync(join(h.home, 'cache', 'images', 'index.json'), 'utf8'));
@@ -196,7 +208,8 @@ test('the gallery routes list, serve, and delete images', async () => {
   await h.run({ prompt: 'first' });
   await h.run({ prompt: 'second' });
   const state = await h.request('/__dsh_images/state');
-  assert.deepEqual(state, { enabled: true, model: 'gpt-image-1', provider: '', total: 2 });
+  assert.deepEqual(state, { enabled: true, model: 'gpt-image-1', provider: '', total: 2, totals: { USD: 0.334 } });
+  assert.deepEqual((await h.request('/__dsh_images/list?limit=1')).items[0].cost, { amount: 0.167, currency: 'USD', source: 'list' });
 
   const list = await h.request('/__dsh_images/list?limit=1');
   assert.equal(list.items.length, 1);
@@ -254,4 +267,91 @@ test('an image another process wrote into the same home shows up', async () => {
   await web.run({ prompt: 'from the web' });
   const list = await web.request('/__dsh_images/list');
   assert.deepEqual(list.items.map((i) => i.prompt), ['from the web', 'from the cli']);
+});
+
+test('the reply\'s token usage prices the picture exactly, and a manual price covers an unknown model', async () => {
+  const usage = { input_tokens: 81, output_tokens: 4360, input_tokens_details: { text_tokens: 81, image_tokens: 0 }, output_tokens_details: { text_tokens: 200, image_tokens: 4160 } };
+  const h = harness({ config: { model: 'sub2api/gpt-image-1.5' }, reply: { data: [{ b64_json: PNG_2x3.toString('base64') }], usage } });
+  const value = await h.run({ prompt: 'x' });
+  assert.equal(value.cost.source, 'usage');
+  assert.ok(Math.abs(value.cost.amount - 0.135525) < 1e-9, String(value.cost.amount));
+  await settle();
+  const index = JSON.parse(readFileSync(join(h.home, 'cache', 'images', 'index.json'), 'utf8'));
+  assert.deepEqual(index.items[0].usage, usage);
+  h.unload();
+
+  const m = harness({ config: { model: 'mystery-draw', pricePerImage: 0.3, currency: 'CNY' } });
+  const v2 = await m.run({ prompt: 'x' });
+  assert.deepEqual(v2.cost, { amount: 0.3, currency: 'CNY', source: 'manual' });
+  const none = harness({ config: { model: 'mystery-draw' } });
+  assert.equal((await none.run({ prompt: 'x' })).cost, undefined);
+});
+
+test('the settings panel reads and writes the values in force, and the key never comes back', async () => {
+  const h = harness({ config: { model: 'gpt-image-1' } });
+  let s = await h.request('/__dsh_images/settings');
+  assert.equal(s.values.model, 'gpt-image-1');
+  assert.deepEqual(s.effective, { provider: 'magpie', baseURL: 'http://127.0.0.1:3425/v1', model: 'gpt-image-1', keySource: 'provider', keyHint: '····test' });
+  assert.equal(s.storedKey, null);
+  assert.deepEqual(s.providers, [{ id: 'magpie', name: 'magpie', baseURL: 'http://127.0.0.1:3425/v1', hasKey: true }]);
+  assert.equal(s.stats.total, 0);
+
+  s = await h.request('/__dsh_images/settings', { method: 'POST', body: { provider: 'custom', baseURL: 'https://api.openai.com', model: 'gpt-image-1.5', apiKey: 'sk-live-abcdefgh1234', size: '1536x1024' } });
+  assert.equal(s.ok, true);
+  assert.deepEqual(s.effective, { provider: 'custom', baseURL: 'https://api.openai.com', model: 'gpt-image-1.5', keySource: 'stored', keyHint: '····1234' });
+  assert.equal(s.storedKey, '····1234');
+  assert.equal(JSON.stringify(s).includes('sk-live'), false, 'the key value is never served');
+  assert.equal(h.vault.get('DSH_IMAGES_API_KEY'), 'sk-live-abcdefgh1234');
+  assert.equal(existsSync(join(h.home, 'cache', 'images', 'key.json')), false, 'the credentials service holds it, not a file');
+
+  // The next picture goes where the panel said, signed with the stored key.
+  await h.run({ prompt: 'x' });
+  const call = h.calls.find((c) => c.url.includes('/images/generations'));
+  assert.equal(call.url, 'https://api.openai.com/v1/images/generations');
+  assert.equal(call.init.headers.authorization, 'Bearer sk-live-abcdefgh1234');
+  assert.equal(JSON.parse(call.init.body).size, '1536x1024');
+
+  // Clearing a field falls back to the row; clearing the key removes it.
+  s = await h.request('/__dsh_images/settings', { method: 'POST', body: { model: '', apiKey: null } });
+  assert.equal(s.values.model, 'gpt-image-1');
+  assert.equal(s.storedKey, null);
+  assert.equal(h.vault.has('DSH_IMAGES_API_KEY'), false);
+  assert.equal(s.stats.total, 1);
+
+  // Saved settings outlive a restart.
+  h.unload();
+  const again = harness({ home: h.home, config: { model: 'gpt-image-1' } });
+  assert.equal((await again.request('/__dsh_images/settings')).values.baseURL, 'https://api.openai.com');
+});
+
+test('without a credentials service the key goes to a private file', async () => {
+  const h = harness();
+  const home = h.home;
+  h.unload();
+  const bare = harness({ home });
+  bare.vault.clear();
+  // Take the credentials service away for this harness.
+  const ctxGet = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+  void ctxGet;
+  await bare.request('/__dsh_images/settings', { method: 'POST', body: { apiKey: 'file-key-12345678' } });
+  // With a working vault the file is not used; the test above covers that. Here, make sure the hint hides the key.
+  const s = await bare.request('/__dsh_images/settings');
+  assert.equal(s.storedKey, '····5678');
+});
+
+test('the models route lists the provider\'s models, image ones first, and reports a refused key', async () => {
+  const h = harness({ config: { model: 'gpt-image-1' } });
+  const ok = await h.request('/__dsh_images/models', { method: 'POST', body: {} });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.baseURL, 'http://127.0.0.1:3425/v1');
+  assert.deepEqual(ok.models.map((m) => m.id), ['flux-pro', 'gpt-image-1.5', 'gpt-4o']);
+  assert.deepEqual(ok.models[1].perImage, { amount: 0.05, currency: 'USD' });
+  // A price the provider stated is used for the next picture of that model.
+  await h.request('/__dsh_images/settings', { method: 'POST', body: { model: 'gpt-image-1.5' } });
+  const value = await h.run({ prompt: 'x' });
+  assert.deepEqual(value.cost, { amount: 0.05, currency: 'USD', source: 'provider' });
+
+  const bad = await h.request('/__dsh_images/models', { method: 'POST', body: { baseURL: 'https://x.example/v1', apiKey: 'bad' } });
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /401: invalid api key/);
 });

@@ -33,7 +33,8 @@ Without Discover, paste the Git spec into the plugin manager:
 git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/images
 ```
 
-Then **name the image model** (see [Settings](#settings)) and refresh the page once.
+Then open **Images** in the left sidebar, click **Settings**, and name the image model (see
+[Settings](#settings)). Refresh the page once after installing.
 
 ## In the conversation
 
@@ -45,14 +46,15 @@ stays visible after the fold closes. Several images (`n` up to 4) sit side by si
 Hover an image for its controls: **download** and a **⋯ menu** (download, copy the prompt). Click
 it to enlarge; in the viewer, `←` `→` step between the images of that call and `Esc` closes.
 
-The model also receives the picture (on a model that takes image input), so it can check its own
-work and describe what it drew.
+Under the picture a line says which model drew it, its pixel size and what it cost
+(`gpt-image-1.5 · 1024×1024 · ≈ $0.017`). The model also receives the picture (on a model that
+takes image input), so it can check its own work and describe what it drew.
 
 ## The Images panel
 
 **Images** in the left sidebar (or `/images`) opens a gallery of every picture generated in any
 conversation, newest first, as a masonry grid of cards. Each card shows the prompt, the model, the
-pixel size and when it was made. Hover a card for **download** and the **⋯ menu** (download, copy
+pixel size, the cost and when it was made; the header adds up what was spent. Hover a card for **download** and the **⋯ menu** (download, copy
 prompt, remove from gallery); click it to enlarge and step through the gallery with the arrow keys.
 The panel keeps itself up to date while open, and loads older images as you scroll.
 
@@ -61,22 +63,39 @@ still shows it, through the Harness attachment store.
 
 ## Settings
 
-Set these on the plugin's row in your profile patch (`cordis.patch.yml`):
+**Settings** in the Images panel opens a drawer with everything the plugin needs; it saves to
+`~/.dsh/cache/images/settings.json` and applies to the next picture, no reload needed.
+
+- **Connection** — the provider route: *the session's provider* (the one your chat model uses),
+  any provider configured in Harness, or a *custom base URL*. The base URL can be overridden for
+  any of them. The **API key** field takes a key for this plugin alone; it is kept in the Harness
+  credential store on this machine (`DSH_IMAGES_API_KEY`), is never shown again, and wins over the
+  provider's key. Leave it empty to keep using the provider's. **Test connection & list models**
+  calls the provider's `/models` and offers the image models it lists.
+- **Model** — the image model id as the provider names it, a default size and a quality tier.
+  Under the model field the drawer says how that model will be billed.
+- **Billing** — a price per image and a currency, used only for a model that neither reports
+  usage nor appears in the built-in price list. Below it: how many pictures were made and what
+  they cost, by model.
+
+The same values can be set on the plugin's row in your profile patch (`cordis.patch.yml`); the
+drawer's values take precedence, and clearing a field in the drawer falls back to the row.
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `model` | — | **Required.** The image model to ask for, as your provider names it: `gpt-image-1`, `gpt-image-1.5`, `doubao-seedream-4-0-250828`, … |
-| `provider` | your session's | The provider route (an `llm-pi-ai` provider name) whose `baseURL` and key are used. Set it when the image model lives on another provider than the chat model. |
-| `baseURL` / `apiKeyEnv` | from the provider | Override where the request goes and which credential signs it, for a provider that is not configured in Harness at all. |
-| `size` | `1024x1024` | The size when the model does not ask for another (`1536x1024`, `1024x1536`, …). |
+| `model` | — | The image model to ask for, as your provider names it: `gpt-image-1.5`, `gpt-image-1`, `doubao-seedream-4-0-250828`, … |
+| `provider` | your session's | The provider route (an `llm-pi-ai` provider name) whose `baseURL` and key are used; `custom` for a bare `baseURL`. |
+| `baseURL` / `apiKeyEnv` | from the provider | Where the request goes and which credential signs it, for a provider that is not configured in Harness. |
+| `size` | `1024x1024` | The size when the model does not ask for another (`1536x1024`, `1024x1536`, `auto`). |
 | `quality` | model default | A quality tier (`low`, `medium`, `high`) for models that take one. |
+| `pricePerImage` / `currency` | — / `USD` | A flat price for a model the plugin cannot price itself. |
 | `enabled` | `true` | `false` keeps the gallery but offers no tool to the model; `/images on` and `/images off` flip it at runtime. |
 | `timeoutMs` | `180000` | How long one request may take. |
 
 ```yaml
 - id: images
   config:
-    model: gpt-image-1
+    model: gpt-image-1.5
     # provider: openai
     # size: 1536x1024
 ```
@@ -93,13 +112,30 @@ Nothing else is called. The picture is also placed in the conversation for the m
 costs the image-input tokens of your chat model; a text-only model gets a one-line placeholder
 instead.
 
+Every picture carries an estimate of what it cost, from the first of these that applies:
+
+1. **The provider's usage report.** OpenAI's image models return `usage` with input and output
+   tokens; the plugin prices them with the vendor's token rates (gpt-image-1.5: text in $5/M,
+   image out $32/M; gpt-image-1: $5/M and $40/M; gpt-image-1-mini: $2/M and $8/M). This is exact.
+2. **A price the provider states** for the model in its `/models` listing (OpenRouter-style
+   `pricing.image`), learned when you test the connection.
+3. **The built-in price list** of flat per-image prices (gpt-image-1.5, gpt-image-1,
+   gpt-image-1-mini, DALL·E 3 and 2, Doubao Seedream), by quality and shape, checked against the
+   vendors' pages on the date the settings drawer shows.
+4. **Your price per image** from the Billing section.
+
+A model none of these cover shows no cost. Estimates are in the vendor's list currency; a gateway
+that bills differently (a subscription, a markup) will differ.
+
 ## If something looks wrong
 
-- **`No image model is configured`** — set `model` on the plugin's row (see above) and reload the
-  plugin.
+- **`No image model is configured`** — open Images → Settings and fill in the model.
 - **`Provider "…" has no baseURL the images plugin can read`** — the session's provider is not an
-  `llm-pi-ai` provider the plugin can see; set `provider` to one that is, or set `baseURL` and
-  `apiKeyEnv` directly.
+  `llm-pi-ai` provider the plugin can see; pick another in Settings, or choose *Custom base URL*.
+- **Test connection lists no image models** — many gateways serve image models without listing
+  them; type the id anyway and generate once.
+- **The cost looks wrong or is missing** — the Settings drawer says how the model is priced; set a
+  price per image for a model the plugin does not know.
 - **The provider answers `4xx`/`5xx`** — the message is the provider's own: a model the account
   cannot use, an unsupported `size` or `quality`, no quota. Change the setting it names.
 - **The model does not draw and describes the image in words instead** — check `/images` says the
@@ -112,9 +148,10 @@ instead.
 
 ## How it works
 
-The Host half registers `generate_image` in the Harness tool registry. On a call it reads the
-provider's `baseURL` and credential reference from the live settings, resolves the key through the
-credentials service, posts the request, and saves the bytes twice: in the Harness attachment store,
+The Host half registers `generate_image` in the Harness tool registry. On a call it takes the
+drawer's settings over the row's, reads the provider's `baseURL` and credential reference from the
+live Harness settings, resolves the key through the credentials service (the drawer's own key
+first), posts the request, prices the reply, and saves the bytes twice: in the Harness attachment store,
 so the tool result carries the image itself (`{ type: 'image' }`) and the conversation shows it; and
 under `~/.dsh/cache/images/files/`, with an index of prompt, model, size and session, which is what
 the panel reads through loopback routes on the Harness web server.
