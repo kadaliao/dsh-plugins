@@ -16,7 +16,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildRequest, dimensionsOf, extensionOf, imagesEndpoint, parseReply, errorMessage, sniffMediaType, SIZES } from './lib/provider.mjs';
-import { costFromList, estimateCost, familyOf, looksLikeImageModel, providerPerImage, totalsOf, PRICE_LIST_DATE } from './lib/pricing.mjs';
+import { costFromList, estimateCost, familyOf, knownFamily, looksLikeImageModel, providerPerImage, totalsOf, PRICE_LIST_DATE } from './lib/pricing.mjs';
+import { catalogNames, catalogPerImage, createCatalog, lookupCatalog } from './lib/catalog.mjs';
 import { createStore, newId } from './lib/store.mjs';
 
 // The registry wants the compiled definition `defineTool` makes. Outside a
@@ -41,11 +42,15 @@ const DELETE_ROUTE = '/__dsh_images/delete';
 const STATE_ROUTE = '/__dsh_images/state';
 const SETTINGS_ROUTE = '/__dsh_images/settings';
 const MODELS_ROUTE = '/__dsh_images/models';
+const CATALOG_ROUTE = '/__dsh_images/catalog';
 
 /** The credential reference the stored API key lives under. */
 export const KEY_REF = 'DSH_IMAGES_API_KEY';
 /** Fields the settings panel may set; everything else on the row stays as configured. */
 const PANEL_FIELDS = ['provider', 'baseURL', 'model', 'size', 'quality', 'pricePerImage', 'currency'];
+
+/** How long a picture's price waits for a first catalog download. */
+const CATALOG_WAIT_MS = 8000;
 
 /** An image request that has not answered by then is given up. */
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -70,6 +75,8 @@ export function settingsOf(config) {
     quality: str(c.quality),
     pricePerImage: Number.isFinite(Number(c.pricePerImage)) && Number(c.pricePerImage) > 0 ? Number(c.pricePerImage) : 0,
     currency: str(c.currency).toUpperCase() || 'USD',
+    // '' for the LiteLLM catalog, 'off' for none, or the URL of a file in its format.
+    priceCatalog: c.priceCatalog === false ? 'off' : str(c.priceCatalog),
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS,
   };
 }
@@ -329,7 +336,7 @@ async function download(url, signal) {
  * Generate the images one call asks for, save them, and describe them.
  * @returns the tool's canonical value.
  */
-export async function generate(ctx, settings, store, args, exec, keys, priceOf) {
+export async function generate(ctx, settings, store, args, exec, keys, priceOf, catalog) {
   const prompt = String(args.prompt ?? '').trim();
   if (prompt === '') throw new Error('prompt must be a non-empty description of the image');
   const target = await targetOf(ctx, settings, exec, keys);
@@ -366,13 +373,20 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf) 
   }
   const replies = parseReply(json);
   const usage = json && typeof json === 'object' && json.usage && typeof json.usage === 'object' ? json.usage : undefined;
+  const providerRecord = priceOf ? priceOf(target.model) : undefined;
+  // The catalog is only asked for a model nothing closer can price.
+  const catalogMatch =
+    catalog && !knownFamily(familyOf(target.model)) && !providerPerImage(providerRecord)
+      ? lookupCatalog(await catalog.ensure(CATALOG_WAIT_MS), target.model)
+      : undefined;
   const cost = estimateCost({
     model: target.model,
     size: body.size ?? 'auto',
     quality: body.quality ?? '',
     n: replies.length,
     usage,
-    providerRecord: priceOf ? priceOf(target.model) : undefined,
+    providerRecord,
+    catalog: catalogMatch,
     manual: settings.pricePerImage > 0 ? { amount: settings.pricePerImage, currency: settings.currency } : undefined,
   });
   const perImageCost = cost ? { amount: cost.perImage, currency: cost.currency, source: cost.source } : undefined;
@@ -474,7 +488,7 @@ export function renderResult(_args, value) {
  * The tool definition. `runtime.settings` is read on every call, so what the
  * panel saves applies to the next picture without a reload.
  */
-export function buildTool(ctx, runtime, store, keys, priceOf) {
+export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
   return defineTool({
     name: TOOL_NAME,
     description:
@@ -526,7 +540,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf) {
       }),
     },
     isConcurrencySafe: () => true,
-    execute: (args, exec) => generate(ctx, runtime.settings, store, args, exec, keys, priceOf),
+    execute: (args, exec) => generate(ctx, runtime.settings, store, args, exec, keys, priceOf, catalog),
   });
 }
 
@@ -555,12 +569,17 @@ export function apply(ctx, config) {
   // Per-image prices the provider stated for its models, from the last model listing.
   const providerPrices = new Map();
   const priceOf = (model) => providerPrices.get(model);
+  // The public price list for models nothing else prices; fetched on first need.
+  const catalog = createCatalog(dir, {
+    enabled: base.priceCatalog !== 'off',
+    sources: /^https?:\/\//i.test(base.priceCatalog) ? [base.priceCatalog] : undefined,
+  });
   const settings = runtime.settings;
 
   let disposeTool = null;
   function mountTool() {
     if (disposeTool !== null || !runtime.enabled || typeof ctx.tools?.register !== 'function') return;
-    const dispose = ctx.tools.register(buildTool(ctx, runtime, store, keys, priceOf));
+    const dispose = ctx.tools.register(buildTool(ctx, runtime, store, keys, priceOf, catalog));
     disposeTool = typeof dispose === 'function' ? dispose : () => {};
   }
   function unmountTool() {
@@ -648,7 +667,7 @@ export function apply(ctx, config) {
       }),
     );
     /** How a model would be billed, for the panel while a model is being typed. */
-    const previewPrice = (model, size, quality) => {
+    const previewPrice = async (model, size, quality) => {
       const provider = priceOf(model);
       const perImage = provider ? providerPerImage(provider) : undefined;
       if (perImage) return { model, source: 'provider', perImage, family: familyOf(model) };
@@ -660,7 +679,25 @@ export function apply(ctx, config) {
         return { model, source: 'list', family, perImage: chosen, samples: listed, priceListDate: PRICE_LIST_DATE };
       }
       const manual = runtime.settings.pricePerImage > 0 ? { amount: runtime.settings.pricePerImage, currency: runtime.settings.currency } : undefined;
-      return { model, source: manual ? 'manual' : 'unknown', family, ...(manual ? { perImage: manual } : {}) };
+      const match = knownFamily(family) ? undefined : lookupCatalog(await catalog.ensure(15_000), model);
+      if (match) {
+        const flat = catalogPerImage(match, size || runtime.settings.size, quality);
+        return {
+          model,
+          source: 'catalog',
+          family,
+          catalog: {
+            name: match.name,
+            provider: match.provider,
+            approximate: match.approximate,
+            ...(match.tokens ? { tokens: { textIn: match.tokens.textIn, imageOut: match.tokens.imageOut } } : {}),
+            ...(flat ? { perImage: flat } : {}),
+            fetchedAt: catalog.status().fetchedAt,
+          },
+          ...(manual ? { manual } : {}),
+        };
+      }
+      return { model, source: manual ? 'manual' : 'unknown', family, ...(manual ? { perImage: manual } : {}), catalogError: catalog.status().error };
     };
     /** What the panel's Settings shows: the values in force, where the key comes from, the providers to pick from. */
     const describeSettings = async () => {
@@ -712,6 +749,7 @@ export function apply(ctx, config) {
         providers,
         sessionProvider: providerFor(ctx, { ...s, provider: '' }, undefined),
         priceListDate: PRICE_LIST_DATE,
+        catalog: catalog.status(),
         stats: { total: items.length, totals: totalsOf(items), byModel },
       };
     };
@@ -772,6 +810,27 @@ export function apply(ctx, config) {
             } catch (error) {
               return { ok: false, reason: error?.message ?? String(error) };
             }
+          });
+        },
+      }),
+    );
+    /** The catalog's image models for the picker, and its state; POST `{refresh: true}` downloads it again. */
+    const catalogView = () => ({ status: catalog.status(), names: catalogNames(catalog.current()) });
+    scope.effect(() =>
+      webServer.register({
+        kind: 'exact',
+        path: CATALOG_ROUTE,
+        handler: (req, res) => {
+          if (req.method === 'GET') {
+            serveJson(res, async () => {
+              await catalog.ensure(15_000);
+              return catalogView();
+            });
+            return;
+          }
+          postJson(req, res, async (body) => {
+            if (body.refresh === true) await catalog.refresh(true);
+            return { ok: true, ...catalogView() };
           });
         },
       }),

@@ -73,10 +73,14 @@ still shows it, through the Harness attachment store.
   provider's key. Leave it empty to keep using the provider's. **Test connection & list models**
   calls the provider's `/models` and offers the image models it lists.
 - **Model** — the image model id as the provider names it, a default size and a quality tier.
-  Under the model field the drawer says how that model will be billed.
+  The model field searches as you type: models you used before, the provider's listing (after
+  **Test connection**) and the image models in the [LiteLLM price list](#cost). Letters may be
+  skipped (`img26` finds `gpt-image-2.6-sunburst`), and price-list names take the routing prefix
+  the field already has (`sub2api/`), or the one you type. Any other id can still be typed. Under
+  the field the drawer says how that model will be billed.
 - **Billing** — a price per image and a currency, used only for a model that neither reports
-  usage nor appears in the built-in price list. Below it: how many pictures were made and what
-  they cost, by model.
+  usage nor appears in any price list. Below it: the state of the LiteLLM price list, with
+  **Update**, and how many pictures were made and what they cost, by model.
 
 The same values can be set on the plugin's row in your profile patch (`cordis.patch.yml`); the
 drawer's values take precedence, and clearing a field in the drawer falls back to the row.
@@ -89,6 +93,7 @@ drawer's values take precedence, and clearing a field in the drawer falls back t
 | `size` | `1024x1024` | The size when the model does not ask for another (`1536x1024`, `1024x1536`, `auto`). |
 | `quality` | model default | A quality tier (`low`, `medium`, `high`) for models that take one. |
 | `pricePerImage` / `currency` | — / `USD` | A flat price for a model the plugin cannot price itself. |
+| `priceCatalog` | LiteLLM | The fallback price list: `false` for none, or the URL of another file in LiteLLM's format. |
 | `enabled` | `true` | `false` keeps the gallery but offers no tool to the model; `/images on` and `/images off` flip it at runtime. |
 | `timeoutMs` | `180000` | How long one request may take. |
 
@@ -108,7 +113,7 @@ gateways that route many vendors behind one base URL. The reply may carry the im
 ## Cost
 
 Each call is one request to the image model, billed by your provider like any image generation.
-Nothing else is called. The picture is also placed in the conversation for the model to see, which
+The only other request the plugin makes is the price-list download described below. The picture is also placed in the conversation for the model to see, which
 costs the image-input tokens of your chat model; a text-only model gets a one-line placeholder
 instead.
 
@@ -116,13 +121,26 @@ Every picture carries an estimate of what it cost, from the first of these that 
 
 1. **The provider's usage report.** OpenAI's image models return `usage` with input and output
    tokens; the plugin prices them with the vendor's token rates (gpt-image-1.5: text in $5/M,
-   image out $32/M; gpt-image-1: $5/M and $40/M; gpt-image-1-mini: $2/M and $8/M). This is exact.
+   image out $32/M; gpt-image-1: $5/M and $40/M; gpt-image-1-mini: $2/M and $8/M). Newer models
+   take their rates from the LiteLLM price list (gpt-image-2.6-sunburst: $5/M and $30/M). This is
+   exact.
 2. **A price the provider states** for the model in its `/models` listing (OpenRouter-style
    `pricing.image`), learned when you test the connection.
 3. **The built-in price list** of flat per-image prices (gpt-image-1.5, gpt-image-1,
    gpt-image-1-mini, DALL·E 3 and 2, Doubao Seedream), by quality and shape, checked against the
    vendors' pages on the date the settings drawer shows.
-4. **Your price per image** from the Billing section.
+4. **The LiteLLM price list**'s per-image price, for a model none of the above know (Grok Imagine,
+   FLUX, Gemini image models, …).
+5. **Your price per image** from the Billing section.
+
+The LiteLLM price list is LiteLLM's public
+[`model_prices_and_context_window.json`](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), which
+many gateways bill by. The plugin downloads it the first time a model needs it (from GitHub, or
+the jsDelivr mirror), keeps its image models in `~/.dsh/cache/images/price-catalog.json`, and
+refreshes it once a week. A model id is looked up without its routing prefix
+(`sub2api/gpt-image-2.6-sunburst` → `gpt-image-2.6-sunburst`), with the vendor's own price
+preferred over a reseller's. Nothing about you or your prompts is sent; set `priceCatalog: false`
+to skip it.
 
 A model none of these cover shows no cost. Estimates are in the vendor's list currency; a gateway
 that bills differently (a subscription, a markup) will differ.
@@ -135,7 +153,9 @@ that bills differently (a subscription, a markup) will differ.
 - **Test connection lists no image models** — many gateways serve image models without listing
   them; type the id anyway and generate once.
 - **The cost looks wrong or is missing** — the Settings drawer says how the model is priced; set a
-  price per image for a model the plugin does not know.
+  price per image for a model no price list knows.
+- **The LiteLLM price list could not be downloaded** — the plugin needs `raw.githubusercontent.com`
+  or `cdn.jsdelivr.net`; press **Download** under Billing to try again, or set a price per image.
 - **The provider answers `4xx`/`5xx`** — the message is the provider's own: a model the account
   cannot use, an unsupported `size` or `quality`, no quota. Change the setting it names.
 - **The model does not draw and describes the image in words instead** — check `/images` says the
@@ -151,7 +171,8 @@ that bills differently (a subscription, a markup) will differ.
 The Host half registers `generate_image` in the Harness tool registry. On a call it takes the
 drawer's settings over the row's, reads the provider's `baseURL` and credential reference from the
 live Harness settings, resolves the key through the credentials service (the drawer's own key
-first), posts the request, prices the reply, and saves the bytes twice: in the Harness attachment store,
+first), posts the request, prices the reply (looking the model up in the cached LiteLLM list when
+nothing closer knows it), and saves the bytes twice: in the Harness attachment store,
 so the tool result carries the image itself (`{ type: 'image' }`) and the conversation shows it; and
 under `~/.dsh/cache/images/files/`, with an index of prompt, model, size and session, which is what
 the panel reads through loopback routes on the Harness web server.

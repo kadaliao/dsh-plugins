@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test, { afterEach } from 'node:test';
 
 import { TOOL_NAME, apply, renderResult, settingsOf } from '../index.js';
-import { PNG_2x3 } from './fixtures.mjs';
+import { LITELLM_SAMPLE, PNG_2x3 } from './fixtures.mjs';
 
 const unloads = [];
 afterEach(() => {
@@ -18,7 +18,7 @@ afterEach(() => {
  * provider profile, a credentials service, an attachment store and the web
  * server's routes. `reply` is what the provider answers.
  */
-function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200, attachments = true } = {}) {
+function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200, attachments = true, catalog = LITELLM_SAMPLE } = {}) {
   process.env.DSH_HOME = home ?? mkdtempSync(join(tmpdir(), 'images-home-'));
   const tools = new Map();
   const routes = new Map();
@@ -28,6 +28,10 @@ function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200,
   const vault = new Map();
   globalThis.fetch = async (url, init) => {
     calls.push({ url: String(url), init });
+    if (String(url).includes('model_prices_and_context_window')) {
+      if (typeof catalog === 'number') return { ok: false, status: catalog, text: async () => 'unavailable' };
+      return { ok: true, status: 200, text: async () => JSON.stringify(catalog) };
+    }
     if (String(url).endsWith('/models')) {
       if (init.headers.authorization === 'Bearer bad') return { ok: false, status: 401, text: async () => JSON.stringify({ error: { message: 'invalid api key' } }) };
       return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'gpt-4o' }, { id: 'gpt-image-1.5', pricing: { per_image: 0.05 } }, { id: 'flux-pro', modalities: { output: ['image'] } }] }) };
@@ -135,7 +139,8 @@ function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200,
 const settle = () => new Promise((resolve) => setTimeout(resolve, 300));
 
 test('settings normalize', () => {
-  assert.deepEqual(settingsOf(undefined), { enabled: true, provider: '', model: '', baseURL: '', apiKeyEnv: '', size: '1024x1024', quality: '', pricePerImage: 0, currency: 'USD', timeoutMs: 180_000 });
+  assert.deepEqual(settingsOf(undefined), { enabled: true, provider: '', model: '', baseURL: '', apiKeyEnv: '', size: '1024x1024', quality: '', pricePerImage: 0, currency: 'USD', priceCatalog: '', timeoutMs: 180_000 });
+  assert.equal(settingsOf({ priceCatalog: false }).priceCatalog, 'off');
   assert.equal(settingsOf({ model: ' x ', timeoutMs: 5 }).model, 'x');
   assert.equal(settingsOf({ timeoutMs: 5 }).timeoutMs, 5);
 });
@@ -354,4 +359,52 @@ test('the models route lists the provider\'s models, image ones first, and repor
   const bad = await h.request('/__dsh_images/models', { method: 'POST', body: { baseURL: 'https://x.example/v1', apiKey: 'bad' } });
   assert.equal(bad.ok, false);
   assert.match(bad.reason, /401: invalid api key/);
+});
+
+test('a model only the price catalog knows is priced from it, and the catalog is fetched once', async () => {
+  const usage = { input_tokens: 397, output_tokens: 2744, total_tokens: 3141 };
+  const h = harness({ config: { model: 'sub2api/gpt-image-2.6-sunburst' }, reply: { data: [{ b64_json: PNG_2x3.toString('base64') }], usage } });
+  const value = await h.run({ prompt: 'x' });
+  assert.equal(value.cost.source, 'usage');
+  assert.ok(Math.abs(value.cost.amount - (397 * 5 + 2744 * 30) / 1e6) < 1e-12, String(value.cost.amount));
+  assert.equal(h.calls.filter((c) => c.url.includes('model_prices')).length, 1);
+  assert.ok(existsSync(join(h.home, 'cache', 'images', 'price-catalog.json')));
+
+  // The drawer is told how the model is billed, and offers the catalog's models.
+  const preview = await h.request('/__dsh_images/settings?model=sub2api/gpt-image-2.6-sunburst');
+  assert.equal(preview.source, 'catalog');
+  assert.deepEqual(preview.catalog.tokens, { textIn: 5, imageOut: 30 });
+  assert.equal(preview.catalog.name, 'gpt-image-2.6-sunburst');
+  const listed = await h.request('/__dsh_images/catalog');
+  assert.ok(listed.names.includes('gpt-image-2.6-sunburst'));
+  assert.equal(listed.status.name, 'LiteLLM');
+  assert.ok(listed.status.count > 0);
+  const described = await h.request('/__dsh_images/settings');
+  assert.equal(described.catalog.count, listed.status.count);
+  h.unload();
+
+  // Same home after a restart: the cached copy prices a per-image model, no new download.
+  const again = harness({ home: h.home, config: { model: 'xai/grok-imagine-image' } });
+  const v2 = await again.run({ prompt: 'x', n: 2 });
+  assert.deepEqual(v2.cost, { amount: 0.02, currency: 'USD', source: 'catalog' });
+  assert.equal(again.calls.filter((c) => c.url.includes('model_prices')).length, 0);
+  // An explicit refresh downloads it again.
+  const refreshed = await again.request('/__dsh_images/catalog', { method: 'POST', body: { refresh: true } });
+  assert.equal(refreshed.ok, true);
+  assert.equal(again.calls.filter((c) => c.url.includes('model_prices')).length, 1);
+});
+
+test('without the catalog a model nothing knows falls back to the typed price, and the drawer says why', async () => {
+  const h = harness({ config: { model: 'sub2api/gpt-image-2.6-sunburst', pricePerImage: 0.1 }, catalog: 503 });
+  const value = await h.run({ prompt: 'x' });
+  assert.deepEqual(value.cost, { amount: 0.1, currency: 'USD', source: 'manual' });
+  const s = await h.request('/__dsh_images/settings');
+  assert.match(s.catalog.error, /503/);
+  const preview = await h.request('/__dsh_images/settings?model=mystery-draw');
+  assert.equal(preview.source, 'manual');
+  h.unload();
+
+  const off = harness({ config: { model: 'mystery-draw', priceCatalog: false } });
+  assert.equal((await off.run({ prompt: 'x' })).cost, undefined);
+  assert.equal(off.calls.filter((c) => c.url.includes('model_prices')).length, 0);
 });

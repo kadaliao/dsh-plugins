@@ -495,3 +495,116 @@ test('the settings drawer shows what is in force, tests the connection, and save
   assert.doesNotMatch(after, /sk-new-key/);
   hooks.runCleanups();
 });
+
+test('the model picker filters loosely, carries the gateway prefix to catalog models, and picks with the keyboard', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  const info = {
+    values: { provider: '', baseURL: '', model: 'sub2api/gpt-image-1.5', size: '1024x1024', quality: '', pricePerImage: 0, currency: 'USD' },
+    defaults: { provider: '', baseURL: '', model: '', size: '1024x1024', quality: '' },
+    effective: { provider: 'magpie', baseURL: 'http://127.0.0.1:3425/v1', model: 'sub2api/gpt-image-1.5', keySource: 'provider', keyHint: '····test' },
+    problem: '',
+    storedKey: null,
+    providers: [],
+    sessionProvider: 'magpie',
+    priceListDate: '2026-11-09',
+    catalog: { name: 'LiteLLM', enabled: true, count: 3, fetchedAt: Date.UTC(2026, 10, 9), loading: false, error: '' },
+    stats: { total: 1, totals: {}, byModel: { 'sub2api/gpt-image-1.5': { count: 1, totals: {} } } },
+  };
+  const catalog = { status: info.catalog, names: ['gpt-image-1.5', 'gpt-image-2', 'gpt-image-2.6-sunburst', 'grok-imagine-image'] };
+  globalThis.fetch = async (url, init) => {
+    const path = String(url);
+    if (init?.method === 'POST' && path === '/__dsh_images/models') return { ok: true, json: async () => ({ ok: true, models: [{ id: 'sub2api/gpt-5.4', isImage: false }, { id: 'sub2api/gpt-6', isImage: false }] }) };
+    if (path === '/__dsh_images/catalog') return { ok: true, json: async () => catalog };
+    if (path.startsWith('/__dsh_images/settings?model=')) {
+      return { ok: true, json: async () => ({ model: 'x', source: 'catalog', family: '', catalog: { name: 'gpt-image-2.6-sunburst', provider: 'openai', approximate: false, tokens: { textIn: 5, imageOut: 30 }, fetchedAt: 0 } }) };
+    }
+    if (path === '/__dsh_images/settings') return { ok: true, json: async () => info };
+    if (path.startsWith('/__dsh_images/state')) return { ok: true, json: async () => ({ total: 0, totals: {} }) };
+    return { ok: true, json: async () => ({ items: [], hasMore: false, total: 0 }) };
+  };
+  const render = () => {
+    hooks.rewind();
+    return findAll(panel({}), (n) => n.props['data-dsh-images-drawer'])[0];
+  };
+  const input = (drawer) => findAll(drawer, (n) => n.props['data-dsh-images-field'] === 'model')[0];
+  const options = (drawer) => findAll(drawer, (n) => n.props['data-dsh-images-model-option']).map((n) => n.props['data-dsh-images-model-option']);
+  const key = (drawer, k) => {
+    const e = { key: k, preventDefault() {}, stopPropagation() {} };
+    input(drawer).props.onKeyDown(e);
+  };
+
+  hooks.reset();
+  panel({});
+  await flush();
+  hooks.rewind();
+  findAll(panel({}), (n) => n.props['data-dsh-images-settings-button'])[0].props.onClick();
+  render();
+  await flush();
+  await flush();
+  let drawer = render();
+  assert.equal(input(drawer).props.role, 'combobox');
+  assert.equal(input(drawer).props['aria-expanded'], false);
+  assert.match(collect(drawer).join(' '), /LiteLLM price list: 3 image models, as of 2026-11-09/);
+
+  // Opening shows everything, even with a value in the field; catalog names take the field's prefix.
+  input(drawer).props.onFocus();
+  drawer = render();
+  assert.equal(input(drawer).props['aria-expanded'], true);
+  assert.deepEqual(options(drawer), ['sub2api/gpt-image-1.5', 'sub2api/gpt-image-2', 'sub2api/gpt-image-2.6-sunburst', 'sub2api/grok-imagine-image']);
+  assert.match(collect(drawer).join(' '), /In the LiteLLM price list · sub2api\//);
+
+  // Test the connection: the provider's models join the list.
+  findAll(drawer, (n) => n.props['data-dsh-images-probe'])[0].props.onClick();
+  await flush();
+  drawer = render();
+  assert.equal(options(drawer).length, 6);
+
+  // Loose typing: letters may be skipped, terms may be split.
+  input(drawer).props.onChange({ target: { value: 'img26' } });
+  drawer = render();
+  assert.deepEqual(options(drawer), ['sub2api/gpt-image-2.6-sunburst']);
+  input(drawer).props.onChange({ target: { value: '2 sun' } });
+  drawer = render();
+  assert.deepEqual(options(drawer), ['sub2api/gpt-image-2.6-sunburst']);
+  input(drawer).props.onChange({ target: { value: 'gpt' } });
+  drawer = render();
+  assert.equal(options(drawer)[0], 'sub2api/gpt-image-1.5', 'what was used before comes first');
+  assert.ok(options(drawer).includes('sub2api/gpt-6'));
+  input(drawer).props.onChange({ target: { value: 'zzz' } });
+  drawer = render();
+  assert.deepEqual(options(drawer), []);
+  assert.match(collect(drawer).join(' '), /Nothing matches; the id as typed is used/);
+
+  // A typed prefix replaces the field's for catalog names.
+  input(drawer).props.onChange({ target: { value: 'openai/grok' } });
+  drawer = render();
+  assert.deepEqual(options(drawer), ['openai/grok-imagine-image']);
+
+  // Arrow keys and Enter pick; Escape closes the list.
+  input(drawer).props.onChange({ target: { value: 'gpt image 2' } });
+  drawer = render();
+  assert.deepEqual(options(drawer).slice(0, 3), ['sub2api/gpt-image-1.5', 'sub2api/gpt-image-2', 'sub2api/gpt-image-2.6-sunburst']);
+  key(drawer, 'ArrowDown');
+  drawer = render();
+  key(drawer, 'ArrowDown');
+  drawer = render();
+  key(drawer, 'Enter');
+  drawer = render();
+  assert.equal(input(drawer).props.value, 'sub2api/gpt-image-2.6-sunburst');
+  assert.equal(input(drawer).props['aria-expanded'], false);
+  input(drawer).props.onFocus();
+  drawer = render();
+  assert.equal(input(drawer).props['aria-expanded'], true);
+  key(drawer, 'Escape');
+  drawer = render();
+  assert.equal(input(drawer).props['aria-expanded'], false);
+
+  // How the picked model is billed.
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  drawer = render();
+  assert.match(collect(drawer).join(' '), /The LiteLLM price list has gpt-image-2\.6-sunburst: text in \$5, image out \$30 per million tokens/);
+  hooks.runCleanups();
+});

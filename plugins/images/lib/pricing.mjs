@@ -1,10 +1,13 @@
 /**
  * What one image costs: from the provider's token usage when it reports one,
- * else from a built-in price list of the common image models, else from a price
- * the person typed in. Every estimate says where it came from.
+ * else from a built-in price list of the common image models, else from a
+ * public price catalog, else from a price the person typed in. Every estimate
+ * says where it came from.
  *
  * @module @kadaliao/dsh-images/lib/pricing
  */
+
+import { catalogPerImage } from './catalog.mjs';
 
 /** When the built-in list was last checked against the vendors' pages. */
 export const PRICE_LIST_DATE = '2026-11-09';
@@ -71,12 +74,12 @@ export function providerPerImage(record) {
 
 /**
  * Cost from the provider's token usage, for a family with token prices.
- * @param {string} family
+ * @param {string|object} family - a built-in family, or token prices (USD per million) to use.
  * @param {unknown} usage - the reply's `usage` object.
  * @returns {{amount: number, currency: 'USD', tokens: object}|undefined}
  */
 export function costFromUsage(family, usage) {
-  const prices = TOKEN_PRICES[family];
+  const prices = typeof family === 'string' ? TOKEN_PRICES[family] : family;
   if (!prices || !usage || typeof usage !== 'object') return undefined;
   const inDetails = usage.input_tokens_details ?? {};
   const outDetails = usage.output_tokens_details ?? {};
@@ -110,20 +113,29 @@ export function costFromList(family, size, quality) {
   return amount === undefined ? undefined : { amount, currency: table.currency };
 }
 
+/** Whether the built-in list prices this family by itself (tokens or per image). */
+export const knownFamily = (family) => family !== '' && (family in TOKEN_PRICES || family in PER_IMAGE);
+
 /**
- * The cost of one call's images, with its source.
- * @param {{model: string, size?: string, quality?: string, n?: number, usage?: unknown, providerRecord?: unknown, manual?: {amount: number, currency: string}}} input
- * @returns {{amount: number, currency: string, source: 'usage'|'provider'|'list'|'manual', perImage: number, family: string, tokens?: object}|undefined}
+ * The cost of one call's images, with its source. A model the built-in list does
+ * not know is priced from `catalog` (`lookupCatalog`'s record): by its token
+ * prices when the reply has usage, else by its per-image price.
+ * @param {{model: string, size?: string, quality?: string, n?: number, usage?: unknown, providerRecord?: unknown, catalog?: object, manual?: {amount: number, currency: string}}} input
+ * @returns {{amount: number, currency: string, source: 'usage'|'provider'|'list'|'catalog'|'manual', perImage: number, family: string, tokens?: object, catalog?: string}|undefined}
  */
 export function estimateCost(input) {
   const family = familyOf(input.model);
   const n = Math.max(1, Number(input.n) || 1);
-  const fromUsage = costFromUsage(family, input.usage);
-  if (fromUsage) return { ...fromUsage, source: 'usage', perImage: fromUsage.amount / n, family };
+  const listed = TOKEN_PRICES[family];
+  const match = knownFamily(family) ? undefined : input.catalog;
+  const fromUsage = costFromUsage(listed ?? match?.tokens, input.usage);
+  if (fromUsage) return { ...fromUsage, source: 'usage', perImage: fromUsage.amount / n, family, ...(listed ? {} : { catalog: match.name }) };
   const fromProvider = providerPerImage(input.providerRecord);
   if (fromProvider) return { amount: fromProvider.amount * n, currency: fromProvider.currency, source: 'provider', perImage: fromProvider.amount, family };
   const fromList = costFromList(family, input.size, input.quality);
   if (fromList) return { amount: fromList.amount * n, currency: fromList.currency, source: 'list', perImage: fromList.amount, family };
+  const fromCatalog = catalogPerImage(match, input.size, input.quality);
+  if (fromCatalog) return { amount: fromCatalog.amount * n, currency: fromCatalog.currency, source: 'catalog', perImage: fromCatalog.amount, family, catalog: match.name };
   const manual = input.manual;
   if (manual && Number.isFinite(manual.amount) && manual.amount > 0) {
     return { amount: manual.amount * n, currency: manual.currency || 'USD', source: 'manual', perImage: manual.amount, family };

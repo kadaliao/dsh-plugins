@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
     const STATE_ROUTE = '/__dsh_images/state';
     const SETTINGS_ROUTE = '/__dsh_images/settings';
     const MODELS_ROUTE = '/__dsh_images/models';
+    const CATALOG_ROUTE = '/__dsh_images/catalog';
     const SIZES = ['1024x1024', '1536x1024', '1024x1536'];
     const QUALITIES = ['low', 'medium', 'high'];
     const PAGE = 40;
@@ -907,6 +908,255 @@ window.__ModuleLoader__.load({
     const hintStyle = { fontSize: 11.5, color: C.faint, lineHeight: 1.5 };
     const sectionTitle = (text) => h('div', { style: { fontSize: 11, letterSpacing: 1.2, textTransform: 'uppercase', color: C.faint, fontWeight: 600, marginTop: 6 } }, text);
 
+    /**
+     * How well `query` matches `text`, loosely: each space-separated term must
+     * appear in order, letters may be skipped (`img26` finds `gpt-image-2.6`).
+     * A term found whole, or starting a word, scores higher. Returns
+     * `{score, hits}` (matched character indexes), or null for no match.
+     */
+    function fuzzyMatch(query, text) {
+      const terms = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+      const hay = String(text ?? '').toLowerCase();
+      if (terms.length === 0) return { score: 0, hits: [] };
+      const startsWord = (i) => i === 0 || /[\s/\-_.:]/.test(hay[i - 1]);
+      const hits = new Set();
+      let score = 0;
+      for (const term of terms) {
+        const at = hay.indexOf(term);
+        if (at >= 0) {
+          score += term.length * 3 + (startsWord(at) ? 6 : 0);
+          for (let i = 0; i < term.length; i += 1) hits.add(at + i);
+          continue;
+        }
+        // Letters in order; of every place the first letter could anchor, keep the best.
+        let best = null;
+        for (let start = hay.indexOf(term[0]); start >= 0; start = hay.indexOf(term[0], start + 1)) {
+          const at = [start];
+          for (const ch of term.slice(1)) {
+            const i = hay.indexOf(ch, at[at.length - 1] + 1);
+            if (i < 0) break;
+            at.push(i);
+          }
+          if (at.length < term.length) break;
+          const s = at.reduce((sum, i, k) => sum + 1 + (k > 0 && i === at[k - 1] + 1 ? 2 : 0) + (startsWord(i) ? 2 : 0), 0) - (at[at.length - 1] - at[0]) / 50;
+          if (!best || s > best.s) best = { s, at };
+        }
+        if (!best) return null;
+        score += best.s;
+        for (const i of best.at) hits.add(i);
+      }
+      // Among equals, the shorter id is the likelier one.
+      return { score: score - hay.length / 100, hits: [...hits].sort((a, b) => a - b) };
+    }
+
+    /** `text` with the characters at `hits` emphasized. */
+    function highlighted(text, hits) {
+      if (!hits || hits.length === 0) return text;
+      const on = new Set(hits);
+      const parts = [];
+      let run = '';
+      let runOn = on.has(0);
+      const flush = (i) => {
+        if (run === '') return;
+        parts.push(runOn ? h('span', { key: i, style: { color: C.primary, fontWeight: 650 } }, run) : run);
+        run = '';
+      };
+      for (let i = 0; i < text.length; i += 1) {
+        if (on.has(i) !== runOn) {
+          flush(i);
+          runOn = on.has(i);
+        }
+        run += text[i];
+      }
+      flush(text.length);
+      return parts;
+    }
+
+    /** The routing prefix of a model id (`sub2api/` of `sub2api/gpt-image-1.5`), or ''. */
+    const prefixOf = (id) => (String(id ?? '').includes('/') ? String(id).slice(0, String(id).lastIndexOf('/') + 1) : '');
+
+    const COMBO_LIMIT = 200;
+
+    /**
+     * A text field with a searchable list under it. Typing filters every group
+     * loosely; any id can still be typed. Groups marked `prefixable` (the price
+     * catalog's bare names) take the routing prefix being typed, or the one the
+     * field had when the list opened.
+     */
+    function ModelCombo({ t, value, placeholder, groups, onChange, labelId }) {
+      const [open, setOpen] = useState(false);
+      const [query, setQuery] = useState(null); // null: just opened, show everything
+      const [active, setActive] = useState(-1);
+      const [base, setBase] = useState('');
+      const inputRef = useRef(null);
+      const listRef = useRef(null);
+
+      const q = query ?? '';
+      const seen = new Set();
+      const sections = [];
+      let total = 0;
+      for (const group of groups) {
+        const prefix = group.prefixable ? (q.includes('/') ? prefixOf(q) : prefixOf(base)) : '';
+        const term = group.prefixable && q.includes('/') ? q.slice(prefix.length) : q;
+        const rows = [];
+        for (const item of group.items) {
+          const id = `${prefix}${item.id}`;
+          if (seen.has(id)) continue;
+          const m = fuzzyMatch(term, item.id);
+          if (!m) continue;
+          seen.add(id);
+          rows.push({ ...item, id, hits: m.hits.map((i) => i + prefix.length), score: m.score });
+        }
+        if (term !== '') rows.sort((a, b) => b.score - a.score);
+        if (rows.length === 0) continue;
+        total += rows.length;
+        sections.push({ ...group, prefix, rows });
+      }
+      // One flat list for the arrow keys, capped so a huge listing stays quick.
+      const flat = [];
+      for (const section of sections) {
+        section.rows = section.rows.slice(0, Math.max(0, COMBO_LIMIT - flat.length));
+        flat.push(...section.rows);
+      }
+      const hidden = total - flat.length;
+
+      useEffect(() => {
+        if (!open || active < 0) return;
+        const node = listRef.current?.querySelector?.(`[data-index="${active}"]`);
+        node?.scrollIntoView?.({ block: 'nearest' });
+      }, [open, active]);
+
+      const show = () => {
+        setOpen(true);
+        setQuery(null);
+        setBase(value ?? '');
+        setActive(-1);
+      };
+      const pick = (id) => {
+        onChange(id);
+        setOpen(false);
+        setQuery(null);
+      };
+      const onKeyDown = (e) => {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (!open) show();
+          else setActive((a) => Math.min(flat.length - 1, a + 1));
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setActive((a) => Math.max(0, a - 1));
+        } else if (e.key === 'Enter') {
+          if (open && flat[active]) {
+            e.preventDefault();
+            pick(flat[active].id);
+          }
+        } else if (e.key === 'Escape') {
+          if (open) {
+            e.preventDefault();
+            e.stopPropagation?.();
+            setOpen(false);
+          }
+        } else if (e.key === 'Tab') setOpen(false);
+      };
+      const listId = 'dsh-images-model-list';
+      const hasAny = groups.some((g) => g.items.length > 0);
+      const showList = open && (hasAny || q !== '');
+
+      let index = -1;
+      return h(
+        'div',
+        { style: { position: 'relative' } },
+        h('input', {
+          ref: inputRef,
+          role: 'combobox',
+          'aria-expanded': showList,
+          'aria-controls': listId,
+          'aria-autocomplete': 'list',
+          'aria-labelledby': labelId,
+          'aria-activedescendant': showList && active >= 0 ? `${listId}-${active}` : undefined,
+          value: value ?? '',
+          placeholder,
+          onFocus: show,
+          onClick: () => !open && show(),
+          onBlur: () => setOpen(false),
+          onChange: (e) => {
+            onChange(e.target.value);
+            setQuery(e.target.value);
+            setOpen(true);
+            setActive(e.target.value === '' ? -1 : 0);
+          },
+          onKeyDown,
+          style: { ...inputStyle, paddingRight: 34 },
+          spellCheck: false,
+          autoComplete: 'off',
+          'data-dsh-images-field': 'model',
+        }),
+        h(
+          'button',
+          {
+            type: 'button',
+            tabIndex: -1,
+            'aria-label': t('comboToggle'),
+            onMouseDown: (e) => {
+              e.preventDefault();
+              if (showList) setOpen(false);
+              else {
+                show();
+                inputRef.current?.focus?.();
+              }
+            },
+            style: { position: 'absolute', right: 4, top: 4, bottom: 4, width: 28, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: 7, background: 'transparent', color: C.faint, cursor: 'pointer' },
+          },
+          h('svg', { width: 12, height: 12, viewBox: '0 0 12 12', 'aria-hidden': true, style: { transform: showList ? 'rotate(180deg)' : 'none', transition: 'transform .15s' } }, h('path', { d: 'M2.5 4.5 6 8l3.5-3.5', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' })),
+        ),
+        showList
+          ? h(
+              'div',
+              {
+                ref: listRef,
+                id: listId,
+                role: 'listbox',
+                'data-dsh-images-model-list': true,
+                onMouseDown: (e) => e.preventDefault(),
+                style: { position: 'absolute', left: 0, right: 0, top: 'calc(100% + 4px)', zIndex: 5, maxHeight: 300, overflowY: 'auto', padding: 4, background: C.base, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 8px 28px rgba(0,0,0,.18)' },
+              },
+              flat.length === 0 ? h('div', { style: { padding: '8px 10px', fontSize: 12, color: C.faint } }, t('comboNoMatch')) : null,
+              sections.map((section) =>
+                h(
+                  'div',
+                  { key: section.key, role: 'group', 'aria-label': section.label },
+                  h('div', { style: { padding: '6px 10px 3px', fontSize: 10.5, letterSpacing: 0.6, textTransform: 'uppercase', color: C.faint, fontWeight: 600 } }, section.prefix ? `${section.label} · ${section.prefix}` : section.label),
+                  section.rows.map((row) => {
+                    index += 1;
+                    const i = index;
+                    return h(
+                      'div',
+                      {
+                        key: row.id,
+                        id: `${listId}-${i}`,
+                        role: 'option',
+                        'aria-selected': i === active,
+                        'data-index': i,
+                        'data-dsh-images-model-option': row.id,
+                        onMouseDown: (e) => {
+                          e.preventDefault();
+                          pick(row.id);
+                        },
+                        onMouseEnter: () => setActive(i),
+                        style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: 7, fontSize: 12.5, cursor: 'pointer', color: C.muted, background: i === active ? C.hover : 'transparent', fontWeight: row.id === value ? 600 : 400 },
+                      },
+                      h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, highlighted(row.id, row.hits)),
+                      row.tag ? h('span', { style: { flex: 'none', fontSize: 10.5, padding: '1px 6px', borderRadius: 999, border: `1px solid ${C.border1}`, color: C.faint } }, row.tag) : null,
+                    );
+                  }),
+                ),
+              ),
+              hidden > 0 ? h('div', { style: { padding: '6px 10px', fontSize: 11.5, color: C.faint } }, t('comboMore', { n: hidden })) : null,
+            )
+          : null,
+      );
+    }
+
     function Segmented({ value, options, onChange }) {
       return h(
         'div',
@@ -947,6 +1197,8 @@ window.__ModuleLoader__.load({
       const [models, setModels] = useState(null);
       const [probe, setProbe] = useState(null); // {state:'busy'|'ok'|'bad', text}
       const [preview, setPreview] = useState(null);
+      const [catalog, setCatalog] = useState(null); // {status, names}
+      const [catalogTick, setCatalogTick] = useState(0);
       const [saving, setSaving] = useState(false);
       const alive = useRef(true);
       const previewTimer = useRef(null);
@@ -960,6 +1212,10 @@ window.__ModuleLoader__.load({
             setDraft({ ...body.values });
           })
           .catch(() => {});
+        // The price catalog's image models, for the picker; downloaded on first use.
+        getJson(CATALOG_ROUTE)
+          .then((body) => alive.current && body?.status && setCatalog(body))
+          .catch(() => {});
         return () => {
           alive.current = false;
         };
@@ -968,7 +1224,8 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (typeof document === 'undefined') return undefined;
         const key = (e) => {
-          if (e.key === 'Escape') onClose();
+          // An open model list takes the Escape for itself.
+          if (e.key === 'Escape' && e.target?.getAttribute?.('aria-expanded') !== 'true') onClose();
         };
         document.addEventListener('keydown', key, true);
         return () => document.removeEventListener('keydown', key, true);
@@ -989,7 +1246,7 @@ window.__ModuleLoader__.load({
             .catch(() => {});
         }, 250);
         return () => clearTimeout(previewTimer.current);
-      }, [draft?.model, draft?.size, draft?.quality]);
+      }, [draft?.model, draft?.size, draft?.quality, catalogTick]);
 
       if (!info || !draft) {
         return h(DrawerFrame, { t, onClose }, h('div', { style: { color: C.faint } }, '…'));
@@ -1025,6 +1282,17 @@ window.__ModuleLoader__.load({
           .catch(() => alive.current && setProbe({ state: 'bad', text: t('probeFailed', { reason: 'network' }) }));
       };
 
+      const refreshCatalog = () => {
+        setCatalog((c) => (c ? { ...c, status: { ...c.status, loading: true, error: '' } } : { status: { ...(info.catalog ?? {}), loading: true, error: '' }, names: [] }));
+        postJson(CATALOG_ROUTE, { refresh: true })
+          .then((body) => {
+            if (!alive.current || !body?.status) return;
+            setCatalog(body);
+            setCatalogTick((n) => n + 1);
+          })
+          .catch(() => {});
+      };
+
       const save = () => {
         setSaving(true);
         const body = { ...draft };
@@ -1039,6 +1307,7 @@ window.__ModuleLoader__.load({
           .catch(() => alive.current && setSaving(false));
       };
 
+      const catalogName = catalog?.status?.name || info.catalog?.name || 'LiteLLM';
       const previewText = (() => {
         if (!preview) return '';
         if (preview.source === 'provider') return t('priceProvider', { price: fmtMoney(preview.perImage.amount, preview.perImage.currency) });
@@ -1046,8 +1315,37 @@ window.__ModuleLoader__.load({
           const samples = (preview.samples ?? []).map((r) => `${r.size.replace('x', '×')} ${fmtMoney(r.price.amount, r.price.currency)}`).join(' · ');
           return t('priceList', { family: preview.family, samples, date: preview.priceListDate });
         }
+        if (preview.source === 'catalog' && preview.catalog) {
+          const c = preview.catalog;
+          const name = c.approximate ? t('catalogNear', { name: c.name }) : c.name;
+          const flat = c.perImage ? fmtMoney(c.perImage.amount, c.perImage.currency) : '';
+          if (!c.tokens) return t('priceCatalogFlat', { catalog: catalogName, name, price: flat });
+          const head = t('priceCatalogTokens', { catalog: catalogName, name, textIn: fmtMoney(c.tokens.textIn, 'USD'), imageOut: fmtMoney(c.tokens.imageOut, 'USD') });
+          const tail = flat
+            ? t('priceNoUsageFlat', { price: flat })
+            : preview.manual
+              ? t('priceNoUsageManual', { price: fmtMoney(preview.manual.amount, preview.manual.currency) })
+              : t('priceNoUsageBlank');
+          return `${head} ${tail}`;
+        }
         if (preview.source === 'manual') return t('priceManual', { price: fmtMoney(preview.perImage.amount, preview.perImage.currency) });
-        return t('priceUnknown');
+        return preview.catalogError ? t('priceUnknownOffline', { catalog: catalogName }) : t('priceUnknown', { catalog: catalogName });
+      })();
+
+      // What the model picker offers: ids used before, the provider's listing, the catalog.
+      const usedIds = [...new Set([info.values.model, info.defaults.model, ...Object.entries(info.stats?.byModel ?? {}).sort((a, b) => b[1].count - a[1].count).map(([id]) => id)])].filter((id) => typeof id === 'string' && id !== '');
+      const pickerGroups = [
+        { key: 'used', label: t('groupUsed'), items: usedIds.map((id) => ({ id })) },
+        { key: 'provider', label: t('groupProvider'), items: (models ?? []).map((m) => ({ id: m.id, tag: m.isImage ? t('tagImage') : '' })) },
+        { key: 'catalog', label: t('groupCatalog', { catalog: catalogName }), prefixable: true, items: (catalog?.names ?? []).map((id) => ({ id, tag: t('tagImage') })) },
+      ];
+      const catalogStatus = catalog?.status ?? info.catalog;
+      const catalogLine = (() => {
+        if (!catalogStatus || catalogStatus.enabled === false) return '';
+        if (catalogStatus.loading) return t('catalogLoading', { catalog: catalogName });
+        if (catalogStatus.count > 0) return t('catalogStatus', { catalog: catalogName, n: catalogStatus.count, date: new Date(catalogStatus.fetchedAt).toISOString().slice(0, 10) });
+        if (catalogStatus.error) return t('catalogFailed', { catalog: catalogName, reason: catalogStatus.error });
+        return t('catalogNotYet', { catalog: catalogName });
       })();
 
       const stats = info.stats ?? { total: 0, totals: {}, byModel: {} };
@@ -1101,11 +1399,10 @@ window.__ModuleLoader__.load({
 
         sectionTitle(t('secModel')),
         h(
-          'label',
+          'div',
           { style: field },
-          h('span', { style: labelStyle }, t('model')),
-          h('input', { list: 'dsh-images-models', value: draft.model ?? '', placeholder: info.defaults.model || 'gpt-image-1.5', onChange: (e) => set({ model: e.target.value }), style: inputStyle, spellCheck: false, 'data-dsh-images-field': 'model' }),
-          models ? h('datalist', { id: 'dsh-images-models' }, models.map((m) => h('option', { key: m.id, value: m.id }, m.isImage ? `🖼 ${m.name ?? m.id}` : m.name ?? m.id))) : null,
+          h('span', { id: 'dsh-images-model-label', style: labelStyle }, t('model')),
+          h(ModelCombo, { t, value: draft.model ?? '', placeholder: info.defaults.model || 'gpt-image-1.5', groups: pickerGroups, onChange: (v) => set({ model: v }), labelId: 'dsh-images-model-label' }),
           h('span', { style: { ...hintStyle, color: preview?.source === 'unknown' ? 'var(--dsw-alias-state-warn-primary, #f59e0b)' : C.faint } }, previewText || (models ? t('modelHintListed') : t('modelHint'))),
         ),
         models && models.some((m) => m.isImage)
@@ -1132,6 +1429,16 @@ window.__ModuleLoader__.load({
           h('label', { style: field }, h('span', { style: labelStyle }, t('currency')), h('select', { value: draft.currency || 'USD', onChange: (e) => set({ currency: e.target.value }), style: { ...inputStyle, appearance: 'auto' } }, ['USD', 'CNY', 'EUR'].map((c) => h('option', { key: c, value: c }, c)))),
         ),
         h('span', { style: hintStyle }, t('pricePerImageHint', { date: info.priceListDate })),
+        catalogLine
+          ? h(
+              'div',
+              { style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' } },
+              h('span', { style: { ...hintStyle, color: catalogStatus?.error && !catalogStatus?.count ? C.error : C.faint }, 'data-dsh-images-catalog': true }, catalogLine),
+              catalogStatus?.loading
+                ? null
+                : h('button', { type: 'button', onClick: refreshCatalog, 'data-dsh-images-catalog-refresh': true, style: { font: 'inherit', fontSize: 11.5, color: C.label, background: 'none', border: 'none', padding: 0, cursor: 'pointer' } }, catalogStatus?.count > 0 ? t('catalogRefresh') : t('catalogRetry')),
+            )
+          : null,
 
         stats.total > 0
           ? h(
@@ -1245,19 +1552,39 @@ window.__ModuleLoader__.load({
         probeOkNoImages: 'Connected: {n} models, none of them listed as an image model — type the image model\'s id below; gateways often serve it without listing it.',
         probeFailed: 'Could not connect: {reason}',
         model: 'Image model',
-        modelHint: 'As the provider names it, e.g. gpt-image-1.5. Test the connection to pick from a list.',
-        modelHintListed: 'Pick from the list, or type any id the provider serves.',
+        modelHint: 'As the provider names it, e.g. gpt-image-1.5. Type to search the list; test the connection to add the provider\'s models.',
+        modelHintListed: 'Type to search the list, or enter any id the provider serves.',
+        comboToggle: 'Show models',
+        comboNoMatch: 'Nothing matches; the id as typed is used.',
+        comboMore: '{n} more; keep typing to narrow it down.',
+        groupUsed: 'Used before',
+        groupProvider: 'From the provider',
+        groupCatalog: 'In the {catalog} price list',
+        tagImage: 'image',
         size: 'Default size',
         quality: 'Quality',
         auto: 'auto',
         default: 'default',
         pricePerImage: 'Price per image',
         currency: 'Currency',
-        pricePerImageHint: 'Only used when the provider reports no usage and the model is not in the built-in price list (checked {date}).',
+        pricePerImageHint: 'Only used when the provider reports no usage and no price list knows the model (the built-in one was checked {date}).',
         priceProvider: 'The provider states {price} per image.',
         priceList: 'Built-in list for {family}: {samples} per image at this quality (as of {date}). Exact when the provider reports token usage.',
-        priceManual: 'Unknown to the price list; your price of {price} per image applies.',
-        priceUnknown: 'Unknown to the price list and the provider; set a price per image below, or costs stay blank.',
+        priceManual: 'Unknown to the price lists; your price of {price} per image applies.',
+        priceUnknown: 'Neither the provider, the built-in list nor the {catalog} price list knows it; set a price per image below, or costs stay blank.',
+        priceUnknownOffline: 'Not in the built-in list, and the {catalog} price list could not be downloaded; set a price per image below, or costs stay blank.',
+        priceCatalogTokens: 'The {catalog} price list has {name}: text in {textIn}, image out {imageOut} per million tokens, applied to the usage the provider reports.',
+        priceCatalogFlat: 'The {catalog} price list has {name} at {price} per image.',
+        priceNoUsageFlat: 'A reply without usage counts {price} per image.',
+        priceNoUsageManual: 'A reply without usage counts your {price} per image.',
+        priceNoUsageBlank: 'A reply without usage gets no cost.',
+        catalogNear: '{name} (closest entry)',
+        catalogStatus: '{catalog} price list: {n} image models, as of {date}.',
+        catalogLoading: 'Downloading the {catalog} price list…',
+        catalogFailed: 'Could not download the {catalog} price list: {reason}',
+        catalogNotYet: 'The {catalog} price list is downloaded the first time a model needs it.',
+        catalogRefresh: 'Update',
+        catalogRetry: 'Download',
         statsTotal: '{n} images so far',
         statsNoCost: 'no cost recorded',
         cancel: 'Cancel',
@@ -1315,19 +1642,39 @@ window.__ModuleLoader__.load({
         probeOkNoImages: '连接成功：{n} 个模型，列表里没有标为生图的；直接在下面填生图模型的 id 即可，网关常常不把它列出来。',
         probeFailed: '连不上：{reason}',
         model: '生图模型',
-        modelHint: '按供应商的叫法填写，如 gpt-image-1.5；先测试连接可从列表里选。',
-        modelHintListed: '从列表里选，或直接填供应商提供的任意模型 id。',
+        modelHint: '按供应商的叫法填写，如 gpt-image-1.5。输入即可在列表里模糊搜索；测试连接后还会列出供应商的模型。',
+        modelHintListed: '输入即可模糊搜索，也可以直接填供应商提供的任意模型 id。',
+        comboToggle: '展开模型列表',
+        comboNoMatch: '没有匹配项，按输入的 id 使用。',
+        comboMore: '还有 {n} 个，继续输入以缩小范围。',
+        groupUsed: '用过的',
+        groupProvider: '供应商列出的',
+        groupCatalog: '{catalog} 价目表收录的',
+        tagImage: '生图',
         size: '默认尺寸',
         quality: '质量',
         auto: '自动',
         default: '默认',
         pricePerImage: '每张单价',
         currency: '币种',
-        pricePerImageHint: '只在供应商不返回用量、且模型不在内置价目表（{date} 核对）时使用。',
+        pricePerImageHint: '只在供应商不返回用量、且所有价目表都查不到这个模型时使用（内置价目表 {date} 核对）。',
         priceProvider: '供应商报价 {price} / 张。',
         priceList: '内置价目表 {family}：该质量下 {samples} / 张（{date}）。供应商返回用量时按用量精确计算。',
-        priceManual: '价目表里没有这个模型，按你填的 {price} / 张计。',
-        priceUnknown: '价目表和供应商都没有它的价格；在下面填一个单价，否则费用留空。',
+        priceManual: '价目表里都没有这个模型，按你填的 {price} / 张计。',
+        priceUnknown: '供应商、内置价目表和 {catalog} 价目表都没有它的价格；在下面填一个单价，否则费用留空。',
+        priceUnknownOffline: '内置价目表里没有它，{catalog} 价目表也没能下载；在下面填一个单价，否则费用留空。',
+        priceCatalogTokens: '{catalog} 价目表收录了 {name}：文本输入 {textIn}、图片输出 {imageOut}（每百万 token），按供应商返回的用量计算。',
+        priceCatalogFlat: '{catalog} 价目表收录了 {name}：每张 {price}。',
+        priceNoUsageFlat: '回复里没有用量时按每张 {price} 计。',
+        priceNoUsageManual: '回复里没有用量时按你填的 {price} / 张计。',
+        priceNoUsageBlank: '回复里没有用量时费用留空。',
+        catalogNear: '{name}（最接近的条目）',
+        catalogStatus: '{catalog} 价目表：{n} 个生图模型，{date} 更新。',
+        catalogLoading: '正在下载 {catalog} 价目表…',
+        catalogFailed: '{catalog} 价目表下载失败：{reason}',
+        catalogNotYet: '{catalog} 价目表在第一次需要时下载。',
+        catalogRefresh: '更新',
+        catalogRetry: '下载',
         statsTotal: '已生成 {n} 张',
         statsNoCost: '没有费用记录',
         cancel: '取消',
