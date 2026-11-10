@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { PNG_2x3 } from './fixtures.mjs';
 import { costFromUsage, estimateCost, familyOf, totalsOf } from '../lib/pricing.mjs';
-import { buildRequest, dimensionsOf, errorMessage, extensionOf, imagesEndpoint, parseReply, sniffMediaType } from '../lib/provider.mjs';
+import { buildEditForm, buildRequest, editsEndpoint, dimensionsOf, errorMessage, extensionOf, imagesEndpoint, parseReply, sniffMediaType } from '../lib/provider.mjs';
 
 test('the images endpoint follows the base URL\'s API version', () => {
   assert.equal(imagesEndpoint('http://127.0.0.1:3425/v1'), 'http://127.0.0.1:3425/v1/images/generations');
@@ -58,4 +58,15 @@ test('a picture is priced from token usage, the built-in list, or a typed price,
   assert.deepEqual(estimateCost({ model: 'x', providerRecord: { pricing: { image: '0.04' } }, n: 2 }), { amount: 0.08, currency: 'USD', source: 'provider', perImage: 0.04, family: '' });
   assert.equal(estimateCost({ model: 'x' }), undefined);
   assert.deepEqual(totalsOf([{ cost: { amount: 1, currency: 'USD' } }, { cost: { amount: 2, currency: 'USD' } }, { cost: { amount: 3, currency: 'CNY' } }, {}]), { USD: 3, CNY: 3 });
+});
+
+test('the edits endpoint sits beside generations, and its form carries the fields and images', () => {
+  assert.equal(editsEndpoint('http://127.0.0.1:3425/v1/'), 'http://127.0.0.1:3425/v1/images/edits');
+  assert.equal(editsEndpoint('https://api.openai.com'), 'https://api.openai.com/v1/images/edits');
+  assert.equal(editsEndpoint(''), '');
+  const one = buildEditForm({ model: 'm', prompt: 'p', n: 2 }, [{ bytes: PNG_2x3, mediaType: 'image/png', name: 'a.png' }]);
+  assert.deepEqual([...one.keys()], ['model', 'prompt', 'n', 'image']);
+  assert.equal(one.get('n'), '2');
+  const two = buildEditForm({ model: 'm', prompt: 'p' }, [1, 2].map((i) => ({ bytes: PNG_2x3, mediaType: 'image/png', name: `${i}.png` })));
+  assert.equal(two.getAll('image[]').length, 2);
 });

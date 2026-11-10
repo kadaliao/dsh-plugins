@@ -13,9 +13,9 @@
 
 import { chmodSync, createReadStream, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 
-import { buildRequest, dimensionsOf, extensionOf, imagesEndpoint, parseReply, errorMessage, sniffMediaType, SIZES } from './lib/provider.mjs';
+import { buildEditForm, buildRequest, dimensionsOf, editsEndpoint, extensionOf, imagesEndpoint, parseReply, errorMessage, sniffMediaType, INPUT_TYPES, MAX_INPUT_IMAGES, SIZES } from './lib/provider.mjs';
 import { costFromList, estimateCost, familyOf, knownFamily, looksLikeImageModel, providerPerImage, totalsOf, PRICE_LIST_DATE } from './lib/pricing.mjs';
 import { catalogNames, catalogPerImage, createCatalog, lookupCatalog } from './lib/catalog.mjs';
 import { createStore, newId } from './lib/store.mjs';
@@ -333,6 +333,71 @@ async function download(url, signal) {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+/** The session's working directory, for a relative input path. */
+function cwdOf(ctx, exec) {
+  try {
+    const session = exec?.agent?.session;
+    const dir = session ? ctx.get('workingDirectory')?.get?.(session) : undefined;
+    if (typeof dir === 'string' && dir !== '') return dir;
+  } catch {
+    // The process's own below.
+  }
+  return process.cwd();
+}
+
+/** Bytes of a file, or a readable error naming what was asked for. */
+function readInput(path, asked) {
+  try {
+    return new Uint8Array(readFileSync(path));
+  } catch (error) {
+    throw new Error(`input image "${asked}" could not be read: ${error?.code === 'ENOENT' ? 'not found' : error?.message ?? error}`);
+  }
+}
+
+/**
+ * The input images one call names, as bytes: an attachment id from the
+ * conversation (`sha256:…`), the id of an image this tool made earlier, or a
+ * file path (absolute, `~/…`, or relative to the session's directory). An
+ * earlier GIF stands in as its sprite sheet.
+ * @returns {{bytes: Uint8Array, mediaType: string, name: string}[]}
+ */
+export function resolveInputs(ctx, store, list, exec) {
+  const asked = (Array.isArray(list) ? list : typeof list === 'string' && list.trim() !== '' ? [list] : []).map((v) => String(v ?? '').trim()).filter(Boolean);
+  if (asked.length > MAX_INPUT_IMAGES) throw new Error(`at most ${MAX_INPUT_IMAGES} input images can be sent; ${asked.length} were given`);
+  return asked.map((ref, i) => {
+    let bytes;
+    let name;
+    const sha = /^(?:sha256:)?([a-f0-9]{64})$/i.exec(ref);
+    const earlier = sha ? undefined : store.get(ref.replace(/\.[a-z0-9]+$/i, ''));
+    if (sha) {
+      const hash = sha[1].toLowerCase();
+      let path;
+      try {
+        path = ctx.get('attachments')?.imageHostPath?.({ attachmentId: `sha256:${hash}` });
+      } catch {
+        path = undefined;
+      }
+      bytes = readInput(path || join(homeDir(), 'attachments', 'v1', 'objects', hash.slice(0, 2), hash), ref);
+      name = `input-${i + 1}`;
+    } else if (earlier) {
+      const file = earlier.mediaType === 'image/gif' && earlier.sheetFile ? earlier.sheetFile : earlier.file;
+      bytes = readInput(file, ref);
+      name = earlier.id;
+    } else {
+      const expanded = ref.startsWith('~/') ? join(homedir(), ref.slice(2)) : ref;
+      const path = isAbsolute(expanded) ? expanded : resolvePath(cwdOf(ctx, exec), expanded);
+      bytes = readInput(path, ref);
+      name = path.split('/').pop() || `input-${i + 1}`;
+    }
+    const mediaType = sniffMediaType(bytes);
+    if (!mediaType || !INPUT_TYPES.includes(mediaType)) {
+      throw new Error(`input image "${ref}" is ${mediaType ?? 'not a PNG, JPEG or WebP image'}; image models take PNG, JPEG or WebP input`);
+    }
+    const ext = extensionOf(mediaType);
+    return { bytes, mediaType, name: name.toLowerCase().endsWith(`.${ext}`) ? name : `${name}.${ext}` };
+  });
+}
+
 /**
  * Generate the images one call asks for, save them, and describe them.
  * @returns the tool's canonical value.
@@ -352,14 +417,20 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
     quality: String(args.quality ?? '').trim() || settings.quality,
   });
 
+  // Reference images turn the request into an edit: same fields, multipart, `/images/edits`.
+  const inputs = resolveInputs(ctx, store, args.images, exec);
+
   const timer = AbortSignal.timeout(settings.timeoutMs);
   const signal = exec?.signal ? AbortSignal.any([exec.signal, timer]) : timer;
-  const headers = { 'content-type': 'application/json', ...target.headers };
+  // A multipart body sets its own content type, boundary included.
+  const headers = { ...(inputs.length > 0 ? {} : { 'content-type': 'application/json' }), ...target.headers };
   if (target.apiKey !== '') headers.authorization = `Bearer ${target.apiKey}`;
+  const endpoint = inputs.length > 0 ? editsEndpoint(target.baseURL) : imagesEndpoint(target.baseURL);
+  const payload = inputs.length > 0 ? buildEditForm(body, inputs) : JSON.stringify(body);
 
   let res;
   try {
-    res = await fetch(imagesEndpoint(target.baseURL), { method: 'POST', headers, body: JSON.stringify(body), signal });
+    res = await fetch(endpoint, { method: 'POST', headers, body: payload, signal });
   } catch (error) {
     if (exec?.signal?.aborted) throw new Error('the image request was cancelled');
     if (timer.aborted) throw new Error(`the provider did not answer within ${Math.round(settings.timeoutMs / 1000)}s`);
@@ -440,6 +511,7 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
       width: (layout ? dims.width : ref?.width) || dims.width,
       height: (layout ? dims.height : ref?.height) || dims.height,
       ...(animation ? { animation, sheetFile } : {}),
+      ...(inputs.length > 0 ? { inputs: inputs.length } : {}),
       prompt,
       ...(reply.revisedPrompt ? { revisedPrompt: reply.revisedPrompt } : {}),
       model: target.model,
@@ -477,6 +549,7 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
     ok: true,
     model: target.model,
     prompt,
+    ...(inputs.length > 0 ? { inputs: inputs.length } : {}),
     ...(replies[0].revisedPrompt ? { revisedPrompt: replies[0].revisedPrompt } : {}),
     ...(cost ? { cost: { amount: cost.amount, currency: cost.currency, source: cost.source } } : {}),
     images,
@@ -499,12 +572,13 @@ export function renderResult(_args, value) {
     const dims = img.width && img.height ? `${img.width}×${img.height}` : 'unknown size';
     const anim = img.animation ? ` animated, ${img.animation.frames} frames at ${img.animation.delayMs}ms, looping` : '';
     const sheet = img.sheetPath ? `; its sprite sheet is at ${img.sheetPath}${img.image ? ' and is the picture attached below' : ''}` : '';
-    return `${images.length > 1 ? `Image ${i + 1}: ` : ''}${dims} ${img.mediaType}${anim}, saved at ${img.path}${sheet}`;
+    return `${images.length > 1 ? `Image ${i + 1}: ` : ''}id ${img.id}, ${dims} ${img.mediaType}${anim}, saved at ${img.path}${sheet}`;
   });
   const spent = value?.cost ? ` (≈ ${fmtMoney(value.cost.amount, value.cost.currency)})` : '';
   const animated = images.length > 0 && images.every((img) => img.animation);
   const noun = animated ? `animated GIF${images.length > 1 ? 's' : ''}` : `image${images.length > 1 ? 's' : ''}`;
-  const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} ${noun} with ${value.model}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked.`;
+  const from = value?.inputs ? ` from ${value.inputs} input image${value.inputs > 1 ? 's' : ''}` : '';
+  const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} ${noun} with ${value.model}${from}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked. To change or continue ${images.length > 1 ? 'one' : 'it'}, pass its id in \`images\`.`;
   const revised = value?.revisedPrompt ? `\nThe provider rewrote the prompt as: ${value.revisedPrompt}` : '';
   const blocks = [{ type: 'text', text: [head, ...lines].join('\n') + revised }];
   for (const img of images) {
@@ -523,6 +597,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
     description:
       'Generate an image from a text description with the configured image model. Use it whenever the user asks for a picture, illustration, poster, icon, logo, photo-like render, concept art, or to "draw" something; also for variations of an earlier image, by describing the change fully. Write the prompt in full detail — subject, style, composition, lighting, colours, mood, and any text to render, quoted exactly. ' +
       'It also makes short looping animated GIFs (动图, GIF, sticker, animation, a cat running, a waving hand…): set `frames` and describe the scene and the motion — the tool has the model draw a sprite sheet of that many frames and assembles the GIF itself, so do not script it by hand. ' +
+      'It takes input images too: to edit, restyle, combine or continue pictures — a photo or screenshot the user attached, a file, or an image this tool made earlier — list them in `images` and say in the prompt what to do with them ("make the cat in image 1 wear a hat", "this character, running, as a GIF"). ' +
       'The image is saved and shown to the user in the conversation and in the Images panel; after the call, say in a sentence what was drawn.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'What to draw, in detail. Written in the language of the image model (English works everywhere), with any text to appear in the image quoted exactly.' },
@@ -532,6 +607,11 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
       frames: {
         type: 'integer',
         description: `Set to make an animated GIF instead of a still: how many frames (${LAYOUTS.map((l) => l.frames).join(', ')}; others round to the nearest). 16 gives the smoothest motion, 4 a simple two-pose loop. With frames, describe one continuous, looping motion of a single scene, and leave size out unless the frames must be wide or tall.`,
+      },
+      images: {
+        type: 'array',
+        items: { type: 'string' },
+        description: `Input images (up to ${MAX_INPUT_IMAGES}), each one of: the attachment id shown with an image in the conversation (\`sha256:…\`), the id of an image this tool generated earlier (from its result), or a file path (absolute, ~/…, or relative to the working directory). PNG, JPEG or WebP; an earlier GIF is sent as its sprite sheet. Leave out to draw from the prompt alone.`,
       },
       frameMs: { type: 'integer', description: 'With frames: how long each frame shows, in milliseconds (40–1000, default 100). Lower is faster.' },
     },
@@ -544,6 +624,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
           model: { type: 'string', required: true },
           prompt: { type: 'string', required: true },
           revisedPrompt: { type: 'string' },
+          inputs: { type: 'integer' },
           cost: {
             type: 'object',
             additionalProperties: false,

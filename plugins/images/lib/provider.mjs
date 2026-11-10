@@ -22,6 +22,37 @@ export function imagesEndpoint(baseURL) {
 }
 
 /**
+ * The edits endpoint (images in, images out) for a provider's base URL, on the
+ * same rule as `imagesEndpoint`.
+ * @param {string} baseURL
+ * @returns {string}
+ */
+export function editsEndpoint(baseURL) {
+  const generations = imagesEndpoint(baseURL);
+  return generations === '' ? '' : generations.replace(/\/generations$/, '/edits');
+}
+
+/** Input images one edit may carry (OpenAI's gpt-image limit). */
+export const MAX_INPUT_IMAGES = 16;
+/** Media types an edit takes as input. */
+export const INPUT_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+/**
+ * The multipart body of `POST /images/edits`: the JSON request's fields, then
+ * the input images — `image` for one, `image[]` for several, as OpenAI takes them.
+ * @param {Record<string, unknown>} body - `buildRequest(...)`.
+ * @param {{bytes: Uint8Array, mediaType: string, name: string}[]} images
+ * @returns {FormData}
+ */
+export function buildEditForm(body, images) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(body)) form.append(key, String(value));
+  const field = images.length > 1 ? 'image[]' : 'image';
+  for (const img of images) form.append(field, new Blob([img.bytes], { type: img.mediaType }), img.name);
+  return form;
+}
+
+/**
  * The request body. Empty fields are left out so a provider that does not take
  * them is not asked to.
  * @param {{model: string, prompt: string, size?: string, quality?: string, n?: number}} request

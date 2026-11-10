@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { afterEach } from 'node:test';
@@ -37,7 +37,8 @@ function harness({ home, config = { model: 'gpt-image-1' }, reply, status = 200,
       return { ok: true, status: 200, text: async () => JSON.stringify({ data: [{ id: 'gpt-4o' }, { id: 'gpt-image-1.5', pricing: { per_image: 0.05 } }, { id: 'flux-pro', modalities: { output: ['image'] } }] }) };
     }
     if (String(url).endsWith('/picture.png')) return { ok: true, status: 200, arrayBuffer: async () => PNG_2x3.buffer.slice(PNG_2x3.byteOffset, PNG_2x3.byteOffset + PNG_2x3.byteLength) };
-    const body = typeof reply === 'function' ? reply(JSON.parse(init.body)) : reply ?? { data: [{ b64_json: PNG_2x3.toString('base64') }] };
+    const sent = init.body instanceof FormData ? Object.fromEntries([...init.body.keys()].map((k) => [k, init.body.getAll(k)])) : JSON.parse(init.body);
+    const body = typeof reply === 'function' ? reply(sent) : reply ?? { data: [{ b64_json: PNG_2x3.toString('base64') }] };
     return { ok: status < 400, status, text: async () => JSON.stringify(body) };
   };
   const services = {
@@ -215,6 +216,63 @@ test('frames make an animated GIF from one sprite sheet; the model sees the shee
   assert.equal(file.headers['content-type'], 'image/gif');
   assert.deepEqual(await h.request('/__dsh_images/delete', { method: 'POST', body: { id: img.id } }), { ok: true });
   assert.equal(existsSync(img.sheetPath), false, 'removing the GIF removes its sheet');
+});
+
+test('input images turn the call into a multipart edit: attachment ids, earlier results and paths', async () => {
+  const h = harness();
+  const tool = h.tools.get(TOOL_NAME);
+  assert.equal(tool.parameters.images.type, 'array');
+  assert.match(tool.description, /input images/);
+
+  // A conversation attachment, where the Harness keeps it.
+  const hash = 'ab'.repeat(32);
+  const objects = join(h.home, 'attachments', 'v1', 'objects', 'ab');
+  mkdirSync(objects, { recursive: true });
+  writeFileSync(join(objects, hash), PNG_2x3);
+  // An earlier result, and a file next to the session.
+  const first = await h.run({ prompt: 'a red circle' });
+  const file = join(h.home, 'photo.png');
+  writeFileSync(file, PNG_2x3);
+
+  h.calls.length = 0;
+  const value = await h.run({ prompt: 'put a hat on it', images: [`sha256:${hash}`, first.images[0].id, file], size: '1024x1024' });
+  const [call] = h.calls;
+  assert.equal(call.url, 'http://127.0.0.1:3425/v1/images/edits');
+  assert.equal(call.init.headers.authorization, 'Bearer sk-test');
+  assert.equal(call.init.headers['content-type'], undefined, 'multipart sets its own boundary');
+  const form = call.init.body;
+  assert.ok(form instanceof FormData);
+  assert.equal(form.get('model'), 'gpt-image-1');
+  assert.equal(form.get('prompt'), 'put a hat on it');
+  assert.equal(form.get('size'), '1024x1024');
+  const sent = form.getAll('image[]');
+  assert.equal(sent.length, 3);
+  assert.deepEqual(sent.map((f) => f.type), ['image/png', 'image/png', 'image/png']);
+  assert.deepEqual(sent.map((f) => f.name), ['input-1.png', `${first.images[0].id}.png`, 'photo.png']);
+  assert.equal(Buffer.from(await sent[0].arrayBuffer()).equals(PNG_2x3), true);
+
+  assert.equal(value.inputs, 3);
+  assert.match(renderResult({}, value)[0].text, /from 3 input images/);
+
+  // One input goes as `image`; a missing one and a GIF are readable failures.
+  h.calls.length = 0;
+  await h.run({ prompt: 'again', images: file });
+  assert.equal(h.calls[0].init.body.getAll('image').length, 1);
+  await assert.rejects(h.run({ prompt: 'x', images: ['/nope/missing.png'] }), /input image "\/nope\/missing.png" could not be read: not found/);
+  const gif = join(h.home, 'a.gif');
+  writeFileSync(gif, Buffer.from('474946383961020003000000000000000000000000', 'hex'));
+  await assert.rejects(h.run({ prompt: 'x', images: [gif] }), /is image\/gif; image models take PNG, JPEG or WebP/);
+});
+
+test('an earlier GIF is sent as its sprite sheet', async () => {
+  const sheet = await sheetPng(2, 2, 8);
+  const h = harness({ reply: { data: [{ b64_json: sheet.toString('base64') }] } });
+  const gif = await h.run({ prompt: 'a bouncing ball', frames: 4 });
+  h.calls.length = 0;
+  await h.run({ prompt: 'same ball, now blue', images: [gif.images[0].id], frames: 4 });
+  const [part] = h.calls[0].init.body.getAll('image');
+  assert.equal(part.type, 'image/png');
+  assert.equal(Buffer.from(await part.arrayBuffer()).equals(sheet), true);
 });
 
 test('a URL reply is downloaded; without an attachment store the result is text only', async () => {

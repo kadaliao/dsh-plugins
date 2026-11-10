@@ -549,6 +549,7 @@ window.__ModuleLoader__.load({
         settled && !block.isError && shown[0]?.model
           ? h('span', { style: { color: C.faint, flex: 'none' } }, [shown[0].model, block.meta?.cost ? fmtCost(block.meta.cost) : null].filter(Boolean).join(' · '))
           : null,
+        Array.isArray(args.images) && args.images.length > 0 ? h('span', { style: { color: C.faint, flex: 'none' } }, t('fromInputs', { n: args.images.length })) : null,
         !settled ? h('span', { style: { color: C.faint, fontStyle: 'italic' } }, t(phase === 'preparing' ? 'preparing' : 'generating')) : null,
       );
 
@@ -1599,6 +1600,7 @@ window.__ModuleLoader__.load({
         failed: 'The image could not be generated.',
         noImage: 'No image came back.',
         frames: '{n} frames',
+        fromInputs: 'from {n} input image(s)',
         enlarge: 'Enlarge',
         download: 'Download',
         more: 'More',
@@ -1690,6 +1692,7 @@ window.__ModuleLoader__.load({
         failed: '这张图没有生成出来。',
         noImage: '没有返回图片。',
         frames: '{n} 帧',
+        fromInputs: '基于 {n} 张参考图',
         enlarge: '放大',
         download: '下载',
         more: '更多',

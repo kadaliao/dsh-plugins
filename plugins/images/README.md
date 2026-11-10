@@ -50,6 +50,23 @@ Under the picture a line says which model drew it, its pixel size and what it co
 (`gpt-image-1.5 · 1024×1024 · ≈ $0.017`). The model also receives the picture (on a model that
 takes image input), so it can check its own work and describe what it drew.
 
+## Input images
+
+`generate_image` also takes pictures in. Attach a photo or screenshot, point at a file, or refer to
+something it drew earlier, and say what to do with it — "make the cat in this photo wear a party
+hat", "put these two characters in one poster", "this character, running, as a GIF". The model
+passes them in `images` (up to 16), each one of:
+
+- the attachment id the conversation shows with an image (`sha256:…`),
+- the id of an image the tool made earlier (every result names its ids),
+- a file path: absolute, `~/…`, or relative to the session's working directory.
+
+With input images the request goes to the provider's `POST /images/edits` (multipart, the same
+model and fields) instead of `/images/generations`. Inputs are PNG, JPEG or WebP; an earlier GIF is
+sent as its sprite sheet, so an animation can be revised. The tool card shows
+`from N input image(s)`. The provider and image model must support edits (OpenAI's `gpt-image-*`
+do; many gateways pass it through).
+
 ## Animated GIFs
 
 Ask for a GIF, an animation or a sticker ("做一张阿比西尼亚猫追毛线球的 GIF") and the model calls
