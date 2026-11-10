@@ -19,7 +19,7 @@ import { buildEditForm, buildRequest, dimensionsOf, editsEndpoint, extensionOf, 
 import { costFromList, estimateCost, familyOf, knownFamily, looksLikeImageModel, providerPerImage, totalsOf, PRICE_LIST_DATE } from './lib/pricing.mjs';
 import { catalogNames, catalogPerImage, createCatalog, lookupCatalog } from './lib/catalog.mjs';
 import { createStore, newId } from './lib/store.mjs';
-import { LAYOUTS, frameDelay, layoutFor, sheetPrompt, sheetToGif } from './lib/animate.mjs';
+import { GIF_FAMILIES, LAYOUTS, frameDelay, gifCapable, layoutFor, sheetPrompt, sheetToGif } from './lib/animate.mjs';
 
 // The registry wants the compiled definition `defineTool` makes. Outside a
 // Harness (the tests) the raw definition stands in for it.
@@ -409,6 +409,8 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
   // An animation is drawn as one sprite sheet, then cut into the GIF's frames.
   const layout = layoutFor(args.frames);
   const delayMs = layout ? frameDelay(args.frameMs) : 0;
+  // Only some models are known to keep to the grid; the others are tried, with a warning.
+  const gifUnverified = Boolean(layout) && !gifCapable(target.model);
   const body = buildRequest({
     model: target.model,
     prompt: layout ? sheetPrompt(prompt, layout) : prompt,
@@ -550,6 +552,7 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
     model: target.model,
     prompt,
     ...(inputs.length > 0 ? { inputs: inputs.length } : {}),
+    ...(gifUnverified ? { gifUnverified: true } : {}),
     ...(replies[0].revisedPrompt ? { revisedPrompt: replies[0].revisedPrompt } : {}),
     ...(cost ? { cost: { amount: cost.amount, currency: cost.currency, source: cost.source } } : {}),
     images,
@@ -580,7 +583,10 @@ export function renderResult(_args, value) {
   const from = value?.inputs ? ` from ${value.inputs} input image${value.inputs > 1 ? 's' : ''}` : '';
   const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} ${noun} with ${value.model}${from}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked. To change or continue ${images.length > 1 ? 'one' : 'it'}, pass its id in \`images\`.`;
   const revised = value?.revisedPrompt ? `\nThe provider rewrote the prompt as: ${value.revisedPrompt}` : '';
-  const blocks = [{ type: 'text', text: [head, ...lines].join('\n') + revised }];
+  const unverified = value?.gifUnverified
+    ? `\nNote: ${value.model} is not a model known to draw GIF frames (only ${GIF_FAMILIES.join(', ')} models are); the frames may not line up. Tell the user so in one sentence, and suggest a ${GIF_FAMILIES[0]} model if the animation looks wrong.`
+    : '';
+  const blocks = [{ type: 'text', text: [head, ...lines].join('\n') + revised + unverified }];
   for (const img of images) {
     if (img.image) blocks.push({ type: 'image', attachment: img.image });
   }
@@ -606,7 +612,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
       quality: { type: 'string', description: 'Quality tier when the model takes one (low, medium, high). Leave out for the default.' },
       frames: {
         type: 'integer',
-        description: `Set to make an animated GIF instead of a still: how many frames (${LAYOUTS.map((l) => l.frames).join(', ')}; others round to the nearest). 16 gives the smoothest motion, 4 a simple two-pose loop. With frames, describe one continuous, looping motion of a single scene, and leave size out unless the frames must be wide or tall.`,
+        description: `Set to make an animated GIF instead of a still: how many frames (${LAYOUTS.map((l) => l.frames).join(', ')}; others round to the nearest). 16 gives the smoothest motion, 4 a simple two-pose loop. Only ${GIF_FAMILIES.join(', ')} models are known to draw the frames reliably; with another model the GIF is still made, with a warning. With frames, describe one continuous, looping motion of a single scene, and leave size out unless the frames must be wide or tall.`,
       },
       images: {
         type: 'array',
@@ -625,6 +631,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
           prompt: { type: 'string', required: true },
           revisedPrompt: { type: 'string' },
           inputs: { type: 'integer' },
+          gifUnverified: { type: 'boolean' },
           cost: {
             type: 'object',
             additionalProperties: false,
@@ -661,6 +668,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
         media: (value?.images ?? []).map((img) => ({ mediaType: img.mediaType, width: img.width, height: img.height, ...(img.animation ? { frames: img.animation.frames } : {}) })),
         prompt: value?.prompt ?? '',
         model: value?.model ?? '',
+        ...(value?.gifUnverified ? { gifUnverified: true } : {}),
         ...(value?.cost ? { cost: value.cost } : {}),
       }),
     },
@@ -792,7 +800,8 @@ export function apply(ctx, config) {
       }),
     );
     /** How a model would be billed, for the panel while a model is being typed. */
-    const previewPrice = async (model, size, quality) => {
+    const previewPrice = async (model, size, quality) => ({ ...(await priceView(model, size, quality)), gif: gifCapable(model) });
+    const priceView = async (model, size, quality) => {
       const provider = priceOf(model);
       const perImage = provider ? providerPerImage(provider) : undefined;
       if (perImage) return { model, source: 'provider', perImage, family: familyOf(model) };

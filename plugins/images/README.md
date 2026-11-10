@@ -82,6 +82,11 @@ as its picture instead; the sheet is also kept beside the GIF (`<id>-sheet.png`)
 Motion is as smooth as the model keeps the frames consistent: simple, repeating motion (running,
 waving, bouncing, spinning) works best.
 
+Only the **gpt-image-2.6** family (`gpt-image-2.6-sunburst`, `gpt-image-2.6-flare`, …) is known to
+draw a sheet that lines up. With any other model the GIF is still made, but the result and the
+settings drawer warn that the model may not support GIF generation: a model that ignores the grid
+gives a GIF that flickers between parts of one picture. More families are added as they are verified.
+
 ## The Images panel
 
 **Images** in the left sidebar (or `/images`) opens a gallery of every picture generated in any

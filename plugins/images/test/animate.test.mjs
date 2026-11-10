@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { decodePng, encodeGif, frameDelay, layoutFor, sheetPrompt, sheetToGif, sliceFrames } from '../lib/animate.mjs';
+import { decodePng, encodeGif, frameDelay, gifCapable, layoutFor, sheetPrompt, sheetToGif, sliceFrames } from '../lib/animate.mjs';
 import { dimensionsOf, sniffMediaType } from '../lib/provider.mjs';
 import { sheetPng } from './fixtures.mjs';
 
@@ -79,4 +79,9 @@ test('large frames are scaled down and a busy frame survives LZW resets', () => 
   const big = { width: 2000, height: 2000, data: new Uint8Array(2000 * 2000 * 4).fill(255) };
   const sliced = sliceFrames(big, layoutFor(4));
   assert.ok(Math.max(sliced.width, sliced.height) <= 480);
+});
+
+test('only the gpt-image-2.6 family is known to draw GIF frames', () => {
+  for (const id of ['gpt-image-2.6', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare', 'GPT-Image-2.6-Sunburst', 'sub2api/gpt-image-2.6-sunburst']) assert.equal(gifCapable(id), true, id);
+  for (const id of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.60', 'gpt-image-1.5', 'flux-pro', 'doubao-seedream-4', '']) assert.equal(gifCapable(id), false, id);
 });

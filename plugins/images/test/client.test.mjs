@@ -316,6 +316,22 @@ test('the viewer zooms with its buttons, the wheel and the keyboard, and pans wh
   }
 });
 
+test('a GIF from a model not known to support it says so under the picture', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const view = seen.slots.find((s) => s.options.name === 'tool.call.toolview').component;
+  const block = (meta) => ({ phase: 'result', block: { kind: 'tool-result', callId: 'w1', call: { argsRaw: '{"prompt":"p","frames":4}' }, content: [], isError: false, meta: { ids: ['w1'], media: [{ mediaType: 'image/gif', width: 10, height: 10, frames: 4 }], prompt: 'p', ...meta } } });
+  hooks.reset();
+  let tree = view(block({ model: 'flux-pro', gifUnverified: true }));
+  const warning = findAll(tree, (n) => n.props['data-dsh-images-gif-warning'])[0];
+  assert.ok(warning);
+  assert.match(collect(warning).join(''), /flux-pro is not known to support GIF frames/);
+  hooks.reset();
+  tree = view(block({ model: 'gpt-image-2.6-sunburst' }));
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-images-gif-warning']).length, 0);
+});
+
 test('a failed call shows the error, and a result without gallery ids falls back to the attachment loader', async () => {
   const { exports, hooks } = await loadClient();
   const { ctx, seen } = fakeContext();
@@ -529,7 +545,7 @@ test('the settings drawer shows what is in force, tests the connection, and save
       if (path === '/__dsh_images/models') return { ok: true, json: async () => ({ ok: true, baseURL: 'http://127.0.0.1:3425/v1', keySource: 'stored', models: [{ id: 'gpt-image-1.5', isImage: true }, { id: 'gpt-4o', isImage: false }] }) };
       return { ok: true, json: async () => ({ ok: true, ...info, stats: { ...info.stats, totals: { USD: 0.9 } } }) };
     }
-    if (path.startsWith('/__dsh_images/settings?model=')) return { ok: true, json: async () => ({ model: 'gpt-image-1', source: 'list', family: 'gpt-image-1', perImage: { amount: 0.167, currency: 'USD' }, samples: [{ size: '1024x1024', price: { amount: 0.167, currency: 'USD' } }, { size: '1536x1024', price: { amount: 0.25, currency: 'USD' } }], priceListDate: '2026-11-09' }) };
+    if (path.startsWith('/__dsh_images/settings?model=')) return { ok: true, json: async () => ({ model: 'gpt-image-1', source: 'list', family: 'gpt-image-1', perImage: { amount: 0.167, currency: 'USD' }, samples: [{ size: '1024x1024', price: { amount: 0.167, currency: 'USD' } }, { size: '1536x1024', price: { amount: 0.25, currency: 'USD' } }], priceListDate: '2026-11-09', gif: false }) };
     if (path === '/__dsh_images/settings') return { ok: true, json: async () => info };
     if (path.startsWith('/__dsh_images/state')) return { ok: true, json: async () => ({ total: 0, totals: {} }) };
     return { ok: true, json: async () => ({ items: [], hasMore: false, total: 0 }) };
@@ -557,6 +573,8 @@ test('the settings drawer shows what is in force, tests the connection, and save
   assert.match(text, /Image generation/);
   assert.match(text, /3 images so far/);
   assert.match(text, /Built-in list for gpt-image-1: 1024×1024 \$0\.167 · 1536×1024 \$0\.25/);
+  // gpt-image-1 is not a family known to draw GIF frames.
+  assert.match(collect(findAll(drawer, (n) => n.props['data-dsh-images-gif-hint'])[0]).join(''), /may not support GIF generation; gpt-image-2\.6 models are known to work/);
   const keyInput = findAll(drawer, (n) => n.props['data-dsh-images-field'] === 'apiKey')[0];
   assert.equal(keyInput.props.type, 'password');
   assert.match(keyInput.props.placeholder, /Using the provider's key ····test/);

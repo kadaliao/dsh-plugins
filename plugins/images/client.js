@@ -583,6 +583,11 @@ window.__ModuleLoader__.load({
       return { at, open: (items, item) => setAt(items.indexOf(item)), close: () => setAt(-1), step: setAt };
     }
 
+    const WARN = 'var(--dsw-alias-state-warn-primary, #f59e0b)';
+    /** The line under a GIF drawn by a model not known to keep to the frame grid. */
+    const gifWarning = (t, meta, model) =>
+      meta && meta.gifUnverified ? h('div', { 'data-dsh-images-gif-warning': true, style: { fontSize: 11.5, color: WARN, lineHeight: 1.5 } }, t('gifUnverified', { model: model || meta.model || '' })) : null;
+
     // --- the tool call in the conversation -----------------------------------------
 
     function parseArgs(block) {
@@ -741,6 +746,7 @@ window.__ModuleLoader__.load({
         head,
         promptRow,
         body,
+        settled && !block.isError ? gifWarning(t, block.meta) : null,
         box.at >= 0 ? h(Lightbox, { t, items: shown, index: box.at, onClose: box.close, onStep: box.step }) : null,
       );
     }
@@ -825,6 +831,7 @@ window.__ModuleLoader__.load({
             h('div', { style: { marginTop: 5, fontSize: 11.5, color: C.faint, letterSpacing: 0.1 } }, metaLine(t, img)),
           ),
         ),
+        gifWarning(t, state.meta) ? h('div', { style: { flexBasis: '100%' } }, gifWarning(t, state.meta)) : null,
         box.at >= 0 ? h(Lightbox, { t, items: shown, index: box.at, onClose: box.close, onStep: box.step }) : null,
       );
     }
@@ -1543,6 +1550,7 @@ window.__ModuleLoader__.load({
           h('span', { id: 'dsh-images-model-label', style: labelStyle }, t('model')),
           h(ModelCombo, { t, value: draft.model ?? '', placeholder: info.defaults.model || 'gpt-image-1.5', groups: pickerGroups, onChange: (v) => set({ model: v }), labelId: 'dsh-images-model-label' }),
           h('span', { style: { ...hintStyle, color: preview?.source === 'unknown' ? 'var(--dsw-alias-state-warn-primary, #f59e0b)' : C.faint } }, previewText || (models ? t('modelHintListed') : t('modelHint'))),
+          preview && preview.gif === false ? h('span', { 'data-dsh-images-gif-hint': true, style: { ...hintStyle, color: WARN } }, t('gifModelHint')) : null,
         ),
         models && models.some((m) => m.isImage)
           ? h(
@@ -1736,6 +1744,8 @@ window.__ModuleLoader__.load({
         noImage: 'No image came back.',
         frames: '{n} frames',
         fromInputs: 'from {n} input image(s)',
+        gifUnverified: '{model} is not known to support GIF frames; the animation may not line up. gpt-image-2.6 models are known to work.',
+        gifModelHint: 'This model may not support GIF generation; gpt-image-2.6 models are known to work.',
         zoomIn: 'Zoom in (+, wheel)',
         zoomOut: 'Zoom out (−, wheel)',
         zoomReset: 'Fit to screen (0)',
@@ -1831,6 +1841,8 @@ window.__ModuleLoader__.load({
         noImage: '没有返回图片。',
         frames: '{n} 帧',
         fromInputs: '基于 {n} 张参考图',
+        gifUnverified: '{model} 不一定支持 GIF 素材生成，动图的帧可能对不齐。已知 gpt-image-2.6 系列可以。',
+        gifModelHint: '该模型不一定支持 GIF 素材生成；已知 gpt-image-2.6 系列可以。',
         zoomIn: '放大（+ 或滚轮）',
         zoomOut: '缩小（− 或滚轮）',
         zoomReset: '适应屏幕（0）',

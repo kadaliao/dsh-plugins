@@ -9,6 +9,18 @@
 
 import { inflateSync } from 'node:zlib';
 
+/**
+ * Model families known to draw a usable sprite sheet. Others are still asked,
+ * with a warning, since nothing checks the sheet they return.
+ */
+export const GIF_FAMILIES = ['gpt-image-2.6'];
+
+/** Whether a model id (a gateway prefix like `sub2api/` allowed) belongs to a family above. */
+export function gifCapable(model) {
+  const bare = String(model ?? '').trim().toLowerCase().split('/').pop() ?? '';
+  return GIF_FAMILIES.some((f) => bare === f || (bare.startsWith(f) && !/^[\d.]/.test(bare.charAt(f.length))));
+}
+
 /** Frame counts a sheet can hold, with their grid and the sheet size to ask for. */
 export const LAYOUTS = [
   { frames: 4, cols: 2, rows: 2, size: '1024x1024' },

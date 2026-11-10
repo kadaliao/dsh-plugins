@@ -73,6 +73,10 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/images
 所以交给模型看的是那张精灵图；精灵图也存在 GIF 旁边（`<id>-sheet.png`），删 GIF 时一起删。
 动作是否顺滑取决于模型帧间画得是否一致：奔跑、挥手、弹跳、旋转这类简单重复的动作效果最好。
 
+目前只确认 **gpt-image-2.6** 系列（`gpt-image-2.6-sunburst`、`gpt-image-2.6-flare` 等）能画出对得齐的精灵图。换成其他模型
+仍会生成 GIF，但结果下方和设置抽屉里都会提示「该模型不一定支持 GIF 素材生成」：不按网格出图的模型，做出来的 GIF
+只是同一张图的不同局部来回闪。以后确认了其他模型可用，再加进来。
+
 ## 「图片」面板
 
 左侧栏的 **Images**（或输入 `/images`）打开图库：所有会话里生成过的图，最新的在前，瀑布流卡片。
