@@ -144,6 +144,8 @@ window.__ModuleLoader__.load({
     const CloseIcon = ({ size = 16 }) => svg(size, ['M6 6l12 12', 'M18 6L6 18']);
     const GearIcon = ({ size = 15 }) =>
       svg(size, ['M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z', 'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z']);
+    const ZoomInIcon = ({ size = 16 }) => svg(size, ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'M20 20l-4-4', 'M11 8v6', 'M8 11h6']);
+    const ZoomOutIcon = ({ size = 16 }) => svg(size, ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'M20 20l-4-4', 'M8 11h6']);
     const ChevronIcon = ({ size = 20, dir = 1 }) => svg(size, [dir > 0 ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7']);
     function ImagesGlyph(props) {
       const size = Number(props?.size) > 0 ? Number(props.size) : 18;
@@ -353,14 +355,78 @@ window.__ModuleLoader__.load({
 
     // --- the lightbox ----------------------------------------------------------------
 
+    /** Zoom range of the viewer, as a multiple of the fitted size. */
+    const ZOOM_MIN = 0.5;
+    const ZOOM_MAX = 10;
+    const ZOOM_STEP = 1.25;
+    const FIT = { s: 1, x: 0, y: 0 };
+    const clampZoom = (s) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s));
+
+    /**
+     * The view after zooming to `next` around a point `dx, dy` away from the
+     * image's current centre on screen: that point stays under the cursor. At or
+     * below the fitted size the image re-centres.
+     */
+    function zoomView(view, next, dx = 0, dy = 0) {
+      const s = clampZoom(next);
+      if (s <= 1) return { s, x: 0, y: 0 };
+      const k = 1 - s / view.s;
+      return { s, x: view.x + dx * k, y: view.y + dy * k };
+    }
+
     function Lightbox({ t, items, index, onClose, onStep }) {
       const item = items[index];
+      const [view, setView] = useState(FIT);
+      const drag = useRef(null);
+      // A new picture opens fitted.
+      useEffect(() => {
+        setView(FIT);
+      }, [index]);
+
+      /** Zoom around a client point, or the image's centre without one. */
+      const zoomAt = (factor, img, clientX, clientY) => {
+        let dx = 0;
+        let dy = 0;
+        if (img && typeof img.getBoundingClientRect === 'function' && clientX !== undefined) {
+          const r = img.getBoundingClientRect();
+          dx = clientX - (r.left + r.width / 2);
+          dy = clientY - (r.top + r.height / 2);
+        }
+        setView((v) => zoomView(v, v.s * factor, dx, dy));
+      };
+
+      // The wheel zooms. React's own wheel listener is passive and cannot stop the
+      // page (or a trackpad pinch) from scrolling and zooming the app, so a native
+      // one is attached to the stage.
+      const stage = useRef(null);
+      if (stage.current === null) {
+        const box = { el: null, listener: null };
+        box.ref = (el) => {
+          if (box.el && box.listener) box.el.removeEventListener('wheel', box.listener);
+          box.el = el;
+          if (!el) return;
+          box.listener = (e) => {
+            e.preventDefault();
+            // A pinch arrives as ctrl+wheel with small deltas; a mouse wheel as large ones.
+            const speed = e.ctrlKey ? 0.01 : 0.0015;
+            const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+            const img = typeof el.querySelector === 'function' ? el.querySelector('img') : null;
+            zoomAt(Math.exp(-delta * speed), img, e.clientX, e.clientY);
+          };
+          el.addEventListener('wheel', box.listener, { passive: false });
+        };
+        stage.current = box;
+      }
+
       useEffect(() => {
         if (typeof document === 'undefined') return undefined;
         const key = (e) => {
           if (e.key === 'Escape') onClose();
           else if (e.key === 'ArrowRight' && index < items.length - 1) onStep(index + 1);
           else if (e.key === 'ArrowLeft' && index > 0) onStep(index - 1);
+          else if (e.key === '+' || e.key === '=') setView((v) => zoomView(v, v.s * ZOOM_STEP));
+          else if (e.key === '-' || e.key === '_') setView((v) => zoomView(v, v.s / ZOOM_STEP));
+          else if (e.key === '0') setView(FIT);
           else return;
           e.preventDefault();
           e.stopPropagation();
@@ -375,6 +441,7 @@ window.__ModuleLoader__.load({
       }, [index, items.length]);
       if (!item) return null;
       const meta = metaLine(t, item);
+      const zoomed = view.s > 1;
       const nav = (dir) =>
         h(
           'button',
@@ -390,6 +457,7 @@ window.__ModuleLoader__.load({
               top: '50%',
               [dir > 0 ? 'right' : 'left']: 18,
               transform: 'translateY(-50%)',
+              zIndex: 1,
               width: 40,
               height: 40,
               borderRadius: 20,
@@ -404,6 +472,30 @@ window.__ModuleLoader__.load({
           },
           h(ChevronIcon, { dir }),
         );
+      const zoomBar = h(
+        'div',
+        {
+          'data-dsh-images-zoom': true,
+          onClick: (e) => e.stopPropagation(),
+          style: { display: 'flex', alignItems: 'center', gap: 2, padding: 2, borderRadius: 10, background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(6px)' },
+        },
+        h(IconButton, { key: 'out', title: t('zoomOut'), dark: true, onClick: () => setView((v) => zoomView(v, v.s / ZOOM_STEP)) }, h(ZoomOutIcon, { size: 18 })),
+        h(
+          'button',
+          {
+            type: 'button',
+            title: t('zoomReset'),
+            'aria-label': t('zoomReset'),
+            onClick: (e) => {
+              e.stopPropagation();
+              setView(FIT);
+            },
+            style: { minWidth: 48, height: 28, padding: '0 4px', border: 'none', borderRadius: 8, background: 'transparent', color: '#fff', font: 'inherit', fontSize: 12, fontVariantNumeric: 'tabular-nums', cursor: 'pointer' },
+          },
+          `${Math.round(view.s * 100)}%`,
+        ),
+        h(IconButton, { key: 'in', title: t('zoomIn'), dark: true, onClick: () => setView((v) => zoomView(v, v.s * ZOOM_STEP)) }, h(ZoomInIcon, { size: 18 })),
+      );
       const node = h(
         'div',
         {
@@ -416,7 +508,8 @@ window.__ModuleLoader__.load({
         },
         h(
           'div',
-          { style: { position: 'absolute', top: 14, right: 14, display: 'flex', gap: 8, zIndex: 1 } },
+          { style: { position: 'absolute', top: 14, right: 14, display: 'flex', gap: 8, zIndex: 2 } },
+          zoomBar,
           h(IconButton, { key: 'dl', title: t('download'), dark: true, onClick: () => download(item) }, h(DownloadIcon, { size: 18 })),
           h(IconButton, { key: 'x', title: t('close'), dark: true, onClick: onClose }, h(CloseIcon, { size: 18 })),
         ),
@@ -424,17 +517,59 @@ window.__ModuleLoader__.load({
         index < items.length - 1 ? nav(1) : null,
         h(
           'div',
-          { style: { flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '56px 72px 12px' } },
+          {
+            ref: stage.current.ref,
+            'data-dsh-images-stage': true,
+            style: { flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '56px 72px 12px', overflow: 'hidden' },
+          },
           h('img', {
             src: item.src,
             alt: item.prompt ?? '',
+            draggable: false,
             onClick: (e) => e.stopPropagation(),
-            style: { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 6, boxShadow: '0 12px 48px rgba(0,0,0,.5)', cursor: 'default' },
+            // Double-click toggles between fitted and 2× at the point clicked.
+            onDoubleClick: (e) => {
+              e.stopPropagation();
+              if (view.s !== 1) setView(FIT);
+              else zoomAt(2, e.currentTarget, e.clientX, e.clientY);
+            },
+            // Dragging pans a zoomed picture.
+            onPointerDown: (e) => {
+              if (!zoomed || e.button !== 0) return;
+              e.preventDefault();
+              drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, ox: view.x, oy: view.y };
+              e.currentTarget.setPointerCapture?.(e.pointerId);
+            },
+            onPointerMove: (e) => {
+              const d = drag.current;
+              if (!d || d.id !== e.pointerId) return;
+              setView((v) => ({ ...v, x: d.ox + e.clientX - d.x, y: d.oy + e.clientY - d.y }));
+            },
+            onPointerUp: (e) => {
+              if (drag.current?.id === e.pointerId) drag.current = null;
+            },
+            onPointerCancel: () => {
+              drag.current = null;
+            },
+            style: {
+              maxWidth: '100%',
+              maxHeight: '100%',
+              objectFit: 'contain',
+              borderRadius: 6,
+              boxShadow: '0 12px 48px rgba(0,0,0,.5)',
+              cursor: zoomed ? (drag.current ? 'grabbing' : 'grab') : 'zoom-in',
+              transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`,
+              transformOrigin: 'center center',
+              transition: drag.current ? 'none' : 'transform .12s ease-out',
+              touchAction: 'none',
+              userSelect: 'none',
+              willChange: 'transform',
+            },
           }),
         ),
         h(
           'div',
-          { onClick: (e) => e.stopPropagation(), style: { padding: '0 72px 22px', textAlign: 'center', fontSize: SMALL, lineHeight: 1.5 } },
+          { onClick: (e) => e.stopPropagation(), style: { position: 'relative', zIndex: 1, padding: '0 72px 22px', textAlign: 'center', fontSize: SMALL, lineHeight: 1.5 } },
           item.prompt ? h('div', { style: { maxWidth: 820, margin: '0 auto', color: 'rgba(255,255,255,.92)', userSelect: 'text' } }, item.prompt) : null,
           meta ? h('div', { style: { marginTop: 4, color: 'rgba(255,255,255,.55)' } }, `${meta}${items.length > 1 ? ` · ${index + 1} / ${items.length}` : ''}`) : null,
         ),
@@ -1601,6 +1736,9 @@ window.__ModuleLoader__.load({
         noImage: 'No image came back.',
         frames: '{n} frames',
         fromInputs: 'from {n} input image(s)',
+        zoomIn: 'Zoom in (+, wheel)',
+        zoomOut: 'Zoom out (−, wheel)',
+        zoomReset: 'Fit to screen (0)',
         enlarge: 'Enlarge',
         download: 'Download',
         more: 'More',
@@ -1693,6 +1831,9 @@ window.__ModuleLoader__.load({
         noImage: '没有返回图片。',
         frames: '{n} 帧',
         fromInputs: '基于 {n} 张参考图',
+        zoomIn: '放大（+ 或滚轮）',
+        zoomOut: '缩小（− 或滚轮）',
+        zoomReset: '适应屏幕（0）',
         enlarge: '放大',
         download: '下载',
         more: '更多',

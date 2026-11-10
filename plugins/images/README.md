@@ -44,7 +44,7 @@ When the picture arrives it is shown as a row of the conversation, above the mod
 stays visible after the fold closes. Several images (`n` up to 4) sit side by side.
 
 Hover an image for its controls: **download** and a **⋯ menu** (download, copy the prompt). Click
-it to enlarge; in the viewer, `←` `→` step between the images of that call and `Esc` closes.
+it to enlarge. In the viewer, the mouse wheel (or a trackpad pinch) zooms around the pointer, from 50% to 1000%; the `−` / `+` buttons in the top bar zoom in steps, and clicking the percentage between them fits the picture back to the screen. Drag a zoomed picture to pan, double-click to toggle 2×. Keys: `+` `-` zoom, `0` fits, `←` `→` step between the images of that call, `Esc` closes.
 
 Under the picture a line says which model drew it, its pixel size and what it cost
 (`gpt-image-1.5 · 1024×1024 · ≈ $0.017`). The model also receives the picture (on a model that

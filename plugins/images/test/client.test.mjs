@@ -245,6 +245,77 @@ test('an animated result shows the GIF from the gallery at its own size, not the
   assert.equal(findAll(tile, (n) => n.props.style?.aspectRatio)[0].props.style.aspectRatio, '240 / 240');
 });
 
+test('the viewer zooms with its buttons, the wheel and the keyboard, and pans when zoomed', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const view = seen.slots.find((s) => s.options.name === 'tool.call.toolview').component;
+  const attachment = { attachmentId: 'sha256:z', mediaType: 'image/png', bytes: 10, width: 800, height: 600 };
+  const props = { phase: 'result', block: { kind: 'tool-result', callId: 'z1', call: { argsRaw: '{"prompt":"p"}' }, content: [{ type: 'image', attachment }], isError: false, meta: { ids: ['z1'] } } };
+  const listeners = {};
+  globalThis.document = {
+    body: { style: {} },
+    addEventListener: (type, fn) => void (listeners[type] = fn),
+    removeEventListener: () => {},
+  };
+  try {
+    hooks.reset();
+    let tree = view(props);
+    findAll(tree, (n) => n.props['data-dsh-images-tile'] === 'z1').flatMap((t) => findAll(t, (n) => n.props.role === 'button'))[0].props.onClick();
+    const render = () => {
+      hooks.rewind();
+      tree = view(props);
+      const box = findAll(tree, (n) => n.props['data-dsh-images-lightbox'])[0];
+      return { box, img: findAll(box, (n) => n.type === 'img')[0], bar: findAll(box, (n) => n.props['data-dsh-images-zoom'])[0] };
+    };
+    const ev = { stopPropagation() {}, preventDefault() {} };
+    let { img, bar } = render();
+    assert.match(img.props.style.transform, /scale\(1\)/);
+    assert.match(collect(bar).join(' '), /100%/);
+
+    findAll(bar, (n) => n.props['aria-label'] === 'Zoom in (+, wheel)')[0].props.onClick(ev);
+    ({ img, bar } = render());
+    assert.match(img.props.style.transform, /scale\(1\.25\)/);
+    assert.match(collect(bar).join(' '), /125%/);
+    assert.equal(img.props.style.cursor, 'grab');
+
+    // Dragging pans the zoomed picture.
+    img.props.onPointerDown({ ...ev, button: 0, pointerId: 1, clientX: 10, clientY: 10, currentTarget: {} });
+    img.props.onPointerMove({ pointerId: 1, clientX: 40, clientY: 30 });
+    img.props.onPointerUp({ pointerId: 1 });
+    ({ img } = render());
+    assert.match(img.props.style.transform, /translate\(30px, 20px\) scale\(1\.25\)/);
+
+    // Keyboard: + zooms, 0 fits; zooming out never goes below half.
+    listeners.keydown({ key: '+', ...ev });
+    ({ bar } = render());
+    assert.match(collect(bar).join(' '), /156%/);
+    listeners.keydown({ key: '0', ...ev });
+    ({ img } = render());
+    assert.equal(img.props.style.transform, 'translate(0px, 0px) scale(1)');
+    for (let i = 0; i < 10; i += 1) listeners.keydown({ key: '-', ...ev });
+    ({ bar } = render());
+    assert.match(collect(bar).join(' '), /50%/);
+
+    // The fit button resets; the wheel zooms through a native, non-passive listener.
+    findAll(bar, (n) => n.props['aria-label'] === 'Fit to screen (0)')[0].props.onClick(ev);
+    const { box } = render();
+    const stage = findAll(box, (n) => n.props['data-dsh-images-stage'])[0];
+    let wheel;
+    let options;
+    stage.props.ref({ addEventListener: (type, fn, opts) => { wheel = fn; options = opts; }, removeEventListener() {}, querySelector: () => null });
+    assert.deepEqual(options, { passive: false });
+    let prevented = false;
+    wheel({ deltaY: -200, deltaMode: 0, ctrlKey: false, clientX: 0, clientY: 0, preventDefault: () => { prevented = true; } });
+    assert.ok(prevented);
+    ({ bar } = render());
+    assert.match(collect(bar).join(' '), /135%/);
+  } finally {
+    hooks.runCleanups();
+    delete globalThis.document;
+  }
+});
+
 test('a failed call shows the error, and a result without gallery ids falls back to the attachment loader', async () => {
   const { exports, hooks } = await loadClient();
   const { ctx, seen } = fakeContext();
