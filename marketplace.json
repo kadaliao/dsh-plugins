@@ -76,6 +76,16 @@
       },
       "versions": [
         {
+          "version": "0.5.5",
+          "publishTimestamp": 1794321708,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/kadaliao/dsh-plugins",
+            "commit": "2aa92811d02fe3f5749252fbd874aa2680e68af1",
+            "path": "plugins/images"
+          }
+        },
+        {
           "version": "0.5.4",
           "publishTimestamp": 1794320308,
           "source": {
