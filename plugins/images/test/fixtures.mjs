@@ -31,3 +31,38 @@ export const LITELLM_SAMPLE = {
   'qwencloud/qwen-image-3.0': { mode: 'image_generation', litellm_provider: 'qwencloud' },
   'flux-kontext-pro': { mode: 'image_edit', litellm_provider: 'black_forest_labs', output_cost_per_image: 0.04 },
 };
+
+/**
+ * A real PNG (8-bit RGBA, filter 0) of `cols`×`rows` cells, each `cell` px and
+ * filled with a colour of its own, for the sprite-sheet path.
+ */
+export async function sheetPng(cols, rows, cell = 8) {
+  const { deflateSync, crc32 } = await import('node:zlib');
+  const w = cols * cell;
+  const hgt = rows * cell;
+  const raw = Buffer.alloc((w * 4 + 1) * hgt);
+  for (let y = 0; y < hgt; y += 1) {
+    raw[y * (w * 4 + 1)] = 0;
+    for (let x = 0; x < w; x += 1) {
+      const k = Math.floor(y / cell) * cols + Math.floor(x / cell);
+      const o = y * (w * 4 + 1) + 1 + x * 4;
+      raw[o] = (k * 53) & 255;
+      raw[o + 1] = (k * 97 + 40) & 255;
+      raw[o + 2] = (k * 151 + 80) & 255;
+      raw[o + 3] = 255;
+    }
+  }
+  const chunk = (name, body) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(name, 'latin1'), body])) >>> 0);
+    return Buffer.concat([len, Buffer.from(name, 'latin1'), body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(hgt, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}

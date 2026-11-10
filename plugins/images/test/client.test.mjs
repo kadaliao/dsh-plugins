@@ -221,6 +221,30 @@ test('the tool view shows the prompt while generating, then the picture from the
   assert.ok(findAll(box, (n) => n.props['aria-label'] === 'Download').length === 1);
 });
 
+test('an animated result shows the GIF from the gallery at its own size, not the sheet attachment\'s', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const view = seen.slots.find((s) => s.options.name === 'tool.call.toolview').component;
+  hooks.reset();
+  const sheet = { attachmentId: 'sha256:sheet', mediaType: 'image/png', bytes: 10, width: 1024, height: 1024 };
+  const tree = view({
+    phase: 'result',
+    block: {
+      kind: 'tool-result',
+      callId: 'g1',
+      call: { argsRaw: '{"prompt":"a cat chasing yarn","frames":16}' },
+      content: [{ type: 'image', attachment: sheet }],
+      isError: false,
+      meta: { ids: ['k2-gif'], media: [{ mediaType: 'image/gif', width: 240, height: 240, frames: 16 }], prompt: 'a cat chasing yarn', model: 'gpt-image-2' },
+    },
+  });
+  const [img] = findAll(tree, (n) => n.type === 'img');
+  assert.equal(img.props.src, '/__dsh_images/file/k2-gif');
+  const tile = findAll(tree, (n) => n.props['data-dsh-images-tile'] === 'k2-gif')[0];
+  assert.equal(findAll(tile, (n) => n.props.style?.aspectRatio)[0].props.style.aspectRatio, '240 / 240');
+});
+
 test('a failed call shows the error, and a result without gallery ids falls back to the attachment loader', async () => {
   const { exports, hooks } = await loadClient();
   const { ctx, seen } = fakeContext();

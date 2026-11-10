@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test, { afterEach } from 'node:test';
 
 import { TOOL_NAME, apply, renderResult, settingsOf } from '../index.js';
-import { LITELLM_SAMPLE, PNG_2x3 } from './fixtures.mjs';
+import { LITELLM_SAMPLE, PNG_2x3, sheetPng } from './fixtures.mjs';
 
 const unloads = [];
 afterEach(() => {
@@ -171,12 +171,50 @@ test('the tool asks the session\'s provider for the image, saves it, and the res
   // No usage in the reply: the built-in list prices a high-quality 1536×1024 gpt-image-1 at $0.25.
   assert.deepEqual(value.cost, { amount: 0.25, currency: 'USD', source: 'list' });
   assert.match(blocks[0].text, /≈ \$0\.25/);
-  assert.deepEqual(tool.output.presentationMeta({}, value), { ids: [img.id], prompt: 'a red circle on white', model: 'gpt-image-1', cost: value.cost });
+  assert.deepEqual(tool.output.presentationMeta({}, value), { ids: [img.id], media: [{ mediaType: 'image/png', width: 2, height: 3 }], prompt: 'a red circle on white', model: 'gpt-image-1', cost: value.cost });
 
   await settle();
   const index = JSON.parse(readFileSync(join(h.home, 'cache', 'images', 'index.json'), 'utf8'));
   assert.equal(index.items[0].sessionId, 's1');
   assert.equal(index.items[0].prompt, 'a red circle on white');
+});
+
+test('frames make an animated GIF from one sprite sheet; the model sees the sheet', async () => {
+  const sheet = await sheetPng(4, 4, 16);
+  const h = harness({ reply: { data: [{ b64_json: sheet.toString('base64') }] } });
+  const tool = h.tools.get(TOOL_NAME);
+  assert.equal(tool.parameters.frames.type, 'integer');
+  assert.match(tool.description, /animated GIF/);
+
+  const value = await h.run({ prompt: 'an Abyssinian cat chasing a yarn ball', frames: 16, frameMs: 90 });
+  const sent = JSON.parse(h.calls[0].init.body);
+  assert.equal(sent.size, '1024x1024');
+  assert.match(sent.prompt, /4x4 grid of 16 equally sized frames/);
+  assert.match(sent.prompt, /Animation: an Abyssinian cat chasing a yarn ball$/);
+  assert.equal(value.prompt, 'an Abyssinian cat chasing a yarn ball');
+
+  const [img] = value.images;
+  assert.equal(img.mediaType, 'image/gif');
+  assert.match(img.path, /\.gif$/);
+  assert.deepEqual(img.animation, { frames: 16, delayMs: 90, grid: '4x4' });
+  assert.equal(readFileSync(img.path).toString('latin1', 0, 6), 'GIF89a');
+  assert.ok(existsSync(img.sheetPath) && img.sheetPath.endsWith('-sheet.png'));
+  // The attachment is the still sheet (the Harness keeps attachments single-frame).
+  assert.equal(img.image.mediaType, 'image/png');
+  assert.equal(img.image.name, `${img.id}-sheet.png`);
+
+  const [text] = renderResult({}, value);
+  assert.match(text.text, /Generated 1 animated GIF/);
+  assert.match(text.text, /animated, 16 frames at 90ms, looping/);
+  assert.deepEqual(tool.output.presentationMeta({}, value).media, [{ mediaType: 'image/gif', width: img.width, height: img.height, frames: 16 }]);
+
+  const listed = await h.request('/__dsh_images/list');
+  assert.equal(listed.items[0].mediaType, 'image/gif');
+  assert.equal(listed.items[0].sheetFile, undefined);
+  const file = await h.request(`/__dsh_images/file/${img.id}`);
+  assert.equal(file.headers['content-type'], 'image/gif');
+  assert.deepEqual(await h.request('/__dsh_images/delete', { method: 'POST', body: { id: img.id } }), { ok: true });
+  assert.equal(existsSync(img.sheetPath), false, 'removing the GIF removes its sheet');
 });
 
 test('a URL reply is downloaded; without an attachment store the result is text only', async () => {

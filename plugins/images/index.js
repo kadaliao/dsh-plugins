@@ -19,6 +19,7 @@ import { buildRequest, dimensionsOf, extensionOf, imagesEndpoint, parseReply, er
 import { costFromList, estimateCost, familyOf, knownFamily, looksLikeImageModel, providerPerImage, totalsOf, PRICE_LIST_DATE } from './lib/pricing.mjs';
 import { catalogNames, catalogPerImage, createCatalog, lookupCatalog } from './lib/catalog.mjs';
 import { createStore, newId } from './lib/store.mjs';
+import { LAYOUTS, frameDelay, layoutFor, sheetPrompt, sheetToGif } from './lib/animate.mjs';
 
 // The registry wants the compiled definition `defineTool` makes. Outside a
 // Harness (the tests) the raw definition stands in for it.
@@ -340,11 +341,14 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
   const prompt = String(args.prompt ?? '').trim();
   if (prompt === '') throw new Error('prompt must be a non-empty description of the image');
   const target = await targetOf(ctx, settings, exec, keys);
+  // An animation is drawn as one sprite sheet, then cut into the GIF's frames.
+  const layout = layoutFor(args.frames);
+  const delayMs = layout ? frameDelay(args.frameMs) : 0;
   const body = buildRequest({
     model: target.model,
-    prompt,
+    prompt: layout ? sheetPrompt(prompt, layout) : prompt,
     n: Math.min(MAX_N, Math.max(1, Number(args.n) || 1)),
-    size: String(args.size ?? '').trim() || settings.size,
+    size: String(args.size ?? '').trim() || (layout ? layout.size : settings.size),
     quality: String(args.quality ?? '').trim() || settings.quality,
   });
 
@@ -395,27 +399,47 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
   const sessionId = String(exec?.agent?.session?.id ?? '');
   const images = [];
   for (const reply of replies) {
-    const bytes = reply.b64 ? new Uint8Array(Buffer.from(reply.b64, 'base64')) : await download(reply.url, signal);
-    const mediaType = sniffMediaType(bytes) ?? 'image/png';
+    const drawn = reply.b64 ? new Uint8Array(Buffer.from(reply.b64, 'base64')) : await download(reply.url, signal);
+    const drawnType = sniffMediaType(drawn) ?? 'image/png';
     const id = newId();
-    const file = store.pathFor(id, extensionOf(mediaType));
-    writeFileSync(file, bytes);
+    // The attachment is what the model sees: the picture, or for a GIF its sprite
+    // sheet (the Harness keeps attachments single-frame, so the sheet shows more).
     let ref;
     if (attachments?.saveImage) {
       try {
-        ref = await attachments.saveImage({ data: bytes, mediaType, name: `${id}.${extensionOf(mediaType)}` });
+        ref = await attachments.saveImage({ data: drawn, mediaType: drawnType, name: `${id}${layout ? '-sheet' : ''}.${extensionOf(drawnType)}` });
       } catch {
         ref = undefined;
       }
     }
+    let bytes = drawn;
+    let mediaType = drawnType;
+    let animation;
+    let sheetFile;
+    if (layout) {
+      sheetFile = store.pathFor(`${id}-sheet`, extensionOf(drawnType));
+      writeFileSync(sheetFile, drawn);
+      let gif;
+      try {
+        gif = await sheetToGif(drawn, drawnType, layout, { delayMs });
+      } catch (error) {
+        throw new Error(`the sprite sheet was drawn (saved at ${sheetFile}) but could not be turned into a GIF: ${error?.message ?? error}`);
+      }
+      bytes = gif.bytes;
+      mediaType = 'image/gif';
+      animation = { frames: gif.frames, delayMs: gif.delayMs, grid: `${layout.cols}x${layout.rows}` };
+    }
+    const file = store.pathFor(id, extensionOf(mediaType));
+    writeFileSync(file, bytes);
     const dims = dimensionsOf(bytes);
     const item = {
       id,
       file,
       mediaType,
       bytes: bytes.length,
-      width: ref?.width || dims.width,
-      height: ref?.height || dims.height,
+      width: (layout ? dims.width : ref?.width) || dims.width,
+      height: (layout ? dims.height : ref?.height) || dims.height,
+      ...(animation ? { animation, sheetFile } : {}),
       prompt,
       ...(reply.revisedPrompt ? { revisedPrompt: reply.revisedPrompt } : {}),
       model: target.model,
@@ -434,6 +458,7 @@ export async function generate(ctx, settings, store, args, exec, keys, priceOf, 
       mediaType,
       width: item.width,
       height: item.height,
+      ...(animation ? { animation, sheetPath: sheetFile } : {}),
       ...(ref
         ? {
             image: {
@@ -472,10 +497,14 @@ export function renderResult(_args, value) {
   const images = Array.isArray(value?.images) ? value.images : [];
   const lines = images.map((img, i) => {
     const dims = img.width && img.height ? `${img.width}×${img.height}` : 'unknown size';
-    return `${images.length > 1 ? `Image ${i + 1}: ` : ''}${dims} ${img.mediaType}, saved at ${img.path}`;
+    const anim = img.animation ? ` animated, ${img.animation.frames} frames at ${img.animation.delayMs}ms, looping` : '';
+    const sheet = img.sheetPath ? `; its sprite sheet is at ${img.sheetPath}${img.image ? ' and is the picture attached below' : ''}` : '';
+    return `${images.length > 1 ? `Image ${i + 1}: ` : ''}${dims} ${img.mediaType}${anim}, saved at ${img.path}${sheet}`;
   });
   const spent = value?.cost ? ` (≈ ${fmtMoney(value.cost.amount, value.cost.currency)})` : '';
-  const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} image${images.length > 1 ? 's' : ''} with ${value.model}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked.`;
+  const animated = images.length > 0 && images.every((img) => img.animation);
+  const noun = animated ? `animated GIF${images.length > 1 ? 's' : ''}` : `image${images.length > 1 ? 's' : ''}`;
+  const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} ${noun} with ${value.model}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked.`;
   const revised = value?.revisedPrompt ? `\nThe provider rewrote the prompt as: ${value.revisedPrompt}` : '';
   const blocks = [{ type: 'text', text: [head, ...lines].join('\n') + revised }];
   for (const img of images) {
@@ -492,12 +521,19 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
   return defineTool({
     name: TOOL_NAME,
     description:
-      'Generate an image from a text description with the configured image model. Use it whenever the user asks for a picture, illustration, poster, icon, logo, photo-like render, concept art, or to "draw" something; also for variations of an earlier image, by describing the change fully. Write the prompt in full detail — subject, style, composition, lighting, colours, mood, and any text to render, quoted exactly. The image is saved and shown to the user in the conversation and in the Images panel; after the call, say in a sentence what was drawn.',
+      'Generate an image from a text description with the configured image model. Use it whenever the user asks for a picture, illustration, poster, icon, logo, photo-like render, concept art, or to "draw" something; also for variations of an earlier image, by describing the change fully. Write the prompt in full detail — subject, style, composition, lighting, colours, mood, and any text to render, quoted exactly. ' +
+      'It also makes short looping animated GIFs (动图, GIF, sticker, animation, a cat running, a waving hand…): set `frames` and describe the scene and the motion — the tool has the model draw a sprite sheet of that many frames and assembles the GIF itself, so do not script it by hand. ' +
+      'The image is saved and shown to the user in the conversation and in the Images panel; after the call, say in a sentence what was drawn.',
     parameters: {
       prompt: { type: 'string', required: true, description: 'What to draw, in detail. Written in the language of the image model (English works everywhere), with any text to appear in the image quoted exactly.' },
       size: { type: 'string', description: `Pixel size as WIDTHxHEIGHT. Common: ${SIZES.join(', ')} (square, landscape, portrait). Leave out for the configured default.` },
       n: { type: 'integer', description: `How many images, 1 to ${MAX_N}. Leave out for one.` },
       quality: { type: 'string', description: 'Quality tier when the model takes one (low, medium, high). Leave out for the default.' },
+      frames: {
+        type: 'integer',
+        description: `Set to make an animated GIF instead of a still: how many frames (${LAYOUTS.map((l) => l.frames).join(', ')}; others round to the nearest). 16 gives the smoothest motion, 4 a simple two-pose loop. With frames, describe one continuous, looping motion of a single scene, and leave size out unless the frames must be wide or tall.`,
+      },
+      frameMs: { type: 'integer', description: 'With frames: how long each frame shows, in milliseconds (40–1000, default 100). Lower is faster.' },
     },
     output: {
       schema: {
@@ -525,6 +561,12 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
                 mediaType: { type: 'string', required: true },
                 width: { type: 'integer', required: true },
                 height: { type: 'integer', required: true },
+                sheetPath: { type: 'string' },
+                animation: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: { frames: { type: 'integer', required: true }, delayMs: { type: 'integer', required: true }, grid: { type: 'string', required: true } },
+                },
                 image: IMAGE_REF_SCHEMA,
               },
             },
@@ -534,6 +576,8 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
       render: renderResult,
       presentationMeta: (_args, value) => ({
         ids: (value?.images ?? []).map((img) => img.id),
+        // What the gallery file is, since the attachment may be a still or a sprite sheet.
+        media: (value?.images ?? []).map((img) => ({ mediaType: img.mediaType, width: img.width, height: img.height, ...(img.animation ? { frames: img.animation.frames } : {}) })),
         prompt: value?.prompt ?? '',
         model: value?.model ?? '',
         ...(value?.cost ? { cost: value.cost } : {}),
@@ -851,8 +895,9 @@ export function apply(ctx, config) {
 
 /** One gallery item as the page sees it: no host path, a URL instead. */
 function publicItem(item) {
-  const { file, ...rest } = item;
+  const { file, sheetFile, ...rest } = item;
   void file;
+  void sheetFile;
   return { ...rest, url: `${FILE_ROUTE}/${item.id}` };
 }
 

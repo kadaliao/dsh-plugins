@@ -105,7 +105,7 @@ window.__ModuleLoader__.load({
         .join(' · ');
     /** The line under a picture: model · size · cost. */
     const metaLine = (t, item) =>
-      [item.model, item.width && item.height ? `${item.width}×${item.height}` : null, fmtCost(item.cost), item.createdAt ? fmtWhen(t, item.createdAt) : null].filter(Boolean).join(' · ');
+      [item.model, item.width && item.height ? `${item.width}×${item.height}` : null, item.animation?.frames ? `GIF · ${t('frames', { n: item.animation.frames })}` : null, fmtCost(item.cost), item.createdAt ? fmtWhen(t, item.createdAt) : null].filter(Boolean).join(' · ');
 
     function fmtWhen(t, at, now = Date.now()) {
       const ms = Math.max(0, now - at);
@@ -479,13 +479,16 @@ window.__ModuleLoader__.load({
       const count = Math.max(ids.length, refs.length);
       for (let i = 0; i < count; i += 1) {
         const ref = refs[i]?.attachment;
+        // The gallery file's own facts: for a GIF the attachment is its sprite sheet.
+        const media = Array.isArray(meta.media) && meta.media[i] && typeof meta.media[i] === 'object' ? meta.media[i] : undefined;
         out.push({
           id: ids[i] ?? ref?.attachmentId ?? `${block.callId}:${i}`,
           url: ids[i] ? fileUrl(ids[i]) : undefined,
           attachment: ref,
-          mediaType: ref?.mediaType ?? 'image/png',
-          width: ref?.width ?? 0,
-          height: ref?.height ?? 0,
+          mediaType: media?.mediaType ?? ref?.mediaType ?? 'image/png',
+          width: media?.width ?? ref?.width ?? 0,
+          height: media?.height ?? ref?.height ?? 0,
+          ...(media?.frames ? { animation: { frames: media.frames } } : {}),
           prompt: typeof meta.prompt === 'string' ? meta.prompt : undefined,
           model: typeof meta.model === 'string' ? meta.model : undefined,
           cost: meta.cost && typeof meta.cost === 'object' && count > 0 ? { ...meta.cost, amount: Number(meta.cost.amount) / count } : undefined,
@@ -1595,6 +1598,7 @@ window.__ModuleLoader__.load({
         loading: 'loading…',
         failed: 'The image could not be generated.',
         noImage: 'No image came back.',
+        frames: '{n} frames',
         enlarge: 'Enlarge',
         download: 'Download',
         more: 'More',
@@ -1685,6 +1689,7 @@ window.__ModuleLoader__.load({
         loading: '加载中…',
         failed: '这张图没有生成出来。',
         noImage: '没有返回图片。',
+        frames: '{n} 帧',
         enlarge: '放大',
         download: '下载',
         more: '更多',

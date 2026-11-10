@@ -63,6 +63,18 @@ export function createStore(dir, options = {}) {
   }
   reload();
 
+  /** An item's files: the image, and an animation's sprite sheet. */
+  function removeFiles(item) {
+    for (const path of [item?.file, item?.sheetFile]) {
+      if (!path) continue;
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+
   function write() {
     timer = null;
     try {
@@ -90,14 +102,7 @@ export function createStore(dir, options = {}) {
       reload();
       items.push(item);
       while (items.length > keep) {
-        const old = items.shift();
-        if (old?.file) {
-          try {
-            rmSync(old.file, { force: true });
-          } catch {
-            // Already gone.
-          }
-        }
+        removeFiles(items.shift());
       }
       save();
       return item;
@@ -121,14 +126,7 @@ export function createStore(dir, options = {}) {
       reload();
       const at = items.findIndex((it) => it.id === id);
       if (at === -1) return false;
-      const [gone] = items.splice(at, 1);
-      if (gone.file) {
-        try {
-          rmSync(gone.file, { force: true });
-        } catch {
-          // Already gone.
-        }
-      }
+      removeFiles(items.splice(at, 1)[0]);
       save();
       return true;
     },

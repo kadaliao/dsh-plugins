@@ -50,6 +50,21 @@ Under the picture a line says which model drew it, its pixel size and what it co
 (`gpt-image-1.5 · 1024×1024 · ≈ $0.017`). The model also receives the picture (on a model that
 takes image input), so it can check its own work and describe what it drew.
 
+## Animated GIFs
+
+Ask for a GIF, an animation or a sticker ("做一张阿比西尼亚猫追毛线球的 GIF") and the model calls
+`generate_image` with `frames` (4, 6, 9 or 16) and, optionally, `frameMs` (time per frame, default
+100 ms). Image models only draw stills, so the tool asks for one **sprite sheet** — a grid of that
+many frames of the same scene, one continuous loop — then cuts it into frames and encodes a looping
+GIF itself (frames up to 480 px, one shared palette, ordered dithering so colours do not flicker).
+This costs one image request, the same as a still.
+
+The GIF is what you see in the conversation and the panel (`… · GIF · 16 frames · …`) and what
+download saves. The Harness keeps attachments single-frame, so the model is given the sprite sheet
+as its picture instead; the sheet is also kept beside the GIF (`<id>-sheet.png`) and removed with it.
+Motion is as smooth as the model keeps the frames consistent: simple, repeating motion (running,
+waving, bouncing, spinning) works best.
+
 ## The Images panel
 
 **Images** in the left sidebar (or `/images`) opens a gallery of every picture generated in any
@@ -175,7 +190,9 @@ first), posts the request, prices the reply (looking the model up in the cached 
 nothing closer knows it), and saves the bytes twice: in the Harness attachment store,
 so the tool result carries the image itself (`{ type: 'image' }`) and the conversation shows it; and
 under `~/.dsh/cache/images/files/`, with an index of prompt, model, size and session, which is what
-the panel reads through loopback routes on the Harness web server.
+the panel reads through loopback routes on the Harness web server. With `frames`, the
+sprite sheet goes to the attachment store and the GIF built from it (`lib/animate.mjs`: PNG decoding,
+median-cut palette and LZW in plain JavaScript, no dependencies) to the gallery.
 
 The Client half draws the tool's card, the result row outside the turn fold, the sidebar entry and
 the panel. Nothing is written to the Session log beyond the tool call and its result, which the
