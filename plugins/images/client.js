@@ -1102,7 +1102,10 @@ window.__ModuleLoader__.load({
 
     /**
      * A notice that leaves by itself. With `action` ({label, run, busy}) it carries
-     * a button, stays longer, and stays while the action runs.
+     * a button, stays longer, and stays while the action runs. White on dark in
+     * every theme: the Harness has no elevated-surface token, and the viewer sits
+     * on document.body over its own dark backdrop, where a theme's dark label
+     * would vanish.
      */
     function PanelToast({ text, onDone, style, action }) {
       const busy = action?.busy === true;
@@ -1133,9 +1136,10 @@ window.__ModuleLoader__.load({
             borderRadius: 10,
             fontSize: SMALL,
             lineHeight: 1.5,
-            background: 'var(--dsw-alias-bg-elevated, rgba(30,30,30,.92))',
-            color: 'var(--dsw-alias-label-primary, #fff)',
-            boxShadow: '0 4px 16px rgba(0,0,0,.18)',
+            background: 'rgba(44,44,48,.96)',
+            border: '1px solid rgba(255,255,255,.12)',
+            color: '#fff',
+            boxShadow: '0 4px 16px rgba(0,0,0,.24)',
             zIndex: 20,
             ...style,
           },
@@ -1152,7 +1156,7 @@ window.__ModuleLoader__.load({
                   e.stopPropagation();
                   if (!busy) action.run();
                 },
-                style: { flex: 'none', font: 'inherit', fontSize: SMALL, fontWeight: 600, padding: '3px 10px', border: 'none', borderRadius: 7, background: C.hover, color: C.label, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1, whiteSpace: 'nowrap' },
+                style: { flex: 'none', font: 'inherit', fontSize: SMALL, fontWeight: 600, padding: '3px 10px', border: 'none', borderRadius: 7, background: 'rgba(255,255,255,.16)', color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1, whiteSpace: 'nowrap' },
               },
               action.label,
             )

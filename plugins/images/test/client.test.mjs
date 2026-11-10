@@ -491,6 +491,11 @@ test('the gallery viewer opens the conversation a picture came from, and says wh
   assert.match(collect(toast(box)).join(' '), /archived\. Unarchive it to open it/);
   assert.deepEqual(collect(action(box)), ['Unarchive and open']);
   assert.deepEqual(opened, []);
+  // White on dark in every theme: a light theme's dark label vanished on the viewer's backdrop.
+  for (const { style } of [toast(box).props, action(box).props]) {
+    assert.equal(style.color, '#fff');
+    assert.doesNotMatch(style.background, /var\(/);
+  }
 
   // The Host refusing the unarchive says so, after showing that it is working on it.
   refuseUnarchive = true;
