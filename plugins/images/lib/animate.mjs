@@ -10,10 +10,11 @@
 import { inflateSync } from 'node:zlib';
 
 /**
- * Model families known to draw a usable sprite sheet. Others are still asked,
- * with a warning, since nothing checks the sheet they return.
+ * Model families known to draw a usable sprite sheet: OpenAI's gpt-image models
+ * (1.5, 2, 2.5 and 2.6 verified). Others are still asked, with a warning, since
+ * nothing checks the sheet they return.
  */
-export const GIF_FAMILIES = ['gpt-image-2.6'];
+export const GIF_FAMILIES = ['gpt-image', 'chatgpt-image'];
 
 /** Whether a model id (a gateway prefix like `sub2api/` allowed) belongs to a family above. */
 export function gifCapable(model) {

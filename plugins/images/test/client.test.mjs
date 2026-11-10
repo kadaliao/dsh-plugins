@@ -573,8 +573,8 @@ test('the settings drawer shows what is in force, tests the connection, and save
   assert.match(text, /Image generation/);
   assert.match(text, /3 images so far/);
   assert.match(text, /Built-in list for gpt-image-1: 1024×1024 \$0\.167 · 1536×1024 \$0\.25/);
-  // gpt-image-1 is not a family known to draw GIF frames.
-  assert.match(collect(findAll(drawer, (n) => n.props['data-dsh-images-gif-hint'])[0]).join(''), /may not support GIF generation; gpt-image-2\.6 models are known to work/);
+  // The host says this model is not known to draw GIF frames.
+  assert.match(collect(findAll(drawer, (n) => n.props['data-dsh-images-gif-hint'])[0]).join(''), /may not support GIF generation; gpt-image models are known to work/);
   const keyInput = findAll(drawer, (n) => n.props['data-dsh-images-field'] === 'apiKey')[0];
   assert.equal(keyInput.props.type, 'password');
   assert.match(keyInput.props.placeholder, /Using the provider's key ····test/);

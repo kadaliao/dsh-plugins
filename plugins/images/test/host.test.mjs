@@ -182,7 +182,7 @@ test('the tool asks the session\'s provider for the image, saves it, and the res
 
 test('frames make an animated GIF from one sprite sheet; the model sees the sheet', async () => {
   const sheet = await sheetPng(4, 4, 16);
-  const h = harness({ reply: { data: [{ b64_json: sheet.toString('base64') }] } });
+  const h = harness({ config: { model: 'flux-pro' }, reply: { data: [{ b64_json: sheet.toString('base64') }] } });
   const tool = h.tools.get(TOOL_NAME);
   assert.equal(tool.parameters.frames.type, 'integer');
   assert.match(tool.description, /animated GIF/);
@@ -206,9 +206,9 @@ test('frames make an animated GIF from one sprite sheet; the model sees the shee
 
   const [text] = renderResult({}, value);
   assert.match(text.text, /Generated 1 animated GIF/);
-  // gpt-image-1 is not known to keep to the grid: the GIF is still made, with a warning.
+  // flux-pro is not known to keep to the grid: the GIF is still made, with a warning.
   assert.equal(value.gifUnverified, true);
-  assert.match(text.text, /gpt-image-1 is not a model known to draw GIF frames \(only gpt-image-2\.6 models are\)/);
+  assert.match(text.text, /flux-pro is not a model known to draw GIF frames \(only gpt-image models are\)/);
   assert.equal(tool.output.presentationMeta({}, value).gifUnverified, true);
   assert.match(text.text, /animated, 16 frames at 90ms, looping/);
   assert.deepEqual(tool.output.presentationMeta({}, value).media, [{ mediaType: 'image/gif', width: img.width, height: img.height, frames: 16 }]);
@@ -279,7 +279,7 @@ test('an earlier GIF is sent as its sprite sheet', async () => {
   assert.equal(Buffer.from(await part.arrayBuffer()).equals(sheet), true);
 });
 
-test('a gpt-image-2.6 model makes a GIF without the warning; a still never carries it', async () => {
+test('a gpt-image model makes a GIF without the warning; a still never carries it', async () => {
   const sheet = await sheetPng(2, 2, 8);
   const h = harness({ config: { model: 'gpt-image-2.6-sunburst' }, reply: { data: [{ b64_json: sheet.toString('base64') }] } });
   const gif = await h.run({ prompt: 'a bouncing ball', frames: 4 });
@@ -288,7 +288,7 @@ test('a gpt-image-2.6 model makes a GIF without the warning; a still never carri
   const other = harness({ config: { model: 'flux-pro' } });
   const still = await other.run({ prompt: 'a ball' });
   assert.equal(still.gifUnverified, undefined);
-  const preview = await other.request('/__dsh_images/settings?model=gpt-image-2.6-flare');
+  const preview = await other.request('/__dsh_images/settings?model=sub2api/gpt-image-1.5');
   assert.equal(preview.gif, true);
   assert.equal((await other.request('/__dsh_images/settings?model=flux-pro')).gif, false);
 });

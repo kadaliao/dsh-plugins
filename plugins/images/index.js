@@ -584,7 +584,7 @@ export function renderResult(_args, value) {
   const head = images.length === 0 ? 'No image was generated.' : `Generated ${images.length} ${noun} with ${value.model}${from}${spent}. The user already sees ${images.length > 1 ? 'them' : 'it'} in the conversation and in the Images panel; do not repeat the path unless asked. To change or continue ${images.length > 1 ? 'one' : 'it'}, pass its id in \`images\`.`;
   const revised = value?.revisedPrompt ? `\nThe provider rewrote the prompt as: ${value.revisedPrompt}` : '';
   const unverified = value?.gifUnverified
-    ? `\nNote: ${value.model} is not a model known to draw GIF frames (only ${GIF_FAMILIES.join(', ')} models are); the frames may not line up. Tell the user so in one sentence, and suggest a ${GIF_FAMILIES[0]} model if the animation looks wrong.`
+    ? `\nNote: ${value.model} is not a model known to draw GIF frames (only ${GIF_FAMILIES[0]} models are); the frames may not line up. Tell the user so in one sentence, and suggest a ${GIF_FAMILIES[0]} model if the animation looks wrong.`
     : '';
   const blocks = [{ type: 'text', text: [head, ...lines].join('\n') + revised + unverified }];
   for (const img of images) {
@@ -612,7 +612,7 @@ export function buildTool(ctx, runtime, store, keys, priceOf, catalog) {
       quality: { type: 'string', description: 'Quality tier when the model takes one (low, medium, high). Leave out for the default.' },
       frames: {
         type: 'integer',
-        description: `Set to make an animated GIF instead of a still: how many frames (${LAYOUTS.map((l) => l.frames).join(', ')}; others round to the nearest). 16 gives the smoothest motion, 4 a simple two-pose loop. Only ${GIF_FAMILIES.join(', ')} models are known to draw the frames reliably; with another model the GIF is still made, with a warning. With frames, describe one continuous, looping motion of a single scene, and leave size out unless the frames must be wide or tall.`,
+        description: `Set to make an animated GIF instead of a still: how many frames (${LAYOUTS.map((l) => l.frames).join(', ')}; others round to the nearest). 16 gives the smoothest motion, 4 a simple two-pose loop. Only ${GIF_FAMILIES[0]} models are known to draw the frames reliably; with another model the GIF is still made, with a warning. With frames, describe one continuous, looping motion of a single scene, and leave size out unless the frames must be wide or tall.`,
       },
       images: {
         type: 'array',

@@ -81,7 +81,7 @@ test('large frames are scaled down and a busy frame survives LZW resets', () => 
   assert.ok(Math.max(sliced.width, sliced.height) <= 480);
 });
 
-test('only the gpt-image-2.6 family is known to draw GIF frames', () => {
-  for (const id of ['gpt-image-2.6', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare', 'GPT-Image-2.6-Sunburst', 'sub2api/gpt-image-2.6-sunburst']) assert.equal(gifCapable(id), true, id);
-  for (const id of ['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.60', 'gpt-image-1.5', 'flux-pro', 'doubao-seedream-4', '']) assert.equal(gifCapable(id), false, id);
+test('gpt-image models are known to draw GIF frames; others are not', () => {
+  for (const id of ['gpt-image-1', 'gpt-image-1.5', 'gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.6-flare', 'GPT-Image-2.6-Sunburst', 'sub2api/gpt-image-1.5', 'chatgpt-image-latest']) assert.equal(gifCapable(id), true, id);
+  for (const id of ['flux-pro', 'doubao-seedream-4', 'dall-e-3', 'gemini-3-pro-image', 'my-gpt-image-clone', 'gpt-4o', '']) assert.equal(gifCapable(id), false, id);
 });
