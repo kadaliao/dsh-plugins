@@ -93,6 +93,10 @@ gives a GIF that flickers between parts of one picture. More families are added 
 conversation, newest first, as a masonry grid of cards. Each card shows the prompt, the model, the
 pixel size, the cost and when it was made; the header adds up what was spent. Hover a card for **download** and the **⋯ menu** (download, copy
 prompt, remove from gallery); click it to enlarge and step through the gallery with the arrow keys.
+The viewer's **Open conversation** button takes you to the conversation the picture was drawn in
+(hover it for that conversation's title). An archived conversation stays shut: the viewer says so
+and offers **Unarchive and open** (for a subagent's picture, that unarchives the conversation it ran
+under). A deleted conversation is reported as gone.
 The panel keeps itself up to date while open, and loads older images as you scroll.
 
 Removing a picture from the gallery deletes the plugin's copy of it; the conversation it came from

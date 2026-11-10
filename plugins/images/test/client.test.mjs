@@ -219,6 +219,8 @@ test('the tool view shows the prompt while generating, then the picture from the
   const box = findAll(tree, (n) => n.props['data-dsh-images-lightbox'])[0];
   assert.ok(box, 'the lightbox is open');
   assert.ok(findAll(box, (n) => n.props['aria-label'] === 'Download').length === 1);
+  // Already in its conversation: no way "back" to it.
+  assert.equal(findAll(box, (n) => n.props['data-dsh-images-open-session'] !== undefined).length, 0);
 });
 
 test('an animated result shows the GIF from the gallery at its own size, not the sheet attachment\'s', async () => {
@@ -417,6 +419,161 @@ test('the gallery panel lists the newest images first, enlarges one, and removes
   tree = panel({});
   assert.match(collect(tree).join(' '), /1 images/);
   assert.equal(findAll(tree, (n) => n.type === 'img').length, 1);
+});
+
+test('the gallery viewer opens the conversation a picture came from, and says why when it cannot', async () => {
+  const { exports, hooks } = await loadClient();
+  const opened = [];
+  const unarchiving = [];
+  const archived = new Set(['shelved']);
+  let refuseUnarchive = false;
+  const services = {
+    uiWorkspace: {
+      openSession(id) {
+        if (id === 'refused') throw new Error(`sessions.retain: unknown session ${id}`);
+        opened.push(id);
+      },
+      async unarchiveSession(id) {
+        unarchiving.push(id);
+        if (refuseUnarchive) throw new Error('workspace session unarchive failed: denied');
+        archived.delete(id);
+      },
+    },
+    sessions: {
+      list: {
+        getSnapshot: () => ({
+          phase: 'ready',
+          ids: ['live', 'shelved', 'refused'],
+          byId: {
+            live: { id: 'live', displayTitle: 'Poster ideas' },
+            shelved: { id: 'shelved', displayTitle: 'Old logos' },
+            refused: { id: 'refused', displayTitle: 'refused' },
+            // A subagent the catalog lists under an archived session.
+            child: { id: 'child', displayTitle: 'child', origin: 'subagent', parentId: 'shelved' },
+          },
+        }),
+      },
+    },
+    workspaces: { list: { getSnapshot: () => ({ phase: 'ready', state: 'ready', archivedSessionIds: [...archived] }) } },
+  };
+  const { ctx, seen } = fakeContext({ services });
+  exports.apply(ctx);
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  const item = (id, sessionId) => ({ id, url: `/__dsh_images/file/${id}`, mediaType: 'image/png', width: 1024, height: 1024, prompt: id, model: 'gpt-image-1', ...(sessionId === undefined ? {} : { sessionId }) });
+  const items = [item('a', 'live'), item('b', 'shelved'), item('c', 'child'), item('d', 'deleted'), item('e', 'refused'), item('f')];
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ items, hasMore: false, total: items.length }) });
+  hooks.reset();
+  panel({});
+  await flush();
+
+  const view = (index) => {
+    hooks.rewind();
+    let tree = panel({});
+    if (!findAll(tree, (n) => n.props['data-dsh-images-lightbox'])[0]) {
+      const tile = findAll(tree, (n) => n.props['data-dsh-images-tile'] === items[index].id)[0];
+      findAll(tile, (n) => n.props.role === 'button')[0].props.onClick();
+      hooks.rewind();
+      tree = panel({});
+    }
+    return findAll(tree, (n) => n.props['data-dsh-images-lightbox'])[0];
+  };
+  const button = (box) => findAll(box, (n) => n.props['data-dsh-images-open-session'] !== undefined)[0];
+  const press = (box) => button(box).props.onClick({ stopPropagation() {} });
+  const toast = (box) => findAll(box, (n) => n.props['data-dsh-images-toast'])[0];
+  const action = (box) => findAll(toast(box), (n) => n.props['data-dsh-images-toast-action'])[0];
+
+  // An archived conversation stays shut; the viewer says why and offers to unarchive it.
+  let box = view(1);
+  assert.equal(button(box).props.title, 'Open the conversation it was drawn in: Old logos');
+  press(box);
+  box = view(1);
+  assert.ok(box, 'the viewer stays open');
+  assert.match(collect(toast(box)).join(' '), /archived\. Unarchive it to open it/);
+  assert.deepEqual(collect(action(box)), ['Unarchive and open']);
+  assert.deepEqual(opened, []);
+
+  // The Host refusing the unarchive says so, after showing that it is working on it.
+  refuseUnarchive = true;
+  action(box).props.onClick({ stopPropagation() {} });
+  box = view(1);
+  assert.deepEqual(collect(action(box)), ['Unarchiving…']);
+  assert.equal(action(box).props.disabled, true);
+  await flush();
+  box = view(1);
+  assert.match(collect(toast(box)).join(' '), /Could not unarchive it/);
+  assert.equal(action(box), undefined);
+  assert.deepEqual(unarchiving, ['shelved']);
+  assert.deepEqual(opened, []);
+  refuseUnarchive = false;
+
+  // So does a subagent that ran under it; stepping on clears the last notice first.
+  findAll(box, (n) => n.props['aria-label'] === 'Next')[0].props.onClick({ stopPropagation() {} });
+  box = view(2);
+  assert.equal(toast(box), undefined);
+  press(box);
+  assert.match(collect(toast(view(2))).join(' '), /archived/);
+
+  // A conversation the list no longer has, or one the Harness refuses, is gone.
+  findAll(view(2), (n) => n.props['aria-label'] === 'Next')[0].props.onClick({ stopPropagation() {} });
+  press(view(3));
+  assert.match(collect(toast(view(3))).join(' '), /no longer exists/);
+  findAll(view(3), (n) => n.props['aria-label'] === 'Next')[0].props.onClick({ stopPropagation() {} });
+  press(view(4));
+  assert.match(collect(toast(view(4))).join(' '), /no longer exists/);
+
+  // A picture with no conversation recorded gets no button.
+  findAll(view(4), (n) => n.props['aria-label'] === 'Next')[0].props.onClick({ stopPropagation() {} });
+  assert.equal(button(view(5)), undefined);
+  view(5).props.onClick();
+
+  // A live one opens through the sidebar's navigation, and the viewer closes.
+  box = view(0);
+  assert.equal(toast(box), undefined);
+  press(box);
+  assert.deepEqual(opened, ['live']);
+  hooks.rewind();
+  assert.equal(findAll(panel({}), (n) => n.props['data-dsh-images-lightbox'])[0], undefined);
+
+  // Unarchive and open on a subagent's picture unarchives the session it ran under, then opens the subagent.
+  box = view(2);
+  press(box);
+  action(view(2)).props.onClick({ stopPropagation() {} });
+  await flush();
+  assert.deepEqual(unarchiving, ['shelved', 'shelved']);
+  assert.deepEqual([...archived], []);
+  assert.deepEqual(opened, ['live', 'child']);
+  hooks.rewind();
+  assert.equal(findAll(panel({}), (n) => n.props['data-dsh-images-lightbox'])[0], undefined);
+
+  // A Harness that cannot unarchive from here still says why, without the button.
+  archived.add('shelved');
+  delete services.uiWorkspace.unarchiveSession;
+  box = view(1);
+  press(box);
+  box = view(1);
+  assert.match(collect(toast(box)).join(' '), /archived/);
+  assert.equal(action(box), undefined);
+});
+
+test('a Harness without Workspace navigation shows no open-conversation button', async () => {
+  // A Harness without the Workspace navigation service: no button in the gallery.
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  const items = [{ id: 'a', url: '/__dsh_images/file/a', mediaType: 'image/png', width: 8, height: 8, prompt: 'a', sessionId: 'live' }];
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ items, hasMore: false, total: 1 }) });
+  hooks.reset();
+  panel({});
+  await flush();
+  hooks.rewind();
+  const tile = findAll(panel({}), (n) => n.props['data-dsh-images-tile'] === 'a')[0];
+  findAll(tile, (n) => n.props.role === 'button')[0].props.onClick();
+  hooks.rewind();
+  const box = findAll(panel({}), (n) => n.props['data-dsh-images-lightbox'])[0];
+  assert.ok(box);
+  assert.equal(findAll(box, (n) => n.props['data-dsh-images-open-session'] !== undefined).length, 0);
+  assert.ok(findAll(box, (n) => n.props['aria-label'] === 'Download').length > 0);
 });
 
 test('an empty gallery says how it fills; an unreachable host says so', async () => {

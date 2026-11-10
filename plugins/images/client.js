@@ -147,6 +147,7 @@ window.__ModuleLoader__.load({
     const ZoomInIcon = ({ size = 16 }) => svg(size, ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'M20 20l-4-4', 'M11 8v6', 'M8 11h6']);
     const ZoomOutIcon = ({ size = 16 }) => svg(size, ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'M20 20l-4-4', 'M8 11h6']);
     const ChevronIcon = ({ size = 20, dir = 1 }) => svg(size, [dir > 0 ? 'M9 5l7 7-7 7' : 'M15 5l-7 7 7 7']);
+    const ChatIcon = ({ size = 16 }) => svg(size, ['M20 11.5a7.5 7.5 0 0 1-10.9 6.7L4 19.5l1.3-4.6A7.5 7.5 0 1 1 20 11.5z']);
     function ImagesGlyph(props) {
       const size = Number(props?.size) > 0 ? Number(props.size) : 18;
       const ink = props?.active ? C.label : 'currentColor';
@@ -374,9 +375,18 @@ window.__ModuleLoader__.load({
       return { s, x: view.x + dx * k, y: view.y + dy * k };
     }
 
-    function Lightbox({ t, items, index, onClose, onStep }) {
+    /**
+     * The viewer. `onOpenSession(item)`, given only by the gallery, adds a button
+     * that opens the conversation the picture was drawn in. When that conversation
+     * cannot be opened it returns a notice `{key, action?}` to show; an action
+     * `{key, run}` is a button on the notice whose `run()` resolves to the next
+     * notice, or null once it has done its work.
+     */
+    function Lightbox({ t, items, index, onClose, onStep, onOpenSession, sessionTitle }) {
       const item = items[index];
       const [view, setView] = useState(FIT);
+      // A notice belongs to the picture it was about; stepping on leaves it behind.
+      const [notice, setNotice] = useState(null);
       const drag = useRef(null);
       // A new picture opens fitted.
       useEffect(() => {
@@ -496,6 +506,26 @@ window.__ModuleLoader__.load({
         ),
         h(IconButton, { key: 'in', title: t('zoomIn'), dark: true, onClick: () => setView((v) => zoomView(v, v.s * ZOOM_STEP)) }, h(ZoomInIcon, { size: 18 })),
       );
+      const title = onOpenSession && item.sessionId ? sessionTitle?.(item.sessionId) : undefined;
+      const openSession =
+        onOpenSession && item.sessionId
+          ? h(
+              'button',
+              {
+                type: 'button',
+                title: title ? t('openSessionTitled', { title }) : t('openSession'),
+                'data-dsh-images-open-session': item.sessionId,
+                onClick: (e) => {
+                  e.stopPropagation();
+                  const next = onOpenSession(item);
+                  setNotice(next ? { at: index, ...next } : null);
+                },
+                style: { display: 'inline-flex', alignItems: 'center', gap: 6, height: 32, padding: '0 12px 0 10px', border: 'none', borderRadius: 10, cursor: 'pointer', color: '#fff', background: 'rgba(0,0,0,.55)', backdropFilter: 'blur(6px)', font: 'inherit', fontSize: 12.5, whiteSpace: 'nowrap' },
+              },
+              h(ChatIcon),
+              t('openSession'),
+            )
+          : null;
       const node = h(
         'div',
         {
@@ -508,8 +538,9 @@ window.__ModuleLoader__.load({
         },
         h(
           'div',
-          { style: { position: 'absolute', top: 14, right: 14, display: 'flex', gap: 8, zIndex: 2 } },
+          { style: { position: 'absolute', top: 14, right: 14, display: 'flex', alignItems: 'center', gap: 8, zIndex: 2 } },
           zoomBar,
+          openSession,
           h(IconButton, { key: 'dl', title: t('download'), dark: true, onClick: () => download(item) }, h(DownloadIcon, { size: 18 })),
           h(IconButton, { key: 'x', title: t('close'), dark: true, onClick: onClose }, h(CloseIcon, { size: 18 })),
         ),
@@ -573,6 +604,29 @@ window.__ModuleLoader__.load({
           item.prompt ? h('div', { style: { maxWidth: 820, margin: '0 auto', color: 'rgba(255,255,255,.92)', userSelect: 'text' } }, item.prompt) : null,
           meta ? h('div', { style: { marginTop: 4, color: 'rgba(255,255,255,.55)' } }, `${meta}${items.length > 1 ? ` · ${index + 1} / ${items.length}` : ''}`) : null,
         ),
+        notice && notice.at === index
+          ? h(PanelToast, {
+              text: t(notice.key),
+              onDone: () => setNotice(null),
+              style: { top: 60, bottom: 'auto', zIndex: 3 },
+              action: notice.action
+                ? {
+                    label: notice.busy ? t('unarchiving') : t(notice.action.key),
+                    busy: notice.busy === true,
+                    run: () => {
+                      const { at, action } = notice;
+                      setNotice((n) => (n ? { ...n, busy: true } : n));
+                      Promise.resolve()
+                        .then(action.run)
+                        .then(
+                          (next) => setNotice(next ? { at, ...next } : null),
+                          () => setNotice({ at, key: 'unarchiveFailed' }),
+                        );
+                    },
+                  }
+                : undefined,
+            })
+          : null,
       );
       return ReactDOM && typeof ReactDOM.createPortal === 'function' && typeof document !== 'undefined' ? ReactDOM.createPortal(node, document.body) : node;
     }
@@ -916,6 +970,29 @@ window.__ModuleLoader__.load({
         if (el.scrollHeight - el.scrollTop - el.clientHeight < 700) loadMore();
       };
 
+      // The conversation a picture was drawn in. An archived one stays shut and offers
+      // to unarchive it (for a subagent, the session it ran under); a deleted one says so.
+      const sessions = props.sessions;
+      const go = (id) => {
+        if (!sessions.open(id)) return { key: 'sessionGone' };
+        box.close();
+        return null;
+      };
+      const openSession =
+        sessions && sessions.available()
+          ? (item) => {
+              const id = item.sessionId;
+              const { state, archived } = sessions.state(id);
+              if (state === 'gone') return { key: 'sessionGone' };
+              if (state !== 'archived') return go(id);
+              if (!sessions.canUnarchive()) return { key: 'sessionArchived' };
+              return {
+                key: 'sessionArchived',
+                action: { key: 'unarchiveAndOpen', run: () => sessions.unarchive(archived).then((ok) => (ok ? go(id) : { key: 'unarchiveFailed' })) },
+              };
+            }
+          : undefined;
+
       const remove = (item) => {
         setItems((list) => (list ?? []).filter((i) => i.id !== item.id));
         setTotal((n) => Math.max(0, n - 1));
@@ -993,7 +1070,7 @@ window.__ModuleLoader__.load({
         },
         header,
         body,
-        box.at >= 0 && items ? h(Lightbox, { t, items, index: box.at, onClose: box.close, onStep: box.step }) : null,
+        box.at >= 0 && items ? h(Lightbox, { t, items, index: box.at, onClose: box.close, onStep: box.step, onOpenSession: openSession, sessionTitle: sessions?.title }) : null,
         settingsOpen
           ? h(SettingsDrawer, {
               t,
@@ -1023,15 +1100,63 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function PanelToast({ text, onDone }) {
+    /**
+     * A notice that leaves by itself. With `action` ({label, run, busy}) it carries
+     * a button, stays longer, and stays while the action runs.
+     */
+    function PanelToast({ text, onDone, style, action }) {
+      const busy = action?.busy === true;
       useEffect(() => {
-        const timer = setTimeout(onDone, 2600);
+        if (busy) return undefined;
+        const timer = setTimeout(onDone, action ? 8000 : 3200);
         return () => clearTimeout(timer);
-      }, [text]);
+      }, [text, busy]);
       return h(
         'div',
-        { role: 'status', style: { position: 'absolute', left: '50%', bottom: 28, transform: 'translateX(-50%)', padding: '8px 14px', borderRadius: 10, fontSize: SMALL, background: 'var(--dsw-alias-bg-elevated, rgba(30,30,30,.92))', color: 'var(--dsw-alias-label-primary, #fff)', boxShadow: '0 4px 16px rgba(0,0,0,.18)', zIndex: 20 } },
-        text,
+        {
+          role: 'status',
+          'data-dsh-images-toast': true,
+          // In the viewer a click on the notice must not close it.
+          onClick: (e) => e.stopPropagation(),
+          style: {
+            position: 'absolute',
+            left: '50%',
+            bottom: 28,
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            width: 'max-content',
+            maxWidth: 'calc(100% - 48px)',
+            boxSizing: 'border-box',
+            padding: action ? '6px 8px 6px 14px' : '8px 14px',
+            borderRadius: 10,
+            fontSize: SMALL,
+            lineHeight: 1.5,
+            background: 'var(--dsw-alias-bg-elevated, rgba(30,30,30,.92))',
+            color: 'var(--dsw-alias-label-primary, #fff)',
+            boxShadow: '0 4px 16px rgba(0,0,0,.18)',
+            zIndex: 20,
+            ...style,
+          },
+        },
+        h('span', null, text),
+        action
+          ? h(
+              'button',
+              {
+                type: 'button',
+                disabled: busy,
+                'data-dsh-images-toast-action': true,
+                onClick: (e) => {
+                  e.stopPropagation();
+                  if (!busy) action.run();
+                },
+                style: { flex: 'none', font: 'inherit', fontSize: SMALL, fontWeight: 600, padding: '3px 10px', border: 'none', borderRadius: 7, background: C.hover, color: C.label, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1, whiteSpace: 'nowrap' },
+              },
+              action.label,
+            )
+          : null,
       );
     }
 
@@ -1758,6 +1883,13 @@ window.__ModuleLoader__.load({
         next: 'Next',
         previous: 'Previous',
         viewer: 'Image viewer',
+        openSession: 'Open conversation',
+        openSessionTitled: 'Open the conversation it was drawn in: {title}',
+        sessionArchived: 'The conversation this picture came from is archived. Unarchive it to open it.',
+        sessionGone: 'The conversation this picture came from no longer exists.',
+        unarchiveAndOpen: 'Unarchive and open',
+        unarchiving: 'Unarchiving…',
+        unarchiveFailed: 'Could not unarchive it; unarchive it from the sidebar instead.',
         refresh: 'Refresh',
         loadMore: 'Load more',
         empty: 'No images yet. Ask the model for a picture in any conversation — "draw me a poster for…" — and it appears here, newest first.',
@@ -1855,6 +1987,13 @@ window.__ModuleLoader__.load({
         next: '下一张',
         previous: '上一张',
         viewer: '图片查看',
+        openSession: '打开所属会话',
+        openSessionTitled: '打开画这张图的会话：{title}',
+        sessionArchived: '这张图所属的会话已归档，取消归档后才能打开。',
+        sessionGone: '这张图所属的会话已不存在。',
+        unarchiveAndOpen: '取消归档并打开',
+        unarchiving: '正在取消归档…',
+        unarchiveFailed: '没能取消归档，请到侧边栏里手动取消。',
         refresh: '刷新',
         loadMore: '加载更多',
         empty: '还没有图片。在任何会话里让模型画一张——"给我画一张……的海报"——它就会出现在这里，最新的在前。',
@@ -1871,6 +2010,28 @@ window.__ModuleLoader__.load({
       const template = DICTIONARY.en[key] ?? key;
       if (!params) return template;
       return template.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ''));
+    }
+
+    /**
+     * Whether the conversation `id` can be opened, from the Harness's Session list
+     * and Workspace snapshots, as `{state, archived}`: 'archived' when it, or the
+     * session a subagent of it ran under, is archived (`archived` names which);
+     * 'gone' when the list no longer has it; 'unknown' while either list is still
+     * loading or missing; else 'available'.
+     */
+    function sessionState(id, sessions, workspaces) {
+      if (!id || !sessions || !workspaces || workspaces.state === 'error') return { state: 'unknown' };
+      if (sessions.phase === 'pending' || workspaces.phase === 'pending') return { state: 'unknown' };
+      const archived = new Set(Array.isArray(workspaces.archivedSessionIds) ? workspaces.archivedSessionIds : []);
+      const byId = sessions.byId && typeof sessions.byId === 'object' ? sessions.byId : {};
+      // A subagent's own id is never archived; its parent's is.
+      for (let at = id, hops = 0; at && hops < 16; hops += 1) {
+        if (archived.has(at)) return { state: 'archived', archived: at };
+        const row = byId[at];
+        at = row?.origin === 'subagent' ? row.parentId : undefined;
+      }
+      const listed = (Array.isArray(sessions.ids) && sessions.ids.includes(id)) || byId[id] !== undefined;
+      return { state: listed ? 'available' : 'gone' };
     }
 
     /** Show the Images panel in the main column; false where there is none. */
@@ -1899,7 +2060,50 @@ window.__ModuleLoader__.load({
           }
           return fallbackT(key, params);
         };
-        const withT = (Component) => (props) => h(Component, { ...props, t: typeof props.t === 'function' ? props.t : tr });
+        const withT = (Component, extra) => (props) => h(Component, { ...props, ...extra, t: typeof props.t === 'function' ? props.t : tr });
+
+        // The gallery's way back to a picture's conversation, through the sidebar's own
+        // navigation. Read on use: a Harness without it shows no button.
+        const service = (name) => {
+          try {
+            return ctx.get?.(name);
+          } catch {
+            return undefined;
+          }
+        };
+        const snapshot = (name) => {
+          try {
+            return service(name)?.list?.getSnapshot?.();
+          } catch {
+            return undefined;
+          }
+        };
+        const sessions = {
+          available: () => typeof service('uiWorkspace')?.openSession === 'function',
+          state: (id) => sessionState(id, snapshot('sessions'), snapshot('workspaces')),
+          title: (id) => {
+            const title = snapshot('sessions')?.byId?.[id]?.displayTitle;
+            return typeof title === 'string' && title !== id ? title : undefined;
+          },
+          /** False when the Harness refused it (a session it does not know). */
+          open: (id) => {
+            try {
+              service('uiWorkspace').openSession(id);
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          canUnarchive: () => typeof service('uiWorkspace')?.unarchiveSession === 'function',
+          /** Resolves once the archive set no longer has `id`, false when the Host refused. */
+          unarchive: (id) =>
+            Promise.resolve()
+              .then(() => service('uiWorkspace').unarchiveSession(id))
+              .then(
+                () => true,
+                () => false,
+              ),
+        };
 
         // The tool's own card in the conversation.
         ctx.slots.inject('tool.call.toolview', () =>
@@ -1914,7 +2118,7 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 30, label: () => tr('title') }, ImagesGlyph),
         );
-        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, withT(ImagesPanel)));
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, withT(ImagesPanel, { sessions })));
         // A bare `/images` opens the panel.
         if (typeof ctx.inject === 'function') {
           ctx.inject(['commandUi'], (scope) => {
