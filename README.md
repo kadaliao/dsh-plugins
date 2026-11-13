@@ -32,7 +32,8 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 | [Prompt EN](plugins/prompt-en) · 0.2.0 | English under every prompt: a translation when you write in another language, or a review with corrections and better alternatives when you write in English. What it teaches goes into a vocabulary book you review with `/vocab`. |
 
 More plugins are added here as they are ready. Each one installs and is versioned on its own, and
-the index pins the exact commit it releases from, so new plugins never change an old install.
+every version in the index pins its own source — an npm package version now, a Git commit for older
+releases — so adding a plugin never changes an install you already have.
 
 ## What they have in common
 

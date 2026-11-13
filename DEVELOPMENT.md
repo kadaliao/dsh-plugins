@@ -97,14 +97,22 @@ also the only path users take, so test it before publishing a version.
 (`@deepseek-ai/dsh-plugin-market-index`) before pushing — it rejects a non-canonical URL, a missing
 `en` title, a bad commit, or a path segment with unsupported characters.
 
+Releases published to npm use `"source": { "type": "npm" }` instead of the Git object, which makes
+Discover install them as `<name>@<version>`: run `npm publish --access public` from the plugin
+directory first, then point the index at that version. The index entry's `name` must be the package
+name on the registry. Older versions keep their Git source — the index lists each version's own
+source, so a release never changes how an earlier one installs.
+
 ## Release checklist
 
 1. Bump the plugin's `version` and update its README if behavior changed.
 2. Run the tests.
 3. Commit and push the code.
-4. Set the index entry's `source.commit` to that commit, commit and push the index.
-5. Install from the index's Git spec in a clean profile and confirm the plugin appears and works.
-6. Never rewrite a published commit; publish a new version instead.
+4. `npm publish --access public` from the plugin directory.
+5. Set the index entry's source — `{ "type": "npm" }`, or `source.commit` for a Git-only release —
+   then commit and push the index.
+6. Install from the index in a clean profile and confirm the plugin appears and works.
+7. Never rewrite a published commit; publish a new version instead.
 
 ## License
 
