@@ -318,6 +318,7 @@ test('hiring a team creates its bots, Harness skills, apps and schedules', async
     api.store.save({ id: ledger.id, skills: ledger.skills.map((s) => ({ ...s, description: '' })) });
     assert.equal(api.store.get(ledger.id).skills.find((s) => s.name === 'xlsx').description, '');
     assert.equal(api.state().bots.find((b) => b.id === ledger.id).skills.find((s) => s.name === 'xlsx').description, 'Sheets.');
+    assert.equal((await api.routes.state.get()).bots.find((b) => b.id === ledger.id).skills.find((s) => s.name === 'xlsx').description, 'Sheets.');
   } finally {
     globalThis.fetch = realFetch;
   }

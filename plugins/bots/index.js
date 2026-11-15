@@ -1073,7 +1073,8 @@ export function apply(ctx, config) {
         return { ok: true, bot: saved, added: apps.map((a) => a.name) };
       },
     },
-    state: { get: () => state() },
+    // The first read fills Harness skill descriptions for skills stored without one.
+    state: { get: async () => (dshSkillInfo.size ? state() : dshSkills().then(state, state)) },
     catalog: { get: () => catalog() },
     // A link preview card for the chat: YouTube, X posts, or any page's OpenGraph meta.
     unfurl: { get: (url) => unfurlLink(url.searchParams.get('url') ?? '') },
