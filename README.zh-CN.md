@@ -28,6 +28,7 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/prompt-en
 
 | 插件 | 作用 |
 | --- | --- |
+| [Bots](plugins/bots/README.zh-CN.md) · 0.3.0 | 给一人公司和分工协作场景的 Grok 式 bot 团队：一键雇用现成团队（一人公司、研发小队、内容工作室、研究台），每个 bot 有自己的人设、头像、技能、能力、应用和定时任务，bot 之间私信协作，调度员负责分派。充分复用 Harness：直接用你已装的技能、从 GitHub 导入或让 bot 自己写技能，从 Codex、Claude Code、Cursor 导入 MCP 服务。中英双语。 |
 | [图片](plugins/images/README.zh-CN.md) · 0.5.5 | 要一张图就给一张图：给模型一个 `generate_image` 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型（输入即可模糊搜索），每张图都标出费用；供应商不给价的模型用公开的 LiteLLM 价目表兜底。要动图时让模型画一张精灵图，自动拼成循环播放的 GIF；也能带参考图（对话附件、文件、之前生成的图）改图或接着画。 |
 | [Prompt EN](plugins/prompt-en/README.zh-CN.md) · 0.2.0 | 在每条 prompt 下方写一行英文：用其他语言写的给出译文，用英文写的给出纠错和更地道的替代说法。教过你的说法收进生词本，用 `/vocab` 复习。 |
 

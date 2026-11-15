@@ -1,0 +1,51 @@
+{
+  "name": "@kadaliao/dsh-bots",
+  "version": "0.3.0",
+  "type": "module",
+  "description": "Grok-style bots for DeepSeek Harness: create bots with their own avatar, persona, skills, apps and scheduled tasks; they message each other and a dispatcher bot hands out the work.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kadaliao/dsh-plugins.git",
+    "directory": "plugins/bots"
+  },
+  "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/bots",
+  "license": "MIT",
+  "keywords": ["dsh", "deepseek-harness", "dsh-plugin", "bots", "agents", "multi-agent", "persona", "schedule", "mcp", "computer-use"]
+}
