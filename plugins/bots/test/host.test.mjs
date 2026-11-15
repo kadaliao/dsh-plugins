@@ -305,7 +305,7 @@ test('hiring a team creates its bots, Harness skills, apps and schedules', async
     const lead = api.store.get(r.leadId);
     assert.equal(lead.role, 'primary');
     assert.match(lead.name, /幕僚长/);
-    assert.ok(lead.skills.some((s) => s.source === 'dsh' && s.name === 'deep-research'));
+    assert.ok(lead.skills.some((s) => s.source === 'dsh' && s.name === 'deep-research' && s.description === 'Research.'), 'Harness skills keep their description');
     assert.ok(r.skipped.some((x) => x.name === 'morning'), 'missing Harness skills are reported');
     const forge = r.bots.find((b) => b.team === 'opc' && /Forge/.test(b.name));
     assert.ok(forge.skills.some((s) => s.source === 'import' && s.dir));
@@ -314,6 +314,10 @@ test('hiring a team creates its bots, Harness skills, apps and schedules', async
     assert.ok(ledger.skills.some((s) => s.name === 'xlsx'));
     assert.ok(h.tasks.some((t) => t.title === '早间简报'));
     assert.ok(api.state().bots.find((b) => b.id === forge.id).appIssues[forge.apps[0].id], 'GitHub needs a token');
+    // A Harness skill stored without a description (hired by 0.3.0) is shown with the registry's.
+    api.store.save({ id: ledger.id, skills: ledger.skills.map((s) => ({ ...s, description: '' })) });
+    assert.equal(api.store.get(ledger.id).skills.find((s) => s.name === 'xlsx').description, '');
+    assert.equal(api.state().bots.find((b) => b.id === ledger.id).skills.find((s) => s.name === 'xlsx').description, 'Sheets.');
   } finally {
     globalThis.fetch = realFetch;
   }

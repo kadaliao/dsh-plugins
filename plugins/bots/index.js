@@ -821,6 +821,8 @@ export function apply(ctx, config) {
     const live = agents();
     return store.list().map((b) => (b.sessionId ? live?.get?.(b.sessionId) : undefined)).find(Boolean) ?? live?.list?.()?.[0];
   }
+  /** Description of each Harness skill as of the last registry read; fills skills stored without one. */
+  const dshSkillInfo = new Map();
   /** The skills installed in this Harness, as a bot would see them (bot-registered ones left out). */
   async function dshSkills() {
     const registry = service(ctx, 'skills');
@@ -836,10 +838,12 @@ export function apply(ctx, config) {
         rows = [];
       }
     }
-    return rows
+    const out = rows
       .filter((r) => r.provider !== 'runtime' && r.source !== 'bots')
       .map((r) => ({ name: r.name, description: String(r.description ?? '').replace(/\s+/g, ' ').slice(0, 400), source: r.source ?? '' }))
       .sort((a, b) => a.name.localeCompare(b.name));
+    for (const r of out) dshSkillInfo.set(r.name, r.description);
+    return out;
   }
 
   async function catalog() {
@@ -897,7 +901,8 @@ export function apply(ctx, config) {
           appIssues[app.id] = error?.message ?? String(error);
         }
       }
-      return { ...b, status: botStatus(b), appIssues };
+      const skills = b.skills.map((s) => (s.source === 'dsh' && !s.description && dshSkillInfo.get(s.name) ? { ...s, description: dshSkillInfo.get(s.name) } : s));
+      return { ...b, skills, status: botStatus(b), appIssues };
     });
     const sessionMap = {};
     for (const b of bots) if (b.sessionId) sessionMap[b.sessionId] = b.id;
@@ -937,7 +942,7 @@ export function apply(ctx, config) {
     if (!team) throw new Error(`no team "${teamId}"`);
     const zh = lang === 'zh';
     const pick = (v) => (zh ? v.zh : v.en);
-    const have = new Set((await dshSkills()).map((x) => x.name));
+    const have = new Map((await dshSkills()).map((x) => [x.name, x.description]));
     const tpl = templates();
     const created = [];
     const skipped = [];
@@ -945,7 +950,7 @@ export function apply(ctx, config) {
     for (const b of team.bots) {
       const skills = [];
       for (const n of b.dshSkills ?? []) {
-        if (have.has(n)) skills.push({ name: n, source: 'dsh', description: '', enabled: true });
+        if (have.has(n)) skills.push({ name: n, source: 'dsh', description: have.get(n) ?? '', enabled: true });
         else skipped.push({ bot: b.handle, kind: 'skill', name: n });
       }
       for (const spec of b.importSkills ?? []) {
