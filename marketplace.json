@@ -21,6 +21,12 @@
           "en": "Images & media",
           "zh": "图片与媒体"
         }
+      },
+      "agents": {
+        "title": {
+          "en": "Agents & teams",
+          "zh": "智能体与团队"
+        }
       }
     },
     "labels": {
@@ -35,11 +41,65 @@
           "en": "Agent tool",
           "zh": "模型工具"
         }
+      },
+      "multi-agent": {
+        "title": {
+          "en": "Multi-agent",
+          "zh": "多智能体"
+        }
       }
     },
     "sortKeys": {}
   },
   "plugins": [
+    {
+      "name": "@kadaliao/dsh-bots",
+      "title": {
+        "en": "Bots",
+        "zh": "Bots"
+      },
+      "description": {
+        "en": "Grok-style bot teams for one-person companies and role-split work: hire a ready-made team (one-person company, software squad, content studio, research desk) in one click, each bot with its own persona, avatar, skills, abilities, apps and scheduled tasks. Bots message each other and a dispatcher hands out the work. Built on Harness: reuse your installed skills, import skills from GitHub or let a bot write its own, and import MCP servers from Codex, Claude Code or Cursor.",
+        "zh": "把 Grok bot 搬进 DeepSeek Harness：给一人公司和分工协作场景的 bot 团队。一键雇用现成团队（一人公司、研发小队、内容工作室、研究台），每个 bot 有自己的人设、头像、技能、能力、应用和定时任务，bot 之间私信协作，调度员负责分派。充分复用 Harness：直接用已装的技能、从 GitHub 导入或让 bot 自己写技能，从 Codex、Claude Code、Cursor 导入 MCP 服务。"
+      },
+      "icon": "./plugins/bots/icon.svg",
+      "author": "kadaliao",
+      "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/bots",
+      "repository": {
+        "url": "https://github.com/kadaliao/dsh-plugins",
+        "directory": "plugins/bots"
+      },
+      "metadata": {
+        "category": "agents",
+        "keywords": [
+          "bots",
+          "agents",
+          "multi-agent",
+          "team",
+          "one-person company",
+          "persona",
+          "schedule",
+          "mcp",
+          "skills",
+          "computer-use"
+        ],
+        "labels": [
+          "multi-agent",
+          "tool",
+          "bilingual"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.3.0",
+          "publishTimestamp": 1794756108,
+          "source": {
+            "type": "npm"
+          }
+        }
+      ]
+    },
     {
       "name": "@kadaliao/dsh-images",
       "title": {
