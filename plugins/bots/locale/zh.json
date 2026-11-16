@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Bots",
-    "description": "Grok 风格的 bot：每个 bot 有自己的头像、人设、技能、应用和定时任务；bot 之间私信协作，主 bot 负责分派与调度。"
+    "description": "Grok 风格的 bot：每个 bot 有自己的头像、人设、模型、技能、应用、定时任务和记忆；bot 之间私信协作，主 bot 负责分派与调度，用量页按 bot、任务、日期统计 tokens。"
   }
 }

@@ -510,3 +510,30 @@ test('a message handed out again (restart, new connector, resumed session) is no
   assert.equal(s.delivered.at(-1).body, 'A new task');
   await again.stopAll();
 });
+
+test('/new from a chat app starts the bot’s next topic; text after it is delivered there', async () => {
+  const s = await paired();
+  const started = [];
+  s.deps.newTopic = async (bot) => started.push(bot.id);
+  s.c.emit(dm('/new'));
+  await flush();
+  assert.deepEqual(started, ['atlas']);
+  assert.equal(s.delivered.length, 0, 'a bare /new is no task');
+  assert.match(s.c.sent.map((x) => x.text).join(' '), /New topic: Atlas/);
+  s.c.emit(dm('@forge /新话题 重新开始写登录模块'));
+  await flush();
+  assert.deepEqual(started, ['atlas', 'forge']);
+  assert.deepEqual(s.delivered.at(-1), { bot: 'forge', header: '[Telegram · Kada]', body: '重新开始写登录模块' });
+  s.deps.newTopic = async () => {
+    throw new Error('Atlas is still working; start a new topic when it is done');
+  };
+  s.c.sent.length = 0;
+  s.c.emit(dm('/new'));
+  await flush();
+  assert.match(s.c.sent.map((x) => x.text).join(' '), /still working/);
+  // "/newsletter" is no command.
+  s.c.emit(dm('/newsletter draft'));
+  await flush();
+  assert.equal(s.delivered.at(-1).body, '/newsletter draft');
+  await s.hub.stopAll();
+});

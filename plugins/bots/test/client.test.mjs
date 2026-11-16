@@ -227,6 +227,41 @@ const TASKS = [
   { id: 't2', botId: 'bot-a', title: 'Weekly', prompt: 'Report', scheduledAt: null, status: 'paused', timing: { kind: 'weekly', weekly: { time: '10:30:00', time_zone: 'UTC', weekdays: [1, 2, 3, 4, 5] } } },
 ];
 
+const DAY = 86_400_000;
+const USAGE = {
+  range: { name: '7d', from: Date.now() - 6 * DAY, to: Date.now() + DAY, bucket: DAY },
+  totals: { tokens: 1_250_000, input: 50_000, output: 20_000, cacheRead: 1_180_000, cacheWrite: 0, calls: 42, cost: { USD: 1.234 }, unpriced: 3000, tasks: 7, cacheRate: 0.95 },
+  prev: { tokens: 1_000_000, calls: 30, cost: {}, unpriced: 0, tasks: 5 },
+  series: Array.from({ length: 7 }, (_, i) => ({ t: Date.now() - (6 - i) * DAY, tokens: i * 100_000, byBot: { 'bot-a': i * 60_000, 'bot-b': i * 40_000 }, cost: { USD: i * 0.1 } })),
+  bots: [{ bot: 'bot-a', tokens: 800_000, calls: 30, tasks: 5, cost: { USD: 1 } }, { bot: 'bot-b', tokens: 450_000, calls: 12, tasks: 2, cost: { USD: 0.234 } }],
+  models: [{ provider: 'p', model: 'm', tokens: 1_247_000, calls: 40, cost: { USD: 1.234 }, priced: true }, { provider: 'q', model: 'mystery-1', tokens: 3000, calls: 2, cost: {}, priced: false }],
+  kinds: [{ kind: 'chat', tokens: 1_200_000, calls: 38, cost: { USD: 1.2 } }, { kind: 'memory', tokens: 50_000, calls: 4, cost: { USD: 0.034 } }],
+  schedules: [{ id: 'sch-1', title: 'Morning brief', bot: 'bot-a', runs: 3, tokens: 300_000, cost: { USD: 0.3 } }],
+  tasks: [{ id: 'task-1', bot: 'bot-a', trigger: 'schedule', sched: 'sch-1', title: 'Morning brief', start: Date.now() - 3_600_000, end: Date.now() - 3_500_000, status: 'done', tokens: 100_000, calls: 5, cost: { USD: 0.1 } }, { id: 'task-2', bot: 'bot-b', trigger: 'chat', via: 'telegram', title: 'Fix the login bug', start: Date.now() - 60_000, end: null, status: 'running', tokens: 5000, calls: 1, cost: {} }],
+  topTasks: [],
+};
+const BOT_MEMORY = {
+  scope: 'bot-a',
+  notes: [{ id: 'n-1', text: 'Kada prefers short answers.', kind: 'preference', source: 'auto', at: Date.now() - DAY, updated: Date.now() - DAY }, { id: 'n-2', text: 'Never email on weekends.', kind: 'lesson', source: 'user', pinned: true, at: Date.now(), updated: Date.now() }],
+  journal: [{ id: 'j-1', at: Date.now() - 3_600_000, bot: 'bot-a', title: 'Morning brief', summary: 'Sent the morning brief with three items.' }],
+  topic: { sessionId: 'sess-a', startedAt: Date.now() - 7_200_000, tasks: 3, lastPrompt: 45_000 },
+  topics: [{ sessionId: 'sess-old', startedAt: Date.now() - 3 * DAY, endedAt: Date.now() - 2 * DAY, tasks: 9, reason: 'idle', titles: ['Plan the launch', 'Weekly review'] }],
+  model: null,
+  settings: { auto: true, model: null, dream: true, dreamTime: '03:00' },
+};
+const TEAM_MEMORY = { scope: 'team', notes: [{ id: 't-1', text: 'The company is called Acme.', kind: 'fact', source: 'dream', at: 1, updated: 1 }], digests: [{ date: '2026-11-15', text: '## Done\nAda sent the brief.', at: 1 }], journal: BOT_MEMORY.journal, dream: { lastDate: '2026-11-16', lastAt: Date.now() - 5 * 3_600_000 }, settings: { auto: true, model: null, dream: true, dreamTime: '03:00' } };
+const SOURCES = {
+  writable: true,
+  apis: ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'],
+  custom: [{ route: 'bots-local', name: 'Local', api: 'openai-completions', baseURL: 'http://127.0.0.1:1234/v1', models: [{ id: 'qwen' }], keyConfigured: true }],
+  logins: [
+    { id: 'codex', name: 'Codex CLI', product: 'ChatGPT', found: true, account: 'k@example.com', plan: 'pro', supported: true, route: 'openai-codex', connected: false, sync: false },
+    { id: 'claude-code', name: 'Claude Code', product: 'Claude', found: true, supported: false, reason: 'terms' },
+  ],
+};
+const SETTINGS = { topics: { idleHours: 6, maxContextK: 128 }, memory: { auto: true, model: null, dream: true, dreamTime: '03:00' }, prices: {}, codex: { sync: false } };
+const PRICES = { overrides: {}, list: { name: 'LiteLLM', count: 1800, fetchedAt: Date.now() }, models: [{ model: 'm', provider: 'p', price: { input: 1, output: 2, currency: 'USD', source: 'catalog' } }, { model: 'mystery-1', provider: 'q', price: null }] };
+
 function mockFetch(posts = []) {
   globalThis.fetch = async (url, init) => {
     const path = String(url);
@@ -251,6 +286,11 @@ function mockFetch(posts = []) {
     if (path.startsWith('/__dsh_bots/skills/local')) return { ok: true, json: async () => ({ places: [{ path: '/home/me/.claude/skills', label: '~/.claude/skills' }] }) };
     if (path.startsWith('/__dsh_bots/skills/library')) return { ok: true, json: async () => LIBRARY };
     if (path.startsWith('/__dsh_bots/apps/external')) return { ok: true, json: async () => EXTERNAL };
+    if (path.startsWith('/__dsh_bots/usage')) return { ok: true, json: async () => USAGE };
+    if (path.startsWith('/__dsh_bots/memory')) return { ok: true, json: async () => (path.includes('bot=team') ? TEAM_MEMORY : BOT_MEMORY) };
+    if (path.startsWith('/__dsh_bots/models/sources')) return { ok: true, json: async () => SOURCES };
+    if (path.startsWith('/__dsh_bots/settings')) return { ok: true, json: async () => ({ settings: SETTINGS }) };
+    if (path.startsWith('/__dsh_bots/prices')) return { ok: true, json: async () => PRICES };
     return { ok: false, status: 404, json: async () => null };
   };
   return posts;
@@ -1283,4 +1323,182 @@ test('channels: messages from and to a chat app are marked in the thread and the
   const en = seen.locale.dict.en;
   const zh = seen.locale.dict.zh;
   for (const hint of ['token', 'intent', 'conflict', 'duplicate']) assert.ok(en[`channelHint_${hint}`] && zh[`channelHint_${hint}`], hint);
+});
+
+
+// --- usage, memory, topics, settings, model sources ------------------------------------------
+
+async function openView(attr) {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const posts = mockFetch();
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  let tree = await renderSettled(panel, {}, hooks);
+  const rerender = async (n = 3) => {
+    for (let i = 0; i < n; i += 1) {
+      hooks.rewind();
+      tree = panel({});
+      await flush();
+    }
+    hooks.rewind();
+    tree = panel({});
+    return tree;
+  };
+  findAll(tree, (n) => n.props[attr])[0].props.onClick();
+  await rerender();
+  return { hooks, posts, panel, get tree() { return tree; }, rerender };
+}
+
+test('usage: tiles, a stacked chart with legend and hover, tables by bot, model, kind, schedule and recent tasks', async () => {
+  const v = await openView('data-dsh-bots-usage-entry');
+  const text = collect(v.tree).join(' ');
+  assert.match(text, /1\.3M/);
+  assert.match(text, /95% of input from cache/);
+  assert.match(text, /\$1\.23/);
+  assert.match(text, /3\.0K tokens have no price/);
+  assert.match(text, /\+25% vs the period before/);
+  assert.match(text, /Tokens by bot/);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-usage-col'] !== undefined).length, 7);
+  assert.match(text, /Conversations/);
+  assert.match(text, /Memory summaries/);
+  assert.match(text, /Morning brief/);
+  assert.match(text, /From Telegram/);
+  assert.match(text, /Running/);
+  assert.match(text, /Set price/, 'an unpriced model offers to set a price');
+  // Hovering a column shows its breakdown.
+  findAll(v.tree, (n) => n.props['data-dsh-bots-usage-col'] === 6)[0].props.onMouseEnter();
+  await v.rerender(1);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-usage-tip']).length, 1);
+  // The range switch asks the Host again.
+  findAll(v.tree, (n) => n.props['data-dsh-bots-range'] === '30d')[0].props.onClick();
+  await v.rerender();
+  assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-range'] === '30d')[0].props['aria-selected']);
+  // Prices.
+  findAll(v.tree, (n) => n.props['data-dsh-bots-prices'])[0].props.onClick();
+  await v.rerender();
+  const prices = collect(v.tree).join(' ');
+  assert.match(prices, /Model prices/);
+  assert.match(prices, /LiteLLM’s public price list \(1800 models/);
+  assert.match(prices, /No price/);
+  v.hooks.runCleanups();
+});
+
+test('memory tab: notes with pin and delete, recent work, topics and a new-topic button', async () => {
+  const v = await openTab('memory', 'bot-a');
+  const text = collect(v.tree).join(' ');
+  assert.match(text, /What Ada remembers/);
+  assert.match(text, /Kada prefers short answers/);
+  assert.match(text, /after a task/);
+  assert.match(text, /Sent the morning brief with three items/);
+  assert.match(text, /tasks done: 3/);
+  assert.match(text, /after a quiet spell/);
+  assert.match(text, /Plan the launch · Weekly review/);
+  assert.match(text, /Memory work runs on each bot’s own model/);
+  // Pinned notes sort first.
+  const notes = findAll(v.tree, (n) => n.props['data-dsh-bots-note']).map((n) => n.props['data-dsh-bots-note']);
+  assert.deepEqual(notes, ['n-2', 'n-1']);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-note-pin'] === 'n-1')[0].props.onClick();
+  findAll(v.tree, (n) => n.props['data-dsh-bots-note-delete'] === 'n-2')[0].props.onClick();
+  findAll(v.tree, (n) => n.props['data-dsh-bots-new-topic'] === 'memory')[0].props.onClick();
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/memory/put')).body, { scope: 'bot-a', note: { id: 'n-1', pinned: true } });
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/memory/delete')).body, { scope: 'bot-a', id: 'n-2' });
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/topic/new')).body, { id: 'bot-a' });
+  v.hooks.runCleanups();
+});
+
+test('team memory: shared notes, digests, journal, and consolidating now', async () => {
+  const v = await openView('data-dsh-bots-memory-entry');
+  const text = collect(v.tree).join(' ');
+  assert.match(text, /Team memory/);
+  assert.match(text, /The company is called Acme/);
+  assert.match(text, /2026-11-15/);
+  assert.match(text, /Last consolidated/);
+  assert.match(text, /every day at 03:00/);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-dream'])[0].props.onClick();
+  await v.rerender();
+  assert.ok(v.posts.some((p) => p.path.endsWith('/memory/dream')));
+  v.hooks.runCleanups();
+});
+
+test('settings: topics and memory controls save as one patch', async () => {
+  const v = await openView('data-dsh-bots-settings');
+  const text = collect(v.tree).join(' ');
+  assert.match(text, /Bots settings/);
+  assert.match(text, /New topic after this many quiet hours/);
+  assert.match(text, /Model for memory work/);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-setting'] === 'idleHours')[0].props.onChange({ target: { value: '3' } });
+  await v.rerender(1);
+  findAll(v.tree, (n) => n.props['data-dsh-bots-settings-save'])[0].props.onClick();
+  await v.rerender();
+  const post = v.posts.find((p) => p.path.endsWith('/settings'));
+  assert.deepEqual(post.body.patch.topics, { idleHours: 3, maxContextK: 128 });
+  assert.equal(post.body.patch.memory.dreamTime, '03:00');
+  v.hooks.runCleanups();
+});
+
+test('chat: a topic divider and a new-topic button; the profile groups models and offers model sources', async () => {
+  MESSAGES.push({ id: 'm4', from: 'system', to: 'bot-a', text: 'context', at: Date.now(), kind: 'topic' });
+  BOTS[0].topic = { startedAt: Date.now() - 60_000, tasks: 2, context: 12_000 };
+  try {
+    const v = await openTab('chat', 'bot-a');
+    let text = collect(v.tree).join(' ');
+    assert.match(text, /New topic · the conversation grew large/);
+    // The thread keeps itself at the bottom: it follows its own scrolling and holds what it observes.
+    const [box] = findAll(v.tree, (n) => n.props['data-dsh-bots-thread'] === 'bot-a');
+    assert.equal(typeof box.props.onScroll, 'function');
+    assert.ok(box.props.ref && box.children[0].props.ref, 'the box and its content are both referenced');
+    assert.match(text, /This topic: 12K context · tasks done: 2/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-new-topic'] === 'chat')[0].props.disabled, true, 'not while the bot is running');
+    const p = await openTab('profile', 'bot-b');
+    text = collect(p.tree).join(' ');
+    assert.match(text, /Model sources/);
+    findAll(p.tree, (n) => n.props['data-dsh-bots-model-sources'])[0].props.onClick();
+    await p.rerender();
+    text = collect(p.tree).join(' ');
+    assert.match(text, /Your endpoints/);
+    assert.match(text, /Local/);
+    assert.match(text, /Codex CLI · ChatGPT/);
+    assert.match(text, /k@example\.com · pro/);
+    assert.match(text, /Anthropic allows a Claude subscription only in Claude Code/);
+    findAll(p.tree, (n) => n.props['data-dsh-bots-login-connect'] === 'codex')[0].props.onClick();
+    findAll(p.tree, (n) => n.props['data-dsh-bots-add-endpoint'])[0].props.onClick();
+    await p.rerender();
+    assert.equal(findAll(p.tree, (n) => n.props['data-dsh-bots-endpoint-form'] === 'new').length, 1);
+    assert.deepEqual(p.posts.find((x) => x.path.endsWith('/models/login/connect')).body, { id: 'codex' });
+    p.hooks.runCleanups();
+    v.hooks.runCleanups();
+  } finally {
+    MESSAGES.pop();
+    delete BOTS[0].topic;
+  }
+});
+
+test('the model picker groups by provider and shows the thinking levels of the chosen model', async () => {
+  const saved = CATALOG.models;
+  CATALOG.models = [
+    { provider: 'p', model: 'm', label: 'P · M', group: 'P', name: 'M', efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high', context: 1_000_000 },
+    { provider: 'bots-local', model: 'qwen', label: 'Local · qwen', group: 'Local', name: 'qwen', source: 'custom' },
+  ];
+  CATALOG.defaultModel = { provider: 'p', model: 'm' };
+  try {
+    const v = await openTab('profile', 'bot-b');
+    const groups = findAll(v.tree, (n) => n.type === 'optgroup').map((n) => n.props.label);
+    assert.deepEqual(groups, ['P', 'Local · your endpoint']);
+    const text = collect(v.tree).join(' ');
+    assert.match(text, /Harness default \(m\)/);
+    assert.match(text, /P · context window 1\.0M tokens/);
+    const effort = findAll(v.tree, (n) => n.props['data-dsh-bots-effort'])[0];
+    assert.ok(effort);
+    effort.props.onChange({ target: { value: 'low' } });
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-save'])[0].props.onClick();
+    await v.rerender();
+    assert.deepEqual(v.posts.find((x) => x.path.endsWith('/save')).body.bot.model, { provider: 'p', model: 'm', reasoningEffort: 'low' });
+    v.hooks.runCleanups();
+  } finally {
+    CATALOG.models = saved;
+    delete CATALOG.defaultModel;
+  }
 });

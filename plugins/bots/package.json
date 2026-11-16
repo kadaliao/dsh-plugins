@@ -1,8 +1,8 @@
 {
   "name": "@kadaliao/dsh-bots",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "type": "module",
-  "description": "Grok-style bots for DeepSeek Harness: create bots with their own avatar, persona, skills, apps and scheduled tasks; they message each other and a dispatcher bot hands out the work.",
+  "description": "Grok-style bots for DeepSeek Harness: create bots with their own avatar, persona, model, skills, apps, scheduled tasks and memory; they message each other, a dispatcher bot hands out the work, and a usage view counts tokens by bot, task and day.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -49,5 +49,5 @@
   },
   "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/bots",
   "license": "MIT",
-  "keywords": ["dsh", "deepseek-harness", "dsh-plugin", "bots", "agents", "multi-agent", "persona", "schedule", "mcp", "computer-use"]
+  "keywords": ["dsh", "deepseek-harness", "dsh-plugin", "bots", "agents", "multi-agent", "persona", "schedule", "mcp", "computer-use", "memory", "usage"]
 }

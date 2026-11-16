@@ -36,6 +36,12 @@ import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
 import { CHANNEL_LABELS, channelEntry, channelIssue, createChannels, maskBot, unmaskApps } from './lib/channels.mjs';
 import { describeTiming, dmBody, dmHeader, personaText, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
+import { createSettings } from './lib/settings.mjs';
+import { createPriceCatalog, priceOf } from './lib/prices.mjs';
+import { createLedger, promptTokens, report, todayByBot, usageRow } from './lib/usage.mjs';
+import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, looksSecret, parseJsonReply, reflectionPrompt } from './lib/memory.mjs';
+import { createTopics, rotationReason } from './lib/topics.mjs';
+import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
 
 /**
  * Import one Harness package: by bare name when this directory resolves it,
@@ -90,7 +96,19 @@ const AVATAR_ATTEMPTS = 3;
 /** Errors from a gateway or the network rather than from the request itself. */
 export const TRANSIENT = /\b(408|409|429|500|502|503|504|520|522|524)\b|connection (lost|reset|closed)|ECONNRESET|ETIMEDOUT|EPIPE|socket hang up|fetch failed|could not reach|did not answer within|overloaded|temporarily/i;
 
-export const TOOL_NAMES = ['bot_list', 'bot_create', 'bot_update', 'bot_delete', 'bot_send_message', 'bot_schedule'];
+export const TOOL_NAMES = ['bot_list', 'bot_create', 'bot_update', 'bot_delete', 'bot_send_message', 'bot_schedule', 'memory_save', 'memory_forget', 'memory_search'];
+const MEMORY_SECTION = 'bots:memory';
+const MEMORY_ORDER = 60;
+/** How often idle conversations are checked for a new topic, and the daily consolidation for being due. */
+const SWEEP_MS = 5 * 60_000;
+/** One transcript line a task keeps for its summary, and the whole transcript. */
+const LOG_LINE = 1500;
+const LOG_MAX = 40_000;
+const DAY_MS = 86_400_000;
+/** How long a new topic waits for the last task's memory summary. */
+const REFLECT_WAIT_MS = 20_000;
+/** The local zone's offset east of UTC, in minutes. */
+const tzMinutes = () => -new Date().getTimezoneOffset();
 
 function homeDir() {
   return process.env.DSH_HOME && process.env.DSH_HOME !== '' ? process.env.DSH_HOME : join(homedir(), '.dsh');
@@ -178,6 +196,12 @@ export function apply(ctx, config, deps = {}) {
   const cfg = config && typeof config === 'object' ? config : {};
   const dir = join(homeDir(), 'cache', 'bots');
   const store = createStore(dir);
+  const settings = createSettings(dir);
+  const ledger = createLedger(dir);
+  const memory = createMemory(join(dir, 'memory'));
+  const topics = createTopics(dir);
+  const prices = createPriceCatalog(dir, { enabled: deps.prices !== false, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+  const home = deps.home ?? homedir();
   const workdir = typeof cfg.workdir === 'string' && cfg.workdir.trim() ? cfg.workdir.trim() : join(homeDir(), 'bots', 'workspace');
   const zone = (() => {
     try {
@@ -311,6 +335,12 @@ export function apply(ctx, config, deps = {}) {
       } catch (error) {
         ctx.logger?.warn?.(`bots: persona for @${bot.handle}: ${error?.message ?? error}`);
       }
+      try {
+        // Memory is read once per task, not per step: a note saved mid-task must not break the prompt cache.
+        disposers.push(prompts.section({ name: MEMORY_SECTION, order: MEMORY_ORDER, interpolate: false, text: () => memoryTextFor(agent.session.id) }));
+      } catch (error) {
+        ctx.logger?.warn?.(`bots: memory for @${bot.handle}: ${error?.message ?? error}`);
+      }
     }
     if (bot.tools.deny.length > 0) {
       const tools = service(actx, 'tools');
@@ -389,6 +419,13 @@ export function apply(ctx, config, deps = {}) {
       const found = await controller.resolveAgent(bot.sessionId).catch((error) => ({ error }));
       if (found && !('error' in found)) return bot.sessionId;
     }
+    return createSession(bot);
+  }
+
+  /** A fresh home session for the bot (its next topic). Returns the session id. */
+  async function createSession(bot) {
+    const controller = service(ctx, 'sessionController');
+    if (!controller) throw new Error('bot conversations need the Web profile (no session controller here)');
     const sessionId = `session-${randomUUID()}`;
     // Mapped before the Agent exists, so its creation already finds the bot.
     store.patch(bot.id, { sessionId });
@@ -409,9 +446,10 @@ export function apply(ctx, config, deps = {}) {
       } catch {
         // A title is cosmetic.
       }
-      if (bot.model) {
+      const fresh = store.get(bot.id) ?? bot;
+      if (fresh.model) {
         try {
-          agent.model?.select?.({ provider: bot.model.provider, model: bot.model.model });
+          agent.model?.select?.(selectionOf(fresh.model));
         } catch {
           // The default model stays.
         }
@@ -435,6 +473,377 @@ export function apply(ctx, config, deps = {}) {
     }
   }
 
+  // --- models ----------------------------------------------------------------------------
+  const selectionOf = (m) => ({ provider: m.provider, model: m.model, ...(m.reasoningEffort ? { reasoningEffort: m.reasoningEffort } : {}) });
+  /** The model a bot runs on now: its own choice, its conversation's, else the Harness default. */
+  function modelOfBot(bot) {
+    if (bot?.model) return selectionOf(bot.model);
+    const agent = bot?.sessionId ? agents()?.get?.(bot.sessionId) : undefined;
+    try {
+      const cur = agent?.model?.current?.();
+      if (cur?.provider && cur?.model) return { provider: cur.provider, model: cur.model };
+    } catch {
+      // Not resolvable.
+    }
+    try {
+      const def = service(ctx, 'agentDefaultModel')?.currentSelection?.();
+      if (def?.provider && def?.model) return { provider: def.provider, model: def.model };
+    } catch {
+      // No default either.
+    }
+    return null;
+  }
+  /** The model memory work for `bot` runs on: the setting, else the bot's own. */
+  const memoryModelOf = (bot) => settings.get().memory.model ?? modelOfBot(bot);
+
+  /**
+   * One model call outside any conversation (memory summaries): the text of the
+   * answer and its token usage. `deps.complete` stands in for tests.
+   */
+  async function complete(sel, system, prompt, { purpose = 'bots-memory', sessionId, maxTokens = 2000, timeoutMs = 120_000 } = {}) {
+    if (deps.complete) return deps.complete({ ...sel, system, prompt, purpose, maxTokens });
+    const llm = service(ctx, 'llm');
+    if (!llm?.stream) throw new Error('no model service in this Harness');
+    const signal = AbortSignal.timeout(timeoutMs);
+    const parts = new Map();
+    let usage;
+    let failure;
+    for await (const c of llm.stream({ provider: sel.provider, model: sel.model, system, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], maxTokens, purpose, signal, ...(sessionId ? { sessionId } : {}) })) {
+      if (c?.type === 'text-delta') parts.set(c.index, (parts.get(c.index) ?? '') + c.text);
+      else if (c?.type === 'usage') usage = c.usage;
+      else if (c?.type === 'finish' && (c.reason?.kind === 'error' || c.reason?.kind === 'aborted')) failure = c.reason.failure?.message ?? c.reason.kind;
+    }
+    if (failure) throw new Error(String(failure));
+    return { text: [...parts.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t).join(''), usage };
+  }
+
+  // --- tasks and usage ------------------------------------------------------------------------
+  /** sessionId → the task the bot is on now. */
+  const openTasks = new Map();
+  /** schedule id → title, as last listed. */
+  const scheduleTitles = new Map();
+  /**
+   * sessionId → the memory section text. It holds for the whole topic, so the system prompt (and the
+   * provider's prompt cache over the conversation) stays the same from task to task; what the bot learns
+   * within a topic is in that conversation already. It is read again at the next task after the user
+   * edits memory in the panel or the daily consolidation ran, and at every new topic.
+   */
+  const memoText = new Map();
+  const memoStale = new Set();
+  /**
+   * Memory changed outside the conversations (a panel edit, the nightly consolidation). An idle bot
+   * reads it at its next task; a working one once its task is over. The Harness assembles a step's
+   * prompt before it reports the step's message, so this never waits for a task to start.
+   */
+  const staleMemory = (only) => {
+    for (const id of only ? [only].filter((x) => memoText.has(x)) : [...memoText.keys()]) {
+      if (openTasks.has(id) || agents()?.get?.(id)?.status === 'running') memoStale.add(id);
+      else memoText.delete(id);
+    }
+  };
+  function memoryTextFor(sessionId) {
+    let text = memoText.get(sessionId);
+    if (text === undefined) {
+      const bot = store.bySession(sessionId);
+      try {
+        text = bot ? memory.promptFor(bot, { tz: tzMinutes() }) : '';
+      } catch {
+        text = '';
+      }
+      memoText.set(sessionId, text);
+    }
+    return text;
+  }
+  const firstLine = (s, max = 100) => {
+    const line = String(s ?? '').split('\n').map((x) => x.trim()).find(Boolean) ?? '';
+    return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+  };
+  /** What a task is about, from the message that started it. */
+  function taskTitle(kind, content, said) {
+    if (kind === 'agent-message') return firstLine(Array.isArray(content) && content[1]?.text ? content[1].text : said);
+    if (kind === 'schedule') {
+      const id = /schedule_id_json:\s*"([^"]+)"/.exec(said)?.[1] ?? /"schedule_id":\s*"([^"]+)"/.exec(said)?.[1];
+      if (id && scheduleTitles.has(id)) return scheduleTitles.get(id);
+      try {
+        const p = /reminder_prompt_json:\s*(".*")\s*$/m.exec(said)?.[1];
+        if (p) return firstLine(JSON.parse(p));
+      } catch {
+        // Fall through.
+      }
+    }
+    return firstLine(said);
+  }
+  function startTask(bot, sessionId, kind, event, via) {
+    const content = event.data?.content;
+    const said = textOf(content);
+    const sched = kind === 'schedule' ? (/schedule_id_json:\s*"([^"]+)"/.exec(said)?.[1] ?? /"schedule_id":\s*"([^"]+)"/.exec(said)?.[1] ?? '') : '';
+    const from = kind === 'agent-message' ? (store.bySession(event.data?.source?.senderSessionId)?.id ?? 'user') : '';
+    const task = {
+      id: `task-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      b: bot.id,
+      s: sessionId,
+      trigger: kind === 'schedule' ? 'schedule' : kind === 'agent-message' ? 'dm' : via ? 'chat' : 'user',
+      ...(via ? { via: via.kind } : {}),
+      ...(from ? { from } : {}),
+      ...(sched ? { sched } : {}),
+      title: taskTitle(kind, content, said) || '…',
+      start: Number(event.time) || Date.now(),
+      status: 'running',
+      log: [],
+      size: 0,
+      replied: false,
+    };
+    openTasks.set(sessionId, task);
+    topics.current(bot.id, sessionId);
+    return task;
+  }
+  function logLine(task, line) {
+    if (!task || !line) return;
+    const s = line.length > LOG_LINE ? `${line.slice(0, LOG_LINE)}…` : line;
+    task.log.push(s);
+    task.size += s.length;
+    // Keep the start and the latest; the middle of a long task matters least.
+    while (task.size > LOG_MAX && task.log.length > 4) task.size -= task.log.splice(2, 1)[0].length;
+  }
+  function recordUsage(bot, sessionId, { at, kind, provider, model, usage }) {
+    if (!usage) return;
+    const task = openTasks.get(sessionId);
+    ledger.record(usageRow({ at, botId: bot.id, sessionId, taskId: kind === 'chat' || kind === 'compaction' ? task?.id : undefined, kind, provider, model, usage }));
+    if (kind === 'chat') topics.noteCall(bot.id, sessionId, promptTokens(usage));
+  }
+  /** The task of `sessionId` is over when its Agent is idle again. */
+  function settleSoon(sessionId, delay = 1200) {
+    const t = setTimeout(() => {
+      const task = openTasks.get(sessionId);
+      if (!task) return;
+      const agent = agents()?.get?.(sessionId);
+      if (agent && agent.status === 'running') return;
+      finishTask(task);
+    }, delay);
+    t.unref?.();
+  }
+  function finishTask(task, status) {
+    if (openTasks.get(task.s) !== task) return;
+    openTasks.delete(task.s);
+    if (memoStale.delete(task.s)) memoText.delete(task.s);
+    const bot = store.get(task.b);
+    const { log, size, replied, ...row } = task;
+    row.end = Date.now();
+    row.status = status ?? (task.status === 'running' ? 'done' : task.status);
+    ledger.finishTask(row);
+    topics.noteTask(task.b, task.s, task.title);
+    if (bot) queueReflection(bot, { ...row, log });
+  }
+
+  // --- memory ----------------------------------------------------------------------------------
+  const reflecting = new Map();
+  /** Summarize a finished task into the journal and the bot's notes, one bot at a time. */
+  function queueReflection(bot, task) {
+    const prev = reflecting.get(bot.id) ?? Promise.resolve();
+    const next = prev
+      .then(() => reflect(bot, task))
+      .catch((error) => ctx.logger?.warn?.(`bots: memory for @${bot.handle}: ${error?.message ?? error}`));
+    reflecting.set(bot.id, next);
+    void next.finally(() => {
+      if (reflecting.get(bot.id) === next) reflecting.delete(bot.id);
+    });
+    return next;
+  }
+  const triggerWords = (task) =>
+    task.trigger === 'schedule' ? 'a scheduled task' : task.trigger === 'dm' ? `a message from ${task.from === 'user' ? 'the user' : `@${store.get(task.from)?.handle ?? 'another bot'}`}` : task.trigger === 'chat' ? `a ${task.via ?? 'chat'} message from the user` : 'a message from the user';
+  async function reflect(bot, task) {
+    // A bot deleted while its summary waited keeps nothing.
+    if (!store.get(bot.id)) return;
+    const transcript = task.log.join('\n');
+    const worth = task.log.some((l) => l.startsWith('[assistant]') || l.startsWith('[tool]'));
+    // A short exchange (an acknowledgement, a one-line answer to a teammate) gets a journal line, not a model call.
+    const big = transcript.length >= (task.trigger === 'dm' && task.from !== 'user' ? 1200 : 300);
+    const sel = settings.get().memory.auto && worth && big ? memoryModelOf(bot) : null;
+    let summary = '';
+    if (sel) {
+      try {
+        const p = reflectionPrompt({ bot, notes: memory.notes(bot.id), team: memory.notes('team'), transcript, trigger: triggerWords(task) });
+        const r = await complete(sel, p.system, p.user, { purpose: 'bots-memory', sessionId: task.s });
+        ledger.record(usageRow({ botId: bot.id, sessionId: task.s, taskId: task.id, kind: 'memory', provider: sel.provider, model: sel.model, usage: r.usage }));
+        const parsed = parseJsonReply(r.text) ?? {};
+        summary = String(parsed.summary ?? '').trim();
+        if (Array.isArray(parsed.notes) && parsed.notes.length) memory.edit(bot.id, parsed.notes, { source: 'auto' });
+        if (Array.isArray(parsed.team) && parsed.team.length) memory.edit('team', parsed.team, { source: 'auto' });
+      } catch (error) {
+        ctx.logger?.warn?.(`bots: summarizing a task of @${bot.handle} failed: ${error?.message ?? error}`);
+      }
+    }
+    if (worth || summary) memory.addJournal({ bot: bot.id, task: task.id, trigger: task.trigger, title: task.title, summary: summary || task.title });
+    // The bot started a new topic before this summary was written: that topic reads its memory again.
+    const now = store.get(bot.id)?.sessionId;
+    if (now && now !== task.s) staleMemory(now);
+  }
+
+  let dreaming = null;
+  /** Consolidate every bot's notes and write the team digest (the daily "dream"). */
+  function dream({ reason = 'schedule' } = {}) {
+    if (dreaming) return dreaming;
+    dreaming = (async () => {
+      const now = Date.now();
+      const tz = tzMinutes();
+      const before = memory.dreamState();
+      const since = Number(before.lastAt) || now - DAY_MS;
+      const bots = store.list();
+      const result = { at: now, reason, bots: [], digest: null, errors: [] };
+      for (const bot of bots) {
+        const journal = memory.journal({ bot: bot.id, since: now - 7 * DAY_MS, limit: 300 });
+        const fresh = journal.some((j) => j.at >= since);
+        const notes = memory.notes(bot.id);
+        if (!fresh && notes.length < 40) continue;
+        const sel = memoryModelOf(bot);
+        if (!sel) continue;
+        try {
+          const p = dreamBotPrompt({ bot, notes, journal, tz });
+          const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: 4000, timeoutMs: 180_000 });
+          ledger.record(usageRow({ botId: bot.id, kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
+          const parsed = parseJsonReply(r.text);
+          if (!parsed) throw new Error('the model did not answer with JSON');
+          result.bots.push({ bot: bot.id, ...memory.edit(bot.id, Array.isArray(parsed.notes) ? parsed.notes : [], { source: 'dream' }) });
+        } catch (error) {
+          result.errors.push({ bot: bot.id, reason: error?.message ?? String(error) });
+        }
+      }
+      const journal = memory.journal({ since, limit: 2000 });
+      if (journal.length > 0) {
+        const lead = store.primary() ?? bots[0];
+        const sel = lead ? memoryModelOf(lead) : settings.get().memory.model;
+        const date = memory.dayOf(journal[journal.length - 1].at, tz);
+        if (sel) {
+          try {
+            const p = dreamTeamPrompt({ bots, team: memory.notes('team'), journal, date, tz });
+            const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: 4000, timeoutMs: 180_000 });
+            ledger.record(usageRow({ botId: lead?.id ?? 'team', kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
+            const parsed = parseJsonReply(r.text);
+            if (!parsed) throw new Error('the model did not answer with JSON');
+            if (String(parsed.digest ?? '').trim()) result.digest = memory.addDigest({ date, text: parsed.digest });
+            if (Array.isArray(parsed.team)) result.team = memory.edit('team', parsed.team, { source: 'dream' });
+          } catch (error) {
+            result.errors.push({ bot: 'team', reason: error?.message ?? String(error) });
+          }
+        }
+      }
+      // A day whose every step failed is tried again from the same point tomorrow.
+      const tried = result.bots.length + result.errors.length + (result.digest || result.team ? 1 : 0);
+      const advanced = tried === 0 || result.bots.length > 0 || Boolean(result.digest || result.team);
+      memory.setDreamState({ lastDate: memory.dayOf(now, tz), lastAt: advanced ? now : (before.lastAt ?? null), result });
+      staleMemory();
+      return result;
+    })().finally(() => {
+      dreaming = null;
+    });
+    return dreaming;
+  }
+  /** Whether today's consolidation is due: past the set time and not yet run today. */
+  function dreamDue(now = Date.now()) {
+    const m = settings.get().memory;
+    if (!m.dream) return false;
+    const tz = tzMinutes();
+    if (memory.dreamState().lastDate === memory.dayOf(now, tz)) return false;
+    const [hh, mm] = m.dreamTime.split(':').map(Number);
+    const local = new Date(now + tz * 60_000);
+    return local.getUTCHours() * 60 + local.getUTCMinutes() >= hh * 60 + mm;
+  }
+
+  // --- topics ------------------------------------------------------------------------------------
+  const rotating = new Map();
+  /**
+   * Start `bot`'s next topic: a fresh conversation (the old one is archived, its
+   * scheduled tasks move to the new one). Refused while the bot is working.
+   */
+  function newTopic(ref, reason = 'manual') {
+    const bot = store.get(ref.id) ?? ref;
+    if (rotating.has(bot.id)) return rotating.get(bot.id);
+    const job = (async () => {
+      const prev = bot.sessionId;
+      const agent = prev ? agents()?.get?.(prev) : undefined;
+      if (agent?.status === 'running') throw new Error(`${bot.name} is still working; start a new topic when it is done`);
+      const open = prev ? openTasks.get(prev) : undefined;
+      if (open) finishTask(open);
+      // The last task's summary belongs in the memory the new topic starts with.
+      const pending = reflecting.get(bot.id);
+      if (pending) await Promise.race([pending, new Promise((r) => setTimeout(r, REFLECT_WAIT_MS).unref?.())]);
+      let next;
+      try {
+        next = await createSession(store.get(bot.id) ?? bot);
+      } catch (error) {
+        if (prev) store.patch(bot.id, { sessionId: prev });
+        throw error;
+      }
+      if (prev && prev !== next) {
+        // Every scheduled task moves along, or none does: one left behind would run in a conversation no bot owns.
+        let entries = [];
+        try {
+          entries = (await schedule().catalog()).filter((e) => e.target?.kind === 'session' && e.target.sessionId === prev);
+        } catch {
+          entries = []; // No schedule service: nothing targets it.
+        }
+        const retarget = async (id, sessionId) => {
+          const r = await schedule().edit({ id, action: 'update', patch: { target: { kind: 'session', sessionId } } });
+          if (r && typeof r === 'object' && 'code' in r && !('title' in r) && r.code !== 'schedule_not_found') throw new Error(String(r.code));
+        };
+        const moved = [];
+        let failed = null;
+        for (const e of entries) {
+          try {
+            await retarget(e.id, next);
+            moved.push(e.id);
+          } catch (error) {
+            failed = error;
+            break;
+          }
+        }
+        if (failed) {
+          for (const id of moved) await retarget(id, prev).catch(() => {});
+          store.patch(bot.id, { sessionId: prev });
+          uninstall(next);
+          const back = agents()?.get?.(prev);
+          if (back) reconcile(back);
+          await Promise.resolve(service(ctx, 'workspaceRegistry')?.archiveSession?.(next)).catch(() => {});
+          throw new Error(`could not move the scheduled tasks of @${bot.handle} to a new topic (${failed?.message ?? failed}); it stays in the current one`);
+        }
+        uninstall(prev);
+        memoText.delete(prev);
+        memoStale.delete(prev);
+        try {
+          await service(ctx, 'workspaceRegistry')?.archiveSession?.(prev);
+        } catch (error) {
+          ctx.logger?.warn?.(`bots: archiving the last topic of @${bot.handle}: ${error?.message ?? error}`);
+        }
+      }
+      topics.rotate(bot.id, next, reason);
+      store.log({ from: 'system', to: bot.id, kind: 'topic', text: reason });
+      return next;
+    })().finally(() => rotating.delete(bot.id));
+    rotating.set(bot.id, job);
+    return job;
+  }
+  /** Start a new topic first when the conversation has gone quiet for long or grown too big. */
+  async function autoTopic(bot, trigger) {
+    // A topic starting right now: wait for it, so this message goes to the new conversation.
+    if (bot?.id && rotating.has(bot.id)) {
+      await rotating.get(bot.id).catch(() => {});
+      return;
+    }
+    if (!bot?.sessionId || openTasks.has(bot.sessionId)) return;
+    const agent = agents()?.get?.(bot.sessionId);
+    if (agent?.status === 'running') return;
+    const current = topics.peek(bot.id);
+    if (!current || current.sessionId !== bot.sessionId) return;
+    const reason = rotationReason(current, settings.get().topics, { trigger });
+    if (!reason) return;
+    try {
+      await newTopic(bot, reason);
+    } catch (error) {
+      ctx.logger?.warn?.(`bots: new topic for @${bot.handle}: ${error?.message ?? error}`);
+    }
+  }
+  const TOPIC_COMMAND = /^\/(new|clear|reset|新话题|新对话)(?=$|\s)\s*/i;
+
   // --- delivering messages ---------------------------------------------------------------
   const pairs = new Map();
   function admitPair(a, b) {
@@ -453,7 +862,9 @@ export function apply(ctx, config, deps = {}) {
     if (body === '') throw new Error('text must not be empty');
     if (sender && sender.id === target.id) throw new Error('a bot cannot message itself');
     if (sender && !admitPair(sender.id, target.id)) throw new Error(`@${sender.handle} and @${target.handle} exchanged ${PAIR_LIMIT} messages in the last 10 minutes; stop and report to the user instead of continuing.`);
-    const agent = await agentOf(target);
+    // A teammate's message may answer this bot's own question: only a long quiet starts a new topic here.
+    await autoTopic(store.get(target.id) ?? target, sender ? 'dm' : 'user');
+    const agent = await agentOf(store.get(target.id) ?? target);
     const message = createUserMessage({
       content: [
         { type: 'text', text: dmHeader(sender) },
@@ -467,11 +878,20 @@ export function apply(ctx, config, deps = {}) {
     return agent.session.id;
   }
 
-  /** The user writes to a bot from the panel: an ordinary user prompt in its conversation. */
+  /**
+   * The user writes to a bot from the panel: an ordinary user prompt in its conversation.
+   * `/new` (or `/clear`, `/新话题`) first starts a new topic; text after it goes there.
+   */
   async function userSend(target, text) {
-    const body = String(text ?? '').trim();
+    let body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
-    const agent = await agentOf(target);
+    const cmd = TOPIC_COMMAND.exec(body);
+    if (cmd) {
+      const sessionId = await newTopic(target, 'manual');
+      body = body.slice(cmd[0].length).trim();
+      if (!body) return sessionId;
+    } else await autoTopic(store.get(target.id) ?? target, 'user');
+    const agent = await agentOf(store.get(target.id) ?? target);
     agent.followup(createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } }));
     await flush(agent);
     return agent.session.id;
@@ -484,12 +904,14 @@ export function apply(ctx, config, deps = {}) {
     entries: () => templates(),
     // A chat message is a user prompt like one typed in the panel, after a line naming where it came from.
     deliver: async (target, { header, body }) => {
-      const agent = await agentOf(target);
+      await autoTopic(store.get(target.id) ?? target, 'user');
+      const agent = await agentOf(store.get(target.id) ?? target);
       agent.followup(createUserMessage({ content: [{ type: 'text', text: header }, { type: 'text', text: body }], source: { kind: 'user' } }));
       await flush(agent);
       return agent.session.id;
     },
     running: (sessionId) => agents()?.get?.(sessionId)?.status === 'running',
+    newTopic: (bot) => newTopic(bot, 'manual'),
     ...(deps.loadConnector ? { loadConnector: deps.loadConnector } : {}),
     ...(deps.typingEveryMs ? { typingEveryMs: deps.typingEveryMs } : {}),
     log: (line) => ctx.logger?.info?.(`bots: ${line}`),
@@ -507,27 +929,31 @@ export function apply(ctx, config, deps = {}) {
   const trigger = new Map();
   /** Sessions whose current turn already sent a bot_send_message. */
   const answered = new Set();
+  /** Kinds of user message that start (or join) a task. */
+  const TASK_KINDS = new Set(['user', 'schedule', 'agent-message']);
   ctx.on('session/event', (session, event) => {
+    let bot;
+    let via = null;
+    let kind;
     try {
-      const bot = store.bySession(session?.id);
+      bot = store.bySession(session?.id);
       if (!bot || !event) return;
       if (event.type === 'user/message') {
-        let kind = event.data?.source?.kind;
+        kind = event.data?.source?.kind;
         // The Harness tells a session about task edits made elsewhere; that is not a delivery.
         if (kind === 'schedule' && /^\[SCHEDULE CHANGE\]/.test(textOf(event.data.content))) kind = 'schedule-notice';
         trigger.set(session.id, kind);
         answered.delete(session.id);
         const said = textOf(event.data.content);
         // A chat message makes its chat where replies go; any other user message brings them back here.
-        const via = channels.noteUserMessage(session.id, bot, kind, said);
+        via = channels.noteUserMessage(session.id, bot, kind, said);
         if (kind === 'user') store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who } : { from: 'user', to: bot.id, text: said, kind: 'user' });
         else if (kind === 'schedule') store.log({ from: 'schedule', to: bot.id, text: said, kind: 'system' });
       } else if (event.type === 'assistant/message') {
         const content = event.data?.message?.content ?? [];
         const calls = content.filter((b) => b?.type === 'tool-call');
         if (calls.some((b) => (b.name ?? b.toolName) === 'bot_send_message')) answered.add(session.id);
-        if (calls.length > 0) return;
-        const text = textOf(content);
+        const text = calls.length > 0 ? '' : textOf(content);
         const why = trigger.get(session.id);
         // Shown in the bot's chat: what it says to the user. Hidden: acknowledging a schedule notice,
         // and the closing words of a turn that answered a bot by DM (they reach no one). The
@@ -543,6 +969,59 @@ export function apply(ctx, config, deps = {}) {
       }
     } catch {
       // The timeline must never disturb a conversation.
+    }
+    // Tasks, usage and the transcript memory is written from; never in the way either.
+    try {
+      if (!bot || !event) return;
+      const sid = session.id;
+      if (event.type === 'user/message') {
+        if (!TASK_KINDS.has(kind)) return;
+        const task = openTasks.get(sid) ?? startTask(bot, sid, kind, event, via);
+        const said = textOf(event.data?.content);
+        const who = kind === 'schedule' ? 'scheduled' : kind === 'agent-message' ? 'bot message' : via ? `user via ${via.kind}` : 'user';
+        logLine(task, `[${who}] ${via ? via.body : said}`);
+      } else if (event.type === 'assistant/message') {
+        const msg = event.data?.message ?? {};
+        recordUsage(bot, sid, { at: event.time, kind: 'chat', provider: msg.source?.provider, model: msg.source?.model, usage: event.data?.usage });
+        const task = openTasks.get(sid);
+        if (!task) return;
+        for (const b of Array.isArray(msg.content) ? msg.content : []) {
+          if (b?.type === 'text' && b.text?.trim()) logLine(task, `[assistant] ${b.text.trim()}`);
+          else if (b?.type === 'tool-call') {
+            let args = '';
+            try {
+              args = typeof b.argsRaw === 'string' ? b.argsRaw : JSON.stringify(b.args ?? b.arguments ?? b.input ?? {});
+            } catch {
+              args = '';
+            }
+            logLine(task, `[tool] ${b.name ?? b.toolName ?? 'tool'} ${args.slice(0, 400)}`);
+          }
+        }
+      } else if (event.type === 'tool/result') {
+        const task = openTasks.get(sid);
+        const text = textOf(event.data?.message?.content ?? event.data?.content);
+        if (task && text) logLine(task, `[result] ${text.slice(0, 300)}`);
+      } else if (event.type === 'compaction/summary') {
+        const d = event.data ?? {};
+        recordUsage(bot, sid, { at: event.time, kind: 'compaction', provider: d.provider, model: d.model, usage: d.usage });
+      } else if (event.type === 'turn/end') {
+        const task = openTasks.get(sid);
+        const reason = event.data?.reason?.kind;
+        if (task && reason && reason !== 'completed') task.status = reason === 'error' ? 'error' : reason === 'aborted' ? 'stopped' : task.status;
+        settleSoon(sid);
+      }
+    } catch (error) {
+      ctx.logger?.debug?.(`bots: usage: ${error?.message ?? error}`);
+    }
+  });
+  // The surest sign a task is over: the bot's Agent went idle.
+  ctx.on('agent/status', (payload) => {
+    try {
+      const sid = payload?.agent?.session?.id;
+      if (sid && payload.status === 'idle' && openTasks.has(sid)) settleSoon(sid, 300);
+      else if (sid && payload.status === 'idle' && memoStale.delete(sid)) memoText.delete(sid);
+    } catch {
+      // Ignored.
     }
   });
 
@@ -567,6 +1046,7 @@ export function apply(ctx, config, deps = {}) {
   });
   async function schedulesOf(bot) {
     const all = await schedule().catalog();
+    for (const e of all) if (e?.id && e.title) scheduleTitles.set(e.id, e.title);
     const sessions = new Set(store.list().map((b) => b.sessionId).filter(Boolean));
     return all
       .filter((e) => e.target?.kind === 'session' && (bot ? e.target.sessionId === bot.sessionId : sessions.has(e.target.sessionId)))
@@ -607,6 +1087,8 @@ export function apply(ctx, config, deps = {}) {
       }
     }
     store.remove(bot.id);
+    memory.dropBot(bot.id);
+    topics.drop(bot.id);
     if (bot.avatar.kind === 'image') for (const f of [bot.id, `${bot.id}.type`]) rmSync(join(dir, 'avatars', f), { force: true });
   }
 
@@ -619,7 +1101,7 @@ export function apply(ctx, config, deps = {}) {
     const agent = bot.sessionId ? agents()?.get?.(bot.sessionId) : undefined;
     if (agent && bot.model) {
       try {
-        agent.model?.select?.({ provider: bot.model.provider, model: bot.model.model });
+        agent.model?.select?.(selectionOf(bot.model));
       } catch {
         // Kept on its current model.
       }
@@ -869,6 +1351,69 @@ export function apply(ctx, config, deps = {}) {
         }
       },
     }),
+    defineTool({
+      name: 'memory_save',
+      description:
+        "Save a note to long-term memory, which outlasts this conversation and every new topic. Use it when the user asks you to remember something, or you learn a lasting fact, preference, decision or lesson. scope 'self' is your own memory; 'team' is read by every bot (only for what all of them should know). One self-contained sentence; never secrets.",
+      parameters: {
+        text: { type: 'string', required: true, description: 'The note: one sentence, in the language the user uses.' },
+        scope: { type: 'string', enum: ['self', 'team'], description: "Default 'self'." },
+        kind: { type: 'string', enum: MEMORY_KINDS },
+        replace_id: { type: 'string', description: 'Id of an existing note this one corrects or replaces.' },
+      },
+      output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ note: v.note, scope: v.scope }) },
+      execute: async (args, exec) => {
+        const me = callerBot(exec);
+        const scope = args.scope === 'team' ? 'team' : 'self';
+        if (scope === 'self' && !me) throw new Error("only a bot has its own memory; use scope 'team' to save a note every bot reads");
+        const key = scope === 'team' ? 'team' : me.id;
+        const ops = args.replace_id ? [{ op: 'update', id: String(args.replace_id), text: args.text, kind: args.kind }] : [{ op: 'add', text: args.text, kind: args.kind }];
+        if (args.replace_id && !memory.notes(key).some((n) => n.id === String(args.replace_id))) throw new Error(`no note ${args.replace_id} in ${scope === 'team' ? 'team' : 'your'} memory`);
+        const r = memory.edit(key, ops, { source: 'tool' });
+        const note = memory.notes(key).find((n) => n.id === r.touched[0]) ?? null;
+        if (!note) {
+          if (args.replace_id) throw new Error(`note ${args.replace_id} is pinned by the user; it stays as it is (ask the user to change it)`);
+          throw new Error(looksSecret(args.text) ? 'not saved: it looks like a secret (keys, passwords and tokens are never stored)' : String(args.text ?? '').trim() ? 'not saved: memory is full of pinned notes; ask the user to unpin some' : 'not saved: the note is empty');
+        }
+        return { ok: true, scope, note, text: `${r.added ? 'Saved' : args.replace_id ? 'Updated' : 'Already remembered'} (${scope === 'team' ? 'team memory' : 'your memory'}${note ? `, id ${note.id}` : ''}).` };
+      },
+    }),
+    defineTool({
+      name: 'memory_forget',
+      description: 'Remove a note from long-term memory that is wrong or no longer true, by its id (shown in brackets in your memory).',
+      parameters: { id: { type: 'string', required: true }, scope: { type: 'string', enum: ['self', 'team'], description: "Default 'self'." } },
+      output: { schema: anyValue, render: (_a, v) => text(v.text) },
+      execute: async (args, exec) => {
+        const me = callerBot(exec);
+        const scope = args.scope === 'team' || String(args.id).startsWith('t-') ? 'team' : 'self';
+        if (scope === 'self' && !me) throw new Error('only a bot has its own memory');
+        const key = scope === 'team' ? 'team' : me.id;
+        const target = memory.notes(key).find((n) => n.id === String(args.id));
+        if (!target) throw new Error(`no note ${args.id} in ${scope === 'team' ? 'team' : 'your'} memory`);
+        if (target.pinned) throw new Error(`note ${args.id} is pinned by the user; ask the user before removing it`);
+        memory.remove(key, String(args.id));
+        return { ok: true, text: `Forgot ${args.id}.` };
+      },
+    }),
+    defineTool({
+      name: 'memory_search',
+      description: "Search long-term memory and the team's work journal (what every bot did, task by task) and daily digests, for words in the query. Use it when the user refers to earlier work that is not in this conversation.",
+      parameters: { query: { type: 'string', required: true, description: 'Words that should all appear.' } },
+      output: { schema: anyValue, render: (_a, v) => text(v.text) },
+      isConcurrencySafe: () => true,
+      execute: async (args, exec) => {
+        const me = callerBot(exec);
+        const r = memory.search(args.query, { bot: me?.id ?? '' });
+        const tz = tzMinutes();
+        const when = (ms) => new Date(ms + tz * 60_000).toISOString().slice(0, 16).replace('T', ' ');
+        const lines = [
+          ...r.notes.map((n) => `[${n.id}] (${n.scope === 'team' ? 'team' : 'yours'}) ${n.text}`),
+          ...r.journal.map((j) => `${when(j.at)} @${store.get(j.bot)?.handle ?? 'removed'}: ${j.summary || j.title}`),
+          ...r.digests.map((d) => `Digest ${d.date}: ${d.text.slice(0, 600)}`),
+        ];
+        return { ok: true, text: lines.length ? lines.join('\n') : `Nothing in memory matches "${args.query}".` };
+      },
+    }),
   ];
 
   ctx.effect(() => {
@@ -938,15 +1483,43 @@ export function apply(ctx, config, deps = {}) {
     const models = [];
     try {
       const llm = service(ctx, 'llm');
+      const logins = await loginRoutes();
       for (const p of llm?.listProviders?.() ?? []) {
         try {
-          for (const m of await llm.listModels(p.id)) models.push({ provider: p.id, model: m.id, label: `${p.name ?? p.id} · ${m.name ?? m.id}` });
+          const list = await llm.listModels(p.id);
+          const infos = await Promise.all(
+            list.slice(0, 200).map((m) =>
+              Promise.resolve()
+                .then(() => (typeof llm.resolveModelInfo === 'function' ? llm.resolveModelInfo(p.id, m.id, AbortSignal.timeout(3000)) : null))
+                .catch(() => null),
+            ),
+          );
+          list.forEach((m, i) => {
+            const efforts = Array.isArray(infos[i]?.reasoning?.efforts) ? infos[i].reasoning.efforts.map((e) => ({ id: String(e.id), name: String(e.name ?? e.id) })) : [];
+            models.push({
+              provider: p.id,
+              model: m.id,
+              label: `${p.name ?? p.id} · ${m.name ?? m.id}`,
+              group: p.name ?? p.id,
+              name: m.name ?? m.id,
+              ...(p.id.startsWith(ROUTE_PREFIX) ? { source: 'custom' } : logins.has(p.id) ? { source: 'login' } : {}),
+              ...(efforts.length ? { efforts, ...(infos[i].reasoning.defaultEffort ? { defaultEffort: String(infos[i].reasoning.defaultEffort) } : {}) } : {}),
+              ...(infos[i]?.context?.contextWindow ? { context: infos[i].context.contextWindow } : {}),
+            });
+          });
         } catch {
           // One provider down leaves the rest.
         }
       }
     } catch {
       // No model service.
+    }
+    let defaultModel = null;
+    try {
+      const def = service(ctx, 'agentDefaultModel')?.currentSelection?.();
+      if (def?.provider && def?.model) defaultModel = { provider: def.provider, model: def.model };
+    } catch {
+      defaultModel = null;
     }
     const skills = await dshSkills();
     const ocu = ocuPath();
@@ -958,10 +1531,229 @@ export function apply(ctx, config, deps = {}) {
       imageGen: imageGenAvailable(),
       tools: toolRows,
       models,
+      defaultModel,
       skills: skills.map((s) => ({ name: s.name, description: String(s.description ?? '').slice(0, 300) })),
       ocu: { installed: ocu !== '', path: ocu || OCU_PATHS[0] },
       mcp: Boolean(mcpClient),
       zone,
+    };
+  }
+
+  // --- model sources: custom endpoints and other agents' logins -----------------------------
+  /** The settings namespace of Harness's pi-ai adapter (where provider routes live). */
+  function piNamespace() {
+    try {
+      // Other adapters (DeepSeek's own) configure providers elsewhere; the pi-ai one keeps a `providers` dict.
+      const rows = service(ctx, 'llm')?.listConfigurableProviders?.() ?? [];
+      if (rows.some((p) => p.settingsNs === PI_SCOPE)) return PI_SCOPE;
+      const row = rows.find((p) => p.settingsNs && Array.isArray(p.settingsPath) && p.settingsPath[0] === 'providers');
+      if (row) return row.settingsNs;
+    } catch {
+      // Default below.
+    }
+    return PI_SCOPE;
+  }
+  /** The provider routes configured in Harness now (secrets redacted). */
+  function piProviders() {
+    try {
+      const d = service(ctx, 'settings')?.describe?.({ redactSecrets: true })?.find((x) => x.ns === piNamespace());
+      return d?.value?.providers && typeof d.value.providers === 'object' ? d.value.providers : {};
+    } catch {
+      return {};
+    }
+  }
+  async function writeProvider(route, value) {
+    const s = service(ctx, 'settings');
+    if (!s?.mutate) throw new Error('this Harness cannot change its model settings from a plugin');
+    await s.mutate(piNamespace(), [value === undefined ? { op: 'unset', path: ['providers', route] } : { op: 'set', path: ['providers', route], value }]);
+  }
+  const creds = () => {
+    const c = service(ctx, 'credentials');
+    if (!c) throw new Error('this Harness has no credential store');
+    return c;
+  };
+  const CODEX_KEY = `${PI_SCOPE}/${CODEX_ROUTE}`;
+  /** Routes signed in with a subscription (a stored login, not a key). */
+  async function loginRoutes() {
+    try {
+      const rows = (await service(ctx, 'credentials')?.listRecords?.()) ?? [];
+      return new Set(rows.filter((r) => String(r.key).startsWith(`${PI_SCOPE}/`) && r.kind === 'grant').map((r) => String(r.key).slice(PI_SCOPE.length + 1)));
+    } catch {
+      return new Set();
+    }
+  }
+  async function modelSources() {
+    const providers = piProviders();
+    const c = service(ctx, 'credentials');
+    const custom = [];
+    for (const [route, profile] of Object.entries(providers)) {
+      if (!route.startsWith(ROUTE_PREFIX)) continue;
+      let configured = false;
+      try {
+        configured = Boolean((await c?.describe?.(keyRefFor(route)))?.configured);
+      } catch {
+        configured = false;
+      }
+      custom.push(endpointView(route, profile, configured));
+    }
+    const grants = await loginRoutes();
+    const logins = detectLogins(home).map((l) => (l.id === 'codex' ? { ...l, connected: Boolean(providers[CODEX_ROUTE]) && grants.has(CODEX_ROUTE), sync: settings.get().codex.sync } : l));
+    return { custom, logins, apis: API_KINDS, writable: Boolean(service(ctx, 'settings')?.mutate && c) };
+  }
+  async function saveEndpoint(body) {
+    const prevRoute = typeof body.route === 'string' && body.route.startsWith(ROUTE_PREFIX) ? body.route : '';
+    const { route, profile } = profileFor({ ...body, ...(prevRoute ? { route: prevRoute } : {}) });
+    const key = String(body.key ?? '').trim();
+    if (!prevRoute) {
+      const taken = Object.keys(piProviders()).includes(route) || (service(ctx, 'llm')?.listProviders?.() ?? []).some((p) => p.id === route);
+      if (taken) throw new Error(`a provider "${route}" exists already; give this endpoint another name`);
+      if (!key) throw new Error('enter the API key (any text for a local server that needs none)');
+    }
+    if (key) await creds().set(keyRefFor(route), key);
+    await writeProvider(route, profile);
+    return { ok: true, route };
+  }
+  async function deleteEndpoint(route) {
+    if (!String(route).startsWith(ROUTE_PREFIX)) throw new Error('only endpoints added in Bots can be removed here');
+    await writeProvider(route, undefined);
+    try {
+      await creds().unset(keyRefFor(route));
+    } catch {
+      // The key may be gone already.
+    }
+    // Bots on it go back to the Harness default.
+    for (const b of store.list()) if (b.model?.provider === route) store.save({ id: b.id, model: null });
+    return { ok: true };
+  }
+  async function testEndpoint(body) {
+    let key = String(body.key ?? '').trim();
+    let { api, baseURL } = body;
+    if (!key && typeof body.route === 'string' && body.route.startsWith(ROUTE_PREFIX)) {
+      // The saved key only ever goes to the address it was saved for.
+      const stored = piProviders()[body.route];
+      if (stored) ({ api, baseURL } = { api: stored.api ?? api, baseURL: stored.baseURL ?? baseURL });
+      try {
+        key = (await creds().resolve(keyRefFor(body.route)))?.value ?? '';
+      } catch {
+        key = '';
+      }
+    }
+    const models = await discoverModels({ api, baseURL, key, ...(deps.fetch ? { fetchImpl: deps.fetch } : {}) });
+    return { ok: true, models: models.slice(0, 500) };
+  }
+  const codexSync = createCodexSync({
+    file: codexAuthFile(home),
+    readRecord: async () => {
+      const r = await service(ctx, 'credentials')?.readRecord?.(CODEX_KEY);
+      return r?.kind === 'grant' ? r.payload : undefined;
+    },
+    writeRecord: async (cred) => {
+      await creds().modifyRecord(CODEX_KEY, async () => ({ kind: 'grant', payload: cred }));
+    },
+    log: (line) => ctx.logger?.info?.(`bots: ${line}`),
+  });
+  async function connectLogin(id) {
+    if (id !== 'codex') throw new Error('this login cannot be used here');
+    const a = readCodexAuth(codexAuthFile(home));
+    if (!a.ok) throw new Error(a.reason === 'api-key' ? 'the Codex CLI is signed in with an API key, not a ChatGPT login' : 'no Codex CLI login found; run `codex login` first');
+    // Harness signed in to ChatGPT by itself: that login is used as it is, never replaced.
+    const existing = await service(ctx, 'credentials')?.readRecord?.(CODEX_KEY);
+    if (existing && !settings.get().codex.sync) throw new Error('Harness is already signed in to ChatGPT (Settings → Models); its models are in the list already');
+    await creds().modifyRecord(CODEX_KEY, async () => ({ kind: 'grant', payload: codexCredential(a) }));
+    const created = !piProviders()[CODEX_ROUTE];
+    if (created) await writeProvider(CODEX_ROUTE, { displayName: 'ChatGPT (Codex)' });
+    settings.save({ codex: { sync: true, route: created || settings.get().codex.route } });
+    return { ok: true, route: CODEX_ROUTE };
+  }
+  async function disconnectLogin(id) {
+    if (id !== 'codex') throw new Error('unknown login');
+    const { sync, route } = settings.get().codex;
+    if (!sync) return { ok: true };
+    settings.save({ codex: { sync: false, route: false } });
+    try {
+      await creds().deleteRecord(CODEX_KEY);
+    } catch {
+      // Gone already.
+    }
+    // Only what connecting added goes: a route the user had configured before stays.
+    if (route && piProviders()[CODEX_ROUTE]) {
+      await writeProvider(CODEX_ROUTE, undefined);
+      for (const b of store.list()) if (b.model?.provider === CODEX_ROUTE) store.save({ id: b.id, model: null });
+    }
+    return { ok: true };
+  }
+  ctx.on('credentials/record-updated', (key) => {
+    if (String(key) !== CODEX_KEY || !settings.get().codex.sync) return;
+    const t = setTimeout(() => void codexSync.syncOnce().catch((error) => ctx.logger?.warn?.(`bots: codex login sync: ${error?.message ?? error}`)), 500);
+    t.unref?.();
+  });
+
+  // --- upkeep: idle topics, the daily dream, the borrowed login --------------------------------
+  let sweeping = false;
+  async function sweep() {
+    if (sweeping) return;
+    sweeping = true;
+    try {
+      for (const bot of store.list()) await autoTopic(bot, 'sweep');
+      if (dreamDue()) await dream({ reason: 'schedule' }).catch((error) => ctx.logger?.warn?.(`bots: dream: ${error?.message ?? error}`));
+      if (settings.get().codex.sync) await codexSync.syncOnce().catch((error) => ctx.logger?.warn?.(`bots: codex login sync: ${error?.message ?? error}`));
+    } finally {
+      sweeping = false;
+    }
+  }
+  if (deps.sweep !== false) {
+    ctx.effect(() => {
+      const timer = setInterval(() => void sweep(), deps.sweepMs ?? SWEEP_MS);
+      timer.unref?.();
+      const first = setTimeout(() => void sweep(), 30_000);
+      first.unref?.();
+      return () => {
+        clearInterval(timer);
+        clearTimeout(first);
+      };
+    }, 'bots: topics and memory upkeep');
+  }
+
+  // --- usage, memory and settings for the page ---------------------------------------------------
+  function usageReport(url) {
+    const tz = url.searchParams.has('tz') ? Number(url.searchParams.get('tz')) : NaN;
+    const overrides = settings.get().prices;
+    const catalog = prices.peek();
+    const running = [...openTasks.values()].map(({ log, size, replied, ...t }) => t);
+    const r = report(
+      { calls: ledger.calls(), tasks: ledger.tasks(), running },
+      { range: url.searchParams.get('range') || '7d', bot: url.searchParams.get('bot') || '', tz: Number.isFinite(tz) ? tz : tzMinutes(), price: (m) => priceOf(m, overrides, catalog), schedules: scheduleTitles },
+    );
+    return { ...r, priceList: prices.status() };
+  }
+  function pricesView() {
+    const overrides = settings.get().prices;
+    const catalog = prices.peek();
+    const seen = new Map();
+    for (const r of ledger.calls()) if (r.m && !seen.has(r.m)) seen.set(r.m, r.p);
+    return {
+      overrides,
+      list: prices.status(),
+      models: [...seen].map(([model, provider]) => ({ model, provider, price: priceOf(model, overrides, catalog) })).sort((a, b) => a.model.localeCompare(b.model)),
+    };
+  }
+  function memoryView(scope) {
+    const tz = tzMinutes();
+    const dreamState = memory.dreamState();
+    if (!scope || scope === 'team') {
+      return { scope: 'team', notes: memory.notes('team'), digests: memory.digests().slice(-30).reverse(), journal: memory.journal({ limit: 150 }).reverse(), dream: dreamState, settings: settings.get().memory, tz };
+    }
+    const bot = store.get(scope);
+    if (!bot) return { ok: false, reason: 'no such bot' };
+    return {
+      scope: bot.id,
+      notes: memory.notes(bot.id),
+      journal: memory.journal({ bot: bot.id, limit: 100 }).reverse(),
+      topic: topics.peek(bot.id),
+      topics: topics.history(bot.id).slice(0, 20),
+      model: memoryModelOf(bot),
+      settings: settings.get().memory,
+      tz,
     };
   }
 
@@ -970,6 +1762,7 @@ export function apply(ctx, config, deps = {}) {
 
   function state() {
     const tpl = templates();
+    const today = todayByBot(ledger.calls(), tzMinutes());
     const bots = store.list().map((b) => {
       const appIssues = {};
       for (const app of b.apps) {
@@ -992,11 +1785,21 @@ export function apply(ctx, config, deps = {}) {
         const live = readLinkedSkill(s.dir);
         return live ? { ...s, description: live.description || s.description, content: live.content } : { ...s, missing: true };
       });
-      return { ...publicBot(b), skills, status: botStatus(b), appIssues, channels: channels.view(b) };
+      const topic = topics.peek(b.id);
+      return {
+        ...publicBot(b),
+        skills,
+        status: botStatus(b),
+        appIssues,
+        channels: channels.view(b),
+        topic: topic && topic.sessionId === b.sessionId ? { startedAt: topic.startedAt, lastActiveAt: topic.lastActiveAt, tasks: topic.tasks, context: topic.lastPrompt } : null,
+        usageToday: today[b.id] ?? 0,
+        memoryNotes: memory.notes(b.id).length,
+      };
     });
     const sessionMap = {};
     for (const b of bots) if (b.sessionId) sessionMap[b.sessionId] = b.id;
-    return { bots, primaryId: store.primary()?.id ?? null, sessionMap, messageCount: store.messageCount(), version: store.version(), limits: { skills: MAX_SKILLS, skillsOn: MAX_SKILLS_ON } };
+    return { bots, primaryId: store.primary()?.id ?? null, sessionMap, messageCount: store.messageCount(), version: store.version(), limits: { skills: MAX_SKILLS, skillsOn: MAX_SKILLS_ON }, teamNotes: memory.notes('team').length };
   }
 
   let ocuInstalling = false;
@@ -1328,6 +2131,63 @@ export function apply(ctx, config, deps = {}) {
       post: async (body) => ({ ok: true, task: entryView(checkEntry(await schedule().edit({ id: String(body.id ?? ''), action: 'update', patch: { active: body.active === true } }))) }),
     },
     'schedules/run': { post: async (body) => (checkEntry(await schedule().run({ id: String(body.id ?? '') })), { ok: true }) },
+    // Usage, prices, memory, topics, settings, model sources.
+    usage: { get: (url) => usageReport(url) },
+    prices: {
+      get: () => pricesView(),
+      post: (body) => {
+        const model = String(body.model ?? '').trim().toLowerCase();
+        if (!model) return { ok: false, reason: 'which model?' };
+        const next = { ...settings.get().prices };
+        if (body.price === null) delete next[model];
+        else next[model] = body.price;
+        settings.save({ prices: next });
+        return { ok: true, ...pricesView() };
+      },
+    },
+    'prices/refresh': { post: async () => (await prices.refresh(true), { ok: true, ...pricesView() }) },
+    settings: {
+      get: () => ({ settings: settings.get() }),
+      post: (body) => {
+        const patch = body.patch && typeof body.patch === 'object' ? { ...body.patch } : {};
+        delete patch.codex;
+        delete patch.prices;
+        return { ok: true, settings: settings.save(patch) };
+      },
+    },
+    memory: { get: (url) => memoryView(url.searchParams.get('bot') ?? 'team') },
+    'memory/put': {
+      post: (body) => {
+        const scope = body.scope === 'team' ? 'team' : store.get(String(body.scope ?? ''))?.id;
+        if (!scope) return { ok: false, reason: 'no such bot' };
+        const note = memory.put(scope, body.note ?? {});
+        staleMemory();
+        return { ok: true, note };
+      },
+    },
+    'memory/delete': {
+      post: (body) => {
+        const scope = body.scope === 'team' ? 'team' : store.get(String(body.scope ?? ''))?.id;
+        if (!scope) return { ok: false, reason: 'no such bot' };
+        const ok = memory.remove(scope, String(body.id ?? ''));
+        if (ok) staleMemory();
+        return { ok };
+      },
+    },
+    'memory/dream': { post: async () => ({ ok: true, result: await dream({ reason: 'manual' }) }) },
+    'topic/new': {
+      post: async (body) => {
+        const bot = store.get(String(body.id ?? ''));
+        if (!bot) return { ok: false, reason: 'no such bot' };
+        return { ok: true, sessionId: await newTopic(bot, 'manual') };
+      },
+    },
+    'models/sources': { get: () => modelSources() },
+    'models/custom/test': { post: (body) => testEndpoint(body) },
+    'models/custom/save': { post: (body) => saveEndpoint(body) },
+    'models/custom/delete': { post: (body) => deleteEndpoint(String(body.route ?? '')) },
+    'models/login/connect': { post: (body) => connectLogin(String(body.id ?? '')) },
+    'models/login/disconnect': { post: (body) => disconnectLogin(String(body.id ?? '')) },
     // Chat channels: a pairing code, forgetting a paired person, options, reconnecting.
     'channels/code': { post: (body) => ({ ok: true, ...channels.newCode(String(body.botId ?? ''), String(body.appId ?? '')) }) },
     'channels/unpair': {
@@ -1363,7 +2223,7 @@ export function apply(ctx, config, deps = {}) {
   if (typeof ctx.inject === 'function') ctx.inject(['webServer'], mountRoutes);
   else if (ctx.webServer) mountRoutes({ webServer: ctx.webServer, effect: (fn) => ctx.effect(fn) });
 
-  return { store, state, deliver, install, reconcile, installed, routes, channels };
+  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend, openTasks, codexSync, finishTask };
 }
 
 function serveAvatar(dir, req, res) {

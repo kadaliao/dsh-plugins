@@ -504,6 +504,9 @@ window.__ModuleLoader__.load({
       github: (s = 14) => svg(s, ['M9 19c-4 1.5-4-2-6-2.5', 'M15 21v-3.5a3 3 0 0 0-.8-2.3c2.8-.3 5.8-1.4 5.8-6.2a4.8 4.8 0 0 0-1.3-3.3 4.5 4.5 0 0 0-.1-3.3s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.8 2.1 5.8 2.4 5.8 2.4a4.5 4.5 0 0 0-.1 3.3A4.8 4.8 0 0 0 4.4 9c0 4.8 3 5.9 5.8 6.2a3 3 0 0 0-.8 2.3V21']),
       wand: (s = 14) => svg(s, ['M4 20l11-11', 'M13 7l4 4', 'M18 3v4', 'M16 5h4', 'M8 3v2', 'M7 4h2']),
       chevron: (s = 12) => svg(s, ['M6 9l6 6 6-6']),
+      chart: (s = 14) => svg(s, ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M21 20H3']),
+      brain: (s = 14) => svg(s, ['M9 4a3 3 0 0 0-3 3v.2A3 3 0 0 0 4 10a3 3 0 0 0 1 2.2A3 3 0 0 0 6 17a3 3 0 0 0 3 3h0V4z', 'M15 4a3 3 0 0 1 3 3v.2A3 3 0 0 1 20 10a3 3 0 0 1-1 2.2A3 3 0 0 1 18 17a3 3 0 0 1-3 3h0V4z']),
+      gear: (s = 14) => svg(s, ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z']),
     };
     function BotsGlyph(props) {
       const size = Number(props?.size) > 0 ? Number(props.size) : 18;
@@ -967,7 +970,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       return groups.sort((a, b) => (a.id === '' ? 1 : b.id === '' ? -1 : 0)).map((g) => ({ ...g, label: label(g.id) }));
     }
 
-    function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount }) {
+    function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes }) {
       const lang = langOf(t);
       const [q, setQ] = useState('');
       const [menu, setMenu] = useState(false);
@@ -1003,7 +1006,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 15 } }, h(BotsGlyph, { size: 18, active: true }), t('title')),
           h(
             'div',
-            { style: { position: 'relative' } },
+            { style: { position: 'relative', display: 'flex', alignItems: 'center', gap: 4 } },
+            onSettings ? h(Btn, { kind: 'ghost', size: 'sm', icon: Icon.gear(14), title: t('settings'), onClick: onSettings, 'data-dsh-bots-settings': true }) : null,
             h(Btn, { kind: 'primary', size: 'sm', icon: Icon.plus(13), onClick: () => setMenu((v) => !v), 'data-dsh-bots-new': true }, t('newBot'), Icon.chevron(11)),
             menu
               ? h(Menu, {
@@ -1047,6 +1051,22 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.activity(16)),
             h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('activity')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('activityHint', { n: messageCount ?? 0 }))),
           ),
+          onUsage
+            ? h(
+                'button',
+                { type: 'button', className: 'dshb-row', 'data-active': view === 'usage', 'data-dsh-bots-usage-entry': true, onClick: onUsage },
+                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.chart(16)),
+                h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('usage')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('usageHint', { tokens: fmtNum(bots.reduce((n, b) => n + (Number(b.usageToday) || 0), 0)) }))),
+              )
+            : null,
+          onMemory
+            ? h(
+                'button',
+                { type: 'button', className: 'dshb-row', 'data-active': view === 'memory', 'data-dsh-bots-memory-entry': true, onClick: onMemory },
+                h('span', { style: { width: 36, height: 36, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer2, color: C.label, flex: 'none' } }, Icon.brain(16)),
+                h('span', { style: { display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 } }, h('span', { style: { fontWeight: 600 } }, t('teamMemoryTitle')), h('span', { style: { fontSize: TINY, color: C.muted } }, t('teamMemoryHint', { n: teamNotes ?? 0 }))),
+              )
+            : null,
           h(
             'button',
             { type: 'button', className: 'dshb-row', 'data-active': view === 'teams', 'data-dsh-bots-teams-entry': true, onClick: onTeams },
@@ -1063,6 +1083,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     function party(t, id) {
       if (id === 'user') return { kind: 'user', name: t('you') };
       if (id === 'schedule') return { kind: 'schedule', name: t('scheduler') };
+      if (id === 'system') return { kind: 'system', name: t('title') };
       const b = botById(id);
       return b ? { kind: 'bot', bot: b, name: b.name || `@${b.handle}` } : { kind: 'unknown', name: str(id) || '?' };
     }
@@ -1074,15 +1095,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
 
     /** A thread of one bot: the user's prompts right, the bot's replies left, DMs as cards. */
     function MessageList({ t, items, botId, empty }) {
-      const end = useRef(null);
       const count = items.length;
-      useEffect(() => {
-        try {
-          end.current?.scrollIntoView?.({ block: 'end' });
-        } catch {
-          // No layout.
-        }
-      }, [count]);
       if (count === 0) return empty;
       const rows = [];
       let lastDay = '';
@@ -1116,10 +1129,20 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         const grouped = prev && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && at - toMs(prev.at) < 5 * 60_000;
         rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped }));
       });
-      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 880, margin: '0 auto' } }, rows, h('div', { ref: end }));
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 880, margin: '0 auto' } }, rows);
     }
 
     function MessageRow({ t, m, botId, grouped }) {
+      if (m.kind === 'topic') {
+        const at = toMs(m.at);
+        return h(
+          'div',
+          { 'data-dsh-bots-msg': 'topic', style: { display: 'flex', alignItems: 'center', gap: 10, margin: '14px 0 8px', color: C.label, fontSize: TINY, fontWeight: 600 } },
+          h('span', { style: { flex: 1, height: 1, background: tint(C.label, 35) } }),
+          h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 5 } }, Icon.plus(11), t('topicDivider', { reason: t(`topicReason_${m.text}`) }), Number.isFinite(at) ? h('span', { style: { color: C.faint, fontWeight: 500 } }, fmtClock(at)) : null),
+          h('span', { style: { flex: 1, height: 1, background: tint(C.label, 35) } }),
+        );
+      }
       const from = party(t, m.from);
       const to = party(t, m.to);
       const at = toMs(m.at);
@@ -1741,25 +1764,76 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       );
     }
 
+    /**
+     * Keep a scrolling thread at its bottom while the reader is there: when a message arrives, and when
+     * something already shown grows later (a link card or picture loading, the "working" line appearing).
+     * Scrolled up to read, the reader is left alone; `stick()` brings them back (after they send).
+     */
+    function useStickToBottom(lastKey) {
+      const box = useRef(null);
+      const content = useRef(null);
+      const pinned = useRef(true);
+      const toBottom = () => {
+        const el = box.current;
+        if (el) el.scrollTop = el.scrollHeight;
+      };
+      useEffect(() => {
+        if (pinned.current) toBottom();
+      }, [lastKey]);
+      useEffect(() => {
+        if (typeof ResizeObserver !== 'function' || !content.current) return undefined;
+        const ro = new ResizeObserver(() => {
+          if (pinned.current) toBottom();
+        });
+        ro.observe(content.current);
+        return () => ro.disconnect();
+      }, [content.current]);
+      const onScroll = (e) => {
+        const el = e.currentTarget;
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      };
+      const stick = () => {
+        pinned.current = true;
+        toBottom();
+      };
+      return { box, content, onScroll, stick };
+    }
+
     function ChatTab({ t, bot, env, toast }) {
       const { items, failed, reload } = useMessages(bot.id);
       const [text, setText] = useState('');
       const [sending, setSending] = useState(false);
+      const running = bot.status === 'running';
+      const thread = useStickToBottom(`${items?.length ?? 0}:${items?.[items.length - 1]?.id ?? ''}:${running}`);
+      const [topicBusy, setTopicBusy] = useState(false);
+      const startTopic = () => {
+        setTopicBusy(true);
+        postJson('topic/new', { id: bot.id })
+          .then((r) => {
+            if (r?.ok) {
+              toast(t('newTopicDone', { name: bot.name || `@${bot.handle}` }));
+              void reload();
+              void refreshState();
+            } else toast(r?.reason || t('actionFailed'), 'error');
+          })
+          .finally(() => setTopicBusy(false));
+      };
       const send = () => {
         const body = text.trim();
         if (!body || sending) return;
         setSending(true);
+        thread.stick();
         postJson('send', { to: bot.id, text: body })
           .then((r) => {
             if (r?.ok) {
               setText('');
+              thread.stick();
               void reload();
               void refreshState();
             } else toast(r?.reason || t('sendFailed'), 'error');
           })
           .finally(() => setSending(false));
       };
-      const running = bot.status === 'running';
       // A pasted link previews above the composer, as it will in the thread.
       const previewUrl = linksIn(useDebounced(text, 400))[0] ?? '';
       return h(
@@ -1767,7 +1841,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         { style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
         h(
           'div',
-          { className: 'dshb-scroll', 'data-dsh-bots-thread': bot.id, style: { flex: 1, padding: '6px 24px' } },
+          { className: 'dshb-scroll', 'data-dsh-bots-thread': bot.id, ref: thread.box, onScroll: thread.onScroll, style: { flex: 1, padding: '6px 24px' } },
+          h(
+            'div',
+            { ref: thread.content },
           items === null
             ? h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('unavailable') : t('loading'))
             : h(MessageList, {
@@ -1785,6 +1862,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 h('span', { style: { display: 'inline-flex', gap: 3 } }, [0, 1, 2].map((i) => h('span', { key: i, style: { width: 4, height: 4, borderRadius: '50%', background: C.muted, animation: `dshb-blink 1.2s ${i * 0.2}s infinite` } }))),
               )
             : null,
+          ),
         ),
         h(
           'div',
@@ -1817,6 +1895,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 7, fontSize: TINY, color: C.faint } },
             h('span', null, t('composerHint')),
             h('span', { style: { flex: 1 } }),
+            bot.topic ? h('span', { 'data-dsh-bots-topic': true, title: t('topicNow', { when: fmtAgo(t, bot.topic.startedAt), n: bot.topic.tasks, ctx: fmtNum(bot.topic.context) }) }, t('topicShort', { n: bot.topic.tasks, ctx: fmtNum(bot.topic.context) })) : null,
+            h('button', { type: 'button', className: 'dshb-link', title: t('newTopicHint'), disabled: running || topicBusy || !bot.sessionId, onClick: startTopic, 'data-dsh-bots-new-topic': 'chat', style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4, opacity: running || !bot.sessionId ? 0.5 : 1 } }, Icon.plus(11), t('newTopic')),
+            env.canOpen() ? h('span', { style: { color: C.faint } }, '·') : null,
             env.canOpen() ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4 }, onClick: () => env.openBot(bot) }, Icon.open(11), t('fullTranscript')) : null,
           ),
           ),
@@ -1878,7 +1959,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via, t)} · ${str(m.who)}` : channelName(m.via, t)) : null,
                         h('span', { style: { marginLeft: 'auto', color: C.faint, fontSize: TINY }, title: fmtDate(toMs(m.at)) }, fmtAgo(t, m.at)),
                       ),
-                      h(Clamp, { t, text: m.text, lines: 3, style: { fontSize: SMALL, color: C.muted } }),
+                      h(Clamp, { t, text: m.kind === 'topic' ? t('topicDivider', { reason: t(`topicReason_${m.text}`) }) : m.text, lines: 3, style: { fontSize: SMALL, color: C.muted } }),
                     ),
                   );
                 }),
@@ -2038,7 +2119,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       bio: str(bot.bio),
       persona: str(bot.persona),
       avatar: avatarOf(bot.avatar),
-      model: bot.model && bot.model.model ? { provider: str(bot.model.provider), model: str(bot.model.model) } : null,
+      model: bot.model && bot.model.model ? { provider: str(bot.model.provider), model: str(bot.model.model), ...(bot.model.reasoningEffort ? { reasoningEffort: str(bot.model.reasoningEffort) } : {}) } : null,
       deny: Array.isArray(bot.tools?.deny) ? bot.tools.deny.slice().sort() : [],
     });
     /** A clean avatar value: an image keeps its url, anything else is initials (emoji rows from v0.1 too). */
@@ -2147,7 +2228,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       };
       const lang = langOf(t);
       const abilities = (Array.isArray(catalog?.abilities) ? catalog.abilities : []).filter((ab) => Array.isArray(ab.available) && ab.available.length > 0);
-      const knownModel = !draft.model || models.some((m) => modelKey(m) === modelKey(draft.model));
+      const chosen = draft.model ? models.find((m) => modelKey(m) === modelKey(draft.model)) : null;
+      const knownModel = !draft.model || Boolean(chosen);
+      const efforts = Array.isArray(chosen?.efforts) ? chosen.efforts : [];
+      const [sources, setSources] = useState(false);
       return h(
         'div',
         { style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
@@ -2190,24 +2274,38 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             ),
             h(
               Section,
-              { title: t('model'), hint: t('modelHint') },
+              { title: t('model'), hint: t('modelHint'), right: h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.layers(12), onClick: () => setSources(true), 'data-dsh-bots-model-sources': true }, t('modelSources')) },
               h(
-                'select',
-                {
-                  className: 'dshb-input',
-                  value: modelKey(draft.model),
-                  style: { maxWidth: 420 },
-                  onChange: (e) => {
-                    const v = e.target.value;
-                    if (!v) return set({ model: null });
-                    const [provider, ...rest] = v.split('::');
-                    set({ model: { provider, model: rest.join('::') } });
+                'div',
+                { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
+                h(
+                  'select',
+                  {
+                    className: 'dshb-input',
+                    'data-dsh-bots-model': true,
+                    value: modelKey(draft.model),
+                    style: { maxWidth: 420, flex: '1 1 260px' },
+                    onChange: (e) => {
+                      const v = e.target.value;
+                      if (!v) return set({ model: null });
+                      const [provider, ...rest] = v.split('::');
+                      set({ model: { provider, model: rest.join('::') } });
+                    },
                   },
-                },
-                h('option', { value: '' }, t('modelDefault')),
-                !knownModel ? h('option', { value: modelKey(draft.model) }, `${draft.model.provider} · ${draft.model.model}`) : null,
-                models.map((m) => h('option', { key: modelKey(m), value: modelKey(m) }, m.label || `${m.provider} · ${m.model}`)),
+                  h('option', { value: '' }, catalog?.defaultModel ? t('modelDefaultIs', { model: catalog.defaultModel.model }) : t('modelDefault')),
+                  !knownModel ? h('option', { value: modelKey(draft.model) }, `${draft.model.provider} · ${draft.model.model}`) : null,
+                  modelGroups(models).map((g) => h('optgroup', { key: g.name, label: g.source ? `${g.name} · ${t(`msrc_${g.source}`)}` : g.name }, g.models.map((m) => h('option', { key: modelKey(m), value: modelKey(m) }, m.name || m.model)))),
+                ),
+                efforts.length
+                  ? h(
+                      'select',
+                      { className: 'dshb-input', 'data-dsh-bots-effort': true, title: t('reasoning'), value: draft.model?.reasoningEffort ?? '', style: { width: 150 }, onChange: (e) => set({ model: { provider: draft.model.provider, model: draft.model.model, ...(e.target.value ? { reasoningEffort: e.target.value } : {}) } }) },
+                      h('option', { value: '' }, `${t('reasoning')} · ${t('effortDefault')}${chosen?.defaultEffort ? ` (${chosen.defaultEffort})` : ''}`),
+                      efforts.map((e) => h('option', { key: e.id, value: e.id }, `${t('reasoning')} · ${e.name}`)),
+                    )
+                  : null,
               ),
+              chosen ? h('div', { 'data-dsh-bots-model-info': true, style: { fontSize: TINY, color: C.faint } }, [chosen.group || chosen.provider, chosen.source ? t(`msrc_${chosen.source}`) : '', chosen.context ? t('modelContext', { k: fmtNum(chosen.context) }) : ''].filter(Boolean).join(' · ')) : null,
             ),
             h(
               Section,
@@ -2275,6 +2373,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           ),
         ),
         h(SaveBar, { t, dirty, busy, valid, onSave: save, onReset: () => setDraft(JSON.parse(base.current)) }),
+        sources ? h(ModelSourcesModal, { t, toast, onClose: () => setSources(false) }) : null,
       );
     }
     function SaveBar({ t, dirty, busy, valid, onSave, onReset }) {
@@ -3912,8 +4011,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
 
     // --- detail: header + tabs ------------------------------------------------------------
 
-    const TABS = ['chat', 'profile', 'skills', 'schedules', 'apps'];
-    function BotDetail({ t, bot, primaryId, env, toast, catalog, tab, setTab, onDeleted }) {
+    const TABS = ['chat', 'profile', 'memory', 'skills', 'schedules', 'apps'];
+    function BotDetail({ t, bot, primaryId, env, toast, catalog, tab, setTab, onDeleted, onSettings }) {
       const [menu, setMenu] = useState(false);
       const [confirm, setConfirm] = useState(false);
       const [opening, setOpening] = useState(false);
@@ -3938,12 +4037,13 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             void refreshState();
           } else toast(r?.reason || t('actionFailed'), 'error');
         });
-      const counts = { skills: (bot.skills ?? []).length, apps: (bot.apps ?? []).length };
+      const counts = { skills: (bot.skills ?? []).length, apps: (bot.apps ?? []).length, memory: Number(bot.memoryNotes) || 0 };
       let body;
       if (tab === 'profile') body = h(ProfileTab, { key: bot.id, t, bot, toast, catalog });
       else if (tab === 'skills') body = h(SkillsTab, { key: bot.id, t, bot, toast, catalog, setTab, env });
       else if (tab === 'schedules') body = h(SchedulesTab, { key: bot.id, t, bot, toast, catalog });
       else if (tab === 'apps') body = h(AppsTab, { key: bot.id, t, bot, toast, catalog });
+      else if (tab === 'memory') body = h(MemoryTab, { key: bot.id, t, bot, toast, onSettings });
       else body = h(ChatTab, { key: bot.id, t, bot, env, toast });
       return h(
         'div',
@@ -3969,7 +4069,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted, minWidth: 0 } },
                 h('span', { className: 'dshb-mono', style: { fontSize: 12 } }, `@${bot.handle}`),
                 h('span', { style: { color: C.faint } }, '·'),
-                h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 5 } }, h(StatusDot, { status, size: 7 }), t(`status_${status}`)),
+                h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap', flex: 'none' } }, h(StatusDot, { status, size: 7 }), t(`status_${status}`)),
+                Number(bot.usageToday) > 0 ? h('span', { style: { color: C.faint } }, '·') : null,
+                Number(bot.usageToday) > 0 ? h('span', { 'data-dsh-bots-today': bot.id, style: { whiteSpace: 'nowrap', flex: 'none' } }, t('usageHint', { tokens: fmtNum(bot.usageToday) })) : null,
                 bot.bio ? h('span', { style: { color: C.faint } }, '·') : null,
                 bot.bio ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, bot.bio) : null,
               ),
@@ -4016,6 +4118,826 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
               onConfirm: remove,
             })
           : null,
+      );
+    }
+
+    // --- usage, memory, topics, settings, model sources ---------------------------------------
+
+    const fmtNum = (n) => {
+      const x = Number(n) || 0;
+      if (x >= 1e9) return `${(x / 1e9).toFixed(x >= 1e10 ? 0 : 1)}B`;
+      if (x >= 1e6) return `${(x / 1e6).toFixed(x >= 1e7 ? 0 : 1)}M`;
+      if (x >= 1e3) return `${(x / 1e3).toFixed(x >= 1e4 ? 0 : 1)}K`;
+      return String(Math.round(x));
+    };
+    const CURRENCY = { USD: '$', CNY: '¥' };
+    const fmtMoney = (amount, cur) => {
+      const v = Number(amount) || 0;
+      return `${CURRENCY[cur] ?? `${cur} `}${v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v >= 0.01 ? v.toFixed(3) : v > 0 ? v.toFixed(4) : '0'}`;
+    };
+    const fmtCost = (cost) => {
+      const parts = Object.entries(cost ?? {})
+        .filter(([, v]) => Number(v) > 0)
+        .map(([c, v]) => fmtMoney(v, c));
+      return parts.length ? parts.join(' + ') : '—';
+    };
+    const tzNow = () => {
+      try {
+        return -new Date().getTimezoneOffset();
+      } catch {
+        return 0;
+      }
+    };
+    const API_LABELS = {
+      'openai-completions': 'OpenAI-compatible · Chat Completions',
+      'openai-responses': 'OpenAI · Responses',
+      'anthropic-messages': 'Anthropic-compatible · Messages',
+      'google-generative-ai': 'Google Gemini',
+    };
+    /** A GET loaded now and every `ms` while shown (`ms` 0 = once). */
+    function useJson(path, ms = 0) {
+      const [data, setData] = useState(null);
+      const [failed, setFailed] = useState(false);
+      const alive = useRef(true);
+      useEffect(() => {
+        alive.current = true;
+        return () => {
+          alive.current = false;
+        };
+      }, []);
+      const load = () =>
+        Promise.resolve()
+          .then(() => getJson(path))
+          .then((r) => {
+            if (!alive.current) return;
+            if (r && r.ok !== false) {
+              setData(r);
+              setFailed(false);
+            } else setFailed(true);
+          })
+          .catch(() => {
+            if (alive.current) setFailed(true);
+          });
+      usePoll(load, ms || 3_600_000, [path]);
+      return { data, failed, reload: load };
+    }
+    /** A bot's colour for charts: its avatar colour. */
+    const botColor = (id) => botById(id)?.avatar?.color || C.faint;
+    const botName = (t, id) => {
+      const b = botById(id);
+      return b ? b.name || `@${b.handle}` : id === 'team' ? t('teamMemoryTitle') : t('removedBot');
+    };
+    const Seg = ({ items, value, onChange, attr }) =>
+      h(
+        'div',
+        { role: 'tablist', style: { display: 'inline-flex', padding: 2, borderRadius: 9, background: C.layer2, gap: 2 } },
+        items.map((it) =>
+          h(
+            'button',
+            {
+              key: it.id,
+              type: 'button',
+              role: 'tab',
+              'aria-selected': value === it.id,
+              [attr]: it.id,
+              onClick: () => onChange(it.id),
+              style: { height: 26, padding: '0 10px', border: 'none', borderRadius: 7, font: 'inherit', fontSize: SMALL, fontWeight: 600, cursor: 'pointer', color: value === it.id ? C.primary : C.muted, background: value === it.id ? C.layer1 : 'transparent', boxShadow: value === it.id ? '0 1px 2px rgba(0,0,0,.12)' : 'none' },
+            },
+            it.label,
+          ),
+        ),
+      );
+    function Tile({ label, value, sub, delta, attr }) {
+      return h(
+        'div',
+        { className: 'dshb-card', 'data-dsh-bots-tile': attr, style: { display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 } },
+        h('span', { style: { fontSize: TINY, fontWeight: 600, color: C.muted, textTransform: 'uppercase', letterSpacing: '.03em' } }, label),
+        h('span', { style: { fontSize: 22, fontWeight: 700, color: C.primary, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, value),
+        sub ? h('span', { style: { fontSize: TINY, color: C.faint } }, sub) : null,
+        delta ? h('span', { style: { fontSize: TINY, color: C.muted } }, delta) : null,
+      );
+    }
+    /** "+12%" / "−8%" of `now` against `before`, or ''. */
+    const pctDelta = (now, before) => {
+      if (!(before > 0)) return '';
+      const p = Math.round(((now - before) / before) * 100);
+      return `${p > 0 ? '+' : p < 0 ? '−' : '±'}${Math.abs(p)}%`;
+    };
+    const bucketLabel = (ms, bucket) => {
+      try {
+        const d = new Date(ms);
+        return bucket < 86_400_000 ? `${pad(d.getHours())}:00` : `${d.getMonth() + 1}/${d.getDate()}`;
+      } catch {
+        return '';
+      }
+    };
+    /** A top-rounded bar: flat on the baseline, 3px round at the data end. */
+    const barPath = (x, y, w, hgt, r) => {
+      const rr = Math.max(0, Math.min(r, w / 2, hgt));
+      return `M${x},${y + hgt}V${y + rr}Q${x},${y} ${x + rr},${y}H${x + w - rr}Q${x + w},${y} ${x + w},${y + rr}V${y + hgt}Z`;
+    };
+
+    /** Tokens per bucket, stacked by bot (the top seven by tokens, the rest as "other"). */
+    function UsageChart({ t, data }) {
+      const [hover, setHover] = useState(-1);
+      const series = Array.isArray(data?.series) ? data.series : [];
+      const ranked = (data?.bots ?? []).map((b) => b.bot);
+      const shown = ranked.slice(0, 7);
+      const keys = ranked.length > 7 ? [...shown, '__other'] : shown;
+      const stackOf = (p) => keys.map((k) => (k === '__other' ? Object.entries(p.byBot ?? {}).filter(([id]) => !shown.includes(id)).reduce((s, [, v]) => s + v, 0) : (p.byBot?.[k] ?? 0)));
+      const max = Math.max(1, ...series.map((p) => p.tokens));
+      const W = 720;
+      const H = 190;
+      const L = 44;
+      const B = 22;
+      const T = 8;
+      const innerW = W - L - 6;
+      const innerH = H - B - T;
+      const n = Math.max(1, series.length);
+      const slot = innerW / n;
+      const bw = Math.max(2, Math.min(28, slot * 0.66));
+      const y = (v) => T + innerH - (v / max) * innerH;
+      const ticks = [0, 0.5, 1].map((f) => max * f);
+      const every = Math.max(1, Math.ceil(n / 8));
+      const colorOf = (k) => (k === '__other' ? C.faint : botColor(k));
+      const nameOf = (k) => (k === '__other' ? t('other') : botName(t, k));
+      const hp = hover >= 0 ? series[hover] : null;
+      return h(
+        'div',
+        { 'data-dsh-bots-usage-chart': true, style: { position: 'relative' } },
+        keys.length > 1
+          ? h(
+              'div',
+              { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginBottom: 8, fontSize: TINY, color: C.muted } },
+              keys.map((k) => h('span', { key: k, style: { display: 'inline-flex', alignItems: 'center', gap: 5 } }, h('span', { style: { width: 9, height: 9, borderRadius: 3, background: colorOf(k) } }), nameOf(k))),
+            )
+          : null,
+        h(
+          'svg',
+          { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': t('usageChart'), style: { display: 'block', overflow: 'visible' }, onMouseLeave: () => setHover(-1) },
+          ticks.map((v, i) =>
+            h(
+              'g',
+              { key: `t${i}` },
+              h('line', { x1: L, x2: W, y1: y(v), y2: y(v), stroke: 'currentColor', strokeOpacity: i === 0 ? 0.25 : 0.1, strokeWidth: 1, style: { color: C.muted } }),
+              h('text', { x: L - 6, y: y(v) + 3.5, textAnchor: 'end', fontSize: 10.5, fill: 'currentColor', style: { color: C.faint } }, fmtNum(v)),
+            ),
+          ),
+          series.map((p, i) => {
+            const cx = L + slot * i + slot / 2;
+            const stack = stackOf(p);
+            let acc = 0;
+            const top = stack.reduce((last, v, j) => (v > 0 ? j : last), -1);
+            const segs = stack.map((v, j) => {
+              if (!(v > 0)) return null;
+              const y0 = y(acc);
+              acc += v;
+              const y1 = y(acc);
+              // A 2px surface gap between stacked segments.
+              const hgt = Math.max(1, y0 - y1 - (j === 0 ? 0 : 2));
+              return h('path', { key: j, d: j === top ? barPath(cx - bw / 2, y1, bw, hgt, 3) : `M${cx - bw / 2},${y1}h${bw}v${hgt}h${-bw}Z`, fill: colorOf(keys[j]), opacity: hover === -1 || hover === i ? 1 : 0.45 });
+            });
+            return h(
+              'g',
+              { key: p.t },
+              segs,
+              i % every === 0 || i === n - 1 ? h('text', { x: cx, y: H - 6, textAnchor: 'middle', fontSize: 10.5, fill: 'currentColor', style: { color: C.faint } }, bucketLabel(p.t, data.range?.bucket ?? 86_400_000)) : null,
+              // The hit target is the whole column, not just the bar.
+              h('rect', { x: L + slot * i, y: T, width: slot, height: innerH, fill: 'transparent', onMouseEnter: () => setHover(i), 'data-dsh-bots-usage-col': i }),
+            );
+          }),
+        ),
+        hp
+          ? h(
+              'div',
+              {
+                'data-dsh-bots-usage-tip': true,
+                style: { position: 'absolute', top: 0, left: `${Math.min(78, Math.max(2, ((L + slot * hover + slot / 2) / W) * 100))}%`, transform: 'translateX(-50%)', pointerEvents: 'none', padding: '8px 10px', borderRadius: 10, background: C.layer1, border: `1px solid ${C.border}`, boxShadow: '0 6px 20px rgba(0,0,0,.18)', fontSize: TINY, minWidth: 140, zIndex: 2 },
+              },
+              h('div', { style: { fontWeight: 700, color: C.primary, marginBottom: 4 } }, `${bucketLabel(hp.t, data.range?.bucket ?? 86_400_000)} · ${fmtNum(hp.tokens)}`),
+              keys
+                .map((k, j) => [k, stackOf(hp)[j]])
+                .filter(([, v]) => v > 0)
+                .map(([k, v]) => h('div', { key: k, style: { display: 'flex', alignItems: 'center', gap: 6, color: C.muted } }, h('span', { style: { width: 8, height: 8, borderRadius: 2, background: colorOf(k) } }), h('span', { style: { flex: 1 } }, nameOf(k)), h('span', { style: { color: C.primary, fontVariantNumeric: 'tabular-nums' } }, fmtNum(v)))),
+              fmtCost(hp.cost) !== '—' ? h('div', { style: { marginTop: 4, color: C.faint } }, fmtCost(hp.cost)) : null,
+            )
+          : null,
+      );
+    }
+    const th = (label, right) => h('th', { style: { textAlign: right ? 'right' : 'left', fontWeight: 600, fontSize: TINY, color: C.muted, padding: '6px 8px', borderBottom: `1px solid ${C.border1}` } }, label);
+    const td = (content, right, extra = {}) => h('td', { style: { textAlign: right ? 'right' : 'left', padding: '7px 8px', borderBottom: `1px solid ${C.border1}`, fontVariantNumeric: 'tabular-nums', verticalAlign: 'middle', ...extra } }, content);
+    const Table = ({ head, rows, attr }) => h('table', { [attr]: true, style: { width: '100%', borderCollapse: 'collapse', fontSize: SMALL } }, h('thead', null, h('tr', null, head)), h('tbody', null, rows));
+    function BotCell({ t, id }) {
+      const b = botById(id);
+      return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0 } }, b ? h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 20 }) : h('span', { style: { width: 20, height: 20, borderRadius: '50%', background: C.layer2 } }), h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, botName(t, id)));
+    }
+    function triggerText(t, task) {
+      if (task.trigger === 'schedule') return t('trigger_schedule');
+      if (task.trigger === 'chat') return t('trigger_chat', { app: channelName(task.via, t) });
+      if (task.trigger === 'dm') return task.from === 'user' ? t('trigger_user') : t('trigger_dm', { handle: botById(task.from)?.handle ?? '?' });
+      return t('trigger_user');
+    }
+
+    function UsageView({ t, bots }) {
+      const [range, setRange] = useState('7d');
+      const [bot, setBot] = useState('');
+      const [prices, setPrices] = useState(false);
+      const { data, failed, reload } = useJson(`usage?range=${range}&tz=${tzNow()}${bot ? `&bot=${encodeURIComponent(bot)}` : ''}`, 30_000);
+      const tot = data?.totals;
+      const prev = data?.prev;
+      const empty = tot && tot.calls === 0;
+      const section = (title, body, right) => h('section', { className: 'dshb-card', style: { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 } }, h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } }, h('span', { style: { fontWeight: 700, fontSize: SMALL } }, title), h('span', { style: { flex: 1 } }), right ?? null), body);
+      return h(
+        'div',
+        { 'data-dsh-bots-usage': true, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
+        h(
+          'header',
+          { style: { padding: '18px 24px 14px', borderBottom: `1px solid ${C.border1}`, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } },
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 200 } }, h('span', { style: { fontWeight: 700, fontSize: 19 } }, t('usage')), h('span', { style: { fontSize: SMALL, color: C.muted } }, t('usageSub'))),
+          h(Seg, { attr: 'data-dsh-bots-range', value: range, onChange: setRange, items: ['today', '7d', '30d', '90d', 'all'].map((id) => ({ id, label: t(`range_${id}`) })) }),
+          h('select', { className: 'dshb-input', 'data-dsh-bots-usage-bot': true, value: bot, onChange: (e) => setBot(e.target.value), style: { width: 160, height: 30, fontSize: SMALL } }, h('option', { value: '' }, t('allBots')), bots.map((b) => h('option', { key: b.id, value: b.id }, b.name || `@${b.handle}`))),
+          h(Btn, { size: 'sm', icon: Icon.edit(12), onClick: () => setPrices(true), 'data-dsh-bots-prices': true }, t('prices')),
+        ),
+        h(
+          'div',
+          { className: 'dshb-scroll', style: { flex: 1, padding: '18px 24px 28px' } },
+          !data
+            ? h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('unavailable') : t('loading'))
+            : h(
+                'div',
+                { style: { maxWidth: 1080, display: 'flex', flexDirection: 'column', gap: 16 } },
+                h(
+                  'div',
+                  { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 } },
+                  h(Tile, { attr: 'tokens', label: t('tileTokens'), value: fmtNum(tot.tokens), sub: t('tileCacheRate', { pct: Math.round((tot.cacheRate ?? 0) * 100) }), delta: pctDelta(tot.tokens, prev?.tokens) ? t('vsPrev', { delta: pctDelta(tot.tokens, prev.tokens) }) : '' }),
+                  h(Tile, { attr: 'cost', label: t('tileCost'), value: fmtCost(tot.cost), sub: tot.unpriced > 0 ? t('tileUnpriced', { tokens: fmtNum(tot.unpriced) }) : '' }),
+                  h(Tile, { attr: 'tasks', label: t('tileTasks'), value: String(tot.tasks ?? 0), delta: pctDelta(tot.tasks, prev?.tasks) ? t('vsPrev', { delta: pctDelta(tot.tasks, prev.tasks) }) : '' }),
+                  h(Tile, { attr: 'calls', label: t('tileCalls'), value: String(tot.calls ?? 0), sub: t('tileInOut', { input: fmtNum(tot.input + tot.cacheRead + tot.cacheWrite), output: fmtNum(tot.output) }) }),
+                ),
+                empty ? h('div', { className: 'dshb-card', style: { color: C.faint, fontSize: SMALL, textAlign: 'center', padding: 24 } }, t('noUsage')) : section(t('usageChart'), h(UsageChart, { t, data })),
+                empty
+                  ? null
+                  : h(
+                      'div',
+                      { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 } },
+                      section(
+                        t('byBot'),
+                        h(Table, {
+                          attr: 'data-dsh-bots-usage-bots',
+                          head: [th(t('colBot')), th(t('colTasks'), true), th(t('colTokens'), true), th(t('colCost'), true)],
+                          rows: data.bots.map((r) => h('tr', { key: r.bot, onClick: () => setBot(bot === r.bot ? '' : r.bot), style: { cursor: 'pointer' } }, td(h(BotCell, { t, id: r.bot })), td(String(r.tasks), true), td(fmtNum(r.tokens), true), td(fmtCost(r.cost), true))),
+                        }),
+                      ),
+                      section(
+                        t('byModel'),
+                        h(Table, {
+                          attr: 'data-dsh-bots-usage-models',
+                          head: [th(t('colModel')), th(t('colCalls'), true), th(t('colTokens'), true), th(t('colCost'), true)],
+                          rows: data.models.map((r) =>
+                            h(
+                              'tr',
+                              { key: `${r.provider}/${r.model}` },
+                              td(h('span', { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } }, h('span', { className: 'dshb-mono', style: { fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } }, r.model), h('span', { style: { fontSize: TINY, color: C.faint } }, r.provider))),
+                              td(String(r.calls), true),
+                              td(fmtNum(r.tokens), true),
+                              td(r.priced ? fmtCost(r.cost) : h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY }, onClick: () => setPrices(r.model) }, t('setPrice')), true),
+                            ),
+                          ),
+                        }),
+                      ),
+                      section(
+                        t('byKind'),
+                        h(Table, {
+                          attr: 'data-dsh-bots-usage-kinds',
+                          head: [th(''), th(t('colCalls'), true), th(t('colTokens'), true), th(t('colCost'), true)],
+                          rows: data.kinds.map((r) => h('tr', { key: r.kind }, td(t(`work_${r.kind}`)), td(String(r.calls), true), td(fmtNum(r.tokens), true), td(fmtCost(r.cost), true))),
+                        }),
+                      ),
+                      data.schedules.length
+                        ? section(
+                            t('bySchedule'),
+                            h(Table, {
+                              attr: 'data-dsh-bots-usage-schedules',
+                              head: [th(t('colTask')), th(t('colRuns'), true), th(t('colTokens'), true), th(t('colCost'), true)],
+                              rows: data.schedules.map((r) => h('tr', { key: r.id }, td(h('span', { style: { display: 'flex', flexDirection: 'column' } }, h('span', null, r.title), h('span', { style: { fontSize: TINY, color: C.faint } }, botName(t, r.bot)))), td(String(r.runs), true), td(fmtNum(r.tokens), true), td(fmtCost(r.cost), true))),
+                            }),
+                          )
+                        : null,
+                    ),
+                empty || data.tasks.length === 0
+                  ? null
+                  : section(
+                      t('recentTasks'),
+                      h(Table, {
+                        attr: 'data-dsh-bots-usage-tasks',
+                        head: [th(t('colTask')), th(t('colBot')), th(t('colWhen')), th(t('colTokens'), true), th(t('colCost'), true)],
+                        rows: data.tasks.map((r) =>
+                          h(
+                            'tr',
+                            { key: r.id, 'data-dsh-bots-usage-task': r.id },
+                            td(
+                              h(
+                                'span',
+                                { style: { display: 'flex', flexDirection: 'column', minWidth: 0, maxWidth: 380 } },
+                                h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.title }, r.title),
+                                h(
+                                  'span',
+                                  { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', gap: 6, alignItems: 'center' } },
+                                  triggerText(t, r),
+                                  r.status === 'running' ? h(Badge, { color: C.ok }, t('taskRunning')) : r.status === 'error' || r.status === 'stopped' ? h(Badge, { color: C.error }, t(`taskState_${r.status}`)) : null,
+                                ),
+                              ),
+                            ),
+                            td(h(BotCell, { t, id: r.bot })),
+                            td(h('span', { style: { color: C.muted, fontSize: TINY, whiteSpace: 'nowrap' } }, fmtDate(r.end ?? r.start))),
+                            td(fmtNum(r.tokens), true),
+                            td(fmtCost(r.cost), true),
+                          ),
+                        ),
+                      }),
+                    ),
+              ),
+        ),
+        prices ? h(PricesModal, { t, focus: typeof prices === 'string' ? prices : '', onClose: () => (setPrices(false), void reload()) }) : null,
+      );
+    }
+
+    function PricesModal({ t, focus, onClose }) {
+      const { data, reload } = useJson('prices');
+      const [edit, setEdit] = useState(focus ? { model: focus, input: '', cacheRead: '', output: '', currency: 'USD' } : null);
+      const [busy, setBusy] = useState(false);
+      const [note, setNote] = useState('');
+      const save = (price) => {
+        setBusy(true);
+        postJson('prices', { model: edit?.model ?? price?.model, price: price === null ? null : { input: Number(edit.input), output: Number(edit.output), ...(edit.cacheRead !== '' ? { cacheRead: Number(edit.cacheRead) } : {}), currency: edit.currency } })
+          .then((r) => {
+            if (r?.ok) {
+              setEdit(null);
+              setNote(t('priceSaved'));
+              void reload();
+            } else setNote(r?.reason || t('saveFailed'));
+          })
+          .finally(() => setBusy(false));
+      };
+      const valid = edit && edit.input !== '' && edit.output !== '' && Number(edit.input) >= 0 && Number(edit.output) >= 0;
+      const list = data?.list;
+      return h(
+        Modal,
+        { title: t('pricesTitle'), onClose, width: 640, closeLabel: t('close') },
+        h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t('pricesHint', { count: list?.count ?? 0, when: list?.fetchedAt ? fmtDate(list.fetchedAt) : '—' })),
+        note ? h('div', { style: { fontSize: SMALL, color: C.ok } }, note) : null,
+        !data
+          ? h('div', { style: { color: C.faint, fontSize: SMALL } }, t('loading'))
+          : data.models.length === 0
+            ? h('div', { style: { color: C.faint, fontSize: SMALL } }, t('noUsage'))
+            : h(Table, {
+                attr: 'data-dsh-bots-price-table',
+                head: [th(t('colModel')), th(t('priceInput'), true), th(t('priceOutput'), true), th('')],
+                rows: data.models.map((m) =>
+                  h(
+                    'tr',
+                    { key: m.model },
+                    td(h('span', { style: { display: 'flex', flexDirection: 'column' } }, h('span', { className: 'dshb-mono', style: { fontSize: 12 } }, m.model), h('span', { style: { fontSize: TINY, color: C.faint } }, m.price ? `${m.price.source === 'user' ? t('priceSource_user') : 'LiteLLM'}${m.price.approximate ? ' ≈' : ''}` : t('priceNone')))),
+                    td(m.price ? fmtMoney(m.price.input, m.price.currency) : '—', true),
+                    td(m.price ? fmtMoney(m.price.output, m.price.currency) : '—', true),
+                    td(
+                      h(
+                        'span',
+                        { style: { display: 'inline-flex', gap: 8 } },
+                        h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY }, onClick: () => setEdit({ model: m.model, input: String(m.price?.input ?? ''), cacheRead: m.price?.cacheRead !== undefined ? String(m.price.cacheRead) : '', output: String(m.price?.output ?? ''), currency: m.price?.currency ?? 'USD' }) }, t('setPrice')),
+                        m.price?.source === 'user' ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, color: C.muted }, onClick: () => (setEdit({ model: m.model }), save(null)) }, t('usePriceList')) : null,
+                      ),
+                      true,
+                    ),
+                  ),
+                ),
+              }),
+        edit && edit.input !== undefined
+          ? h(
+              'div',
+              { className: 'dshb-card', 'data-dsh-bots-price-form': edit.model, style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+              h('span', { className: 'dshb-mono', style: { fontWeight: 600 } }, edit.model),
+              h(
+                'div',
+                { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 } },
+                h(Field, { label: t('priceInput') }, h(Input, { type: 'number', min: 0, step: 'any', value: edit.input, onChange: (e) => setEdit({ ...edit, input: e.target.value }) })),
+                h(Field, { label: t('priceCached') }, h(Input, { type: 'number', min: 0, step: 'any', value: edit.cacheRead, placeholder: edit.input, onChange: (e) => setEdit({ ...edit, cacheRead: e.target.value }) })),
+                h(Field, { label: t('priceOutput') }, h(Input, { type: 'number', min: 0, step: 'any', value: edit.output, onChange: (e) => setEdit({ ...edit, output: e.target.value }) })),
+                h(Field, { label: t('priceCurrency') }, h('select', { className: 'dshb-input', value: edit.currency, onChange: (e) => setEdit({ ...edit, currency: e.target.value }) }, h('option', { value: 'USD' }, 'USD $'), h('option', { value: 'CNY' }, 'CNY ¥'))),
+              ),
+              h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } }, h(Btn, { kind: 'ghost', onClick: () => setEdit(null) }, t('cancel')), h(Btn, { kind: 'primary', disabled: !valid || busy, onClick: () => save() }, t('save'))),
+            )
+          : null,
+        h('div', null, h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.refresh(12), onClick: () => postJson('prices/refresh', {}).then(() => reload()) }, t('refreshPriceList'))),
+      );
+    }
+
+    const NOTE_KINDS = ['fact', 'preference', 'person', 'project', 'procedure', 'lesson'];
+    /** A list of memory notes the user can add to, edit, pin and delete. */
+    function NotesEditor({ t, scope, notes, reload, toast }) {
+      const [text, setText] = useState('');
+      const [kind, setKind] = useState('fact');
+      const [q, setQ] = useState('');
+      const [editing, setEditing] = useState(null);
+      const put = (note, ok) =>
+        postJson('memory/put', { scope, note }).then((r) => {
+          if (r?.ok) {
+            if (ok) toast(ok);
+            setEditing(null);
+            void reload();
+            void refreshState();
+          } else toast(r?.reason || t('saveFailed'), 'error');
+          return r;
+        });
+      const add = () => {
+        if (!text.trim()) return;
+        void put({ text: text.trim(), kind }, t('noteSaved')).then((r) => r?.ok && setText(''));
+      };
+      const remove = (id) =>
+        postJson('memory/delete', { scope, id }).then((r) => {
+          if (r?.ok) {
+            void reload();
+            void refreshState();
+          } else toast(r?.reason || t('actionFailed'), 'error');
+        });
+      const needle = q.trim().toLowerCase();
+      const list = (notes ?? [])
+        .filter((n) => !needle || n.text.toLowerCase().includes(needle))
+        .slice()
+        .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updated - a.updated);
+      return h(
+        'div',
+        { 'data-dsh-bots-notes': scope, style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8 } },
+          h(Input, { value: text, placeholder: t('addNote'), maxLength: 400, 'data-dsh-bots-note-input': true, onChange: (e) => setText(e.target.value), onKeyDown: (e) => e.key === 'Enter' && !e.isComposing && add(), style: { flex: 1 } }),
+          h('select', { className: 'dshb-input', value: kind, onChange: (e) => setKind(e.target.value), style: { width: 110 } }, NOTE_KINDS.map((k) => h('option', { key: k, value: k }, t(`note_${k}`)))),
+          h(Btn, { kind: 'primary', icon: Icon.plus(13), disabled: !text.trim(), onClick: add, 'data-dsh-bots-note-add': true }, t('add')),
+        ),
+        (notes ?? []).length > 8 ? h(Input, { value: q, placeholder: t('filterNotes'), onChange: (e) => setQ(e.target.value), style: { height: 30, fontSize: SMALL, maxWidth: 280 } }) : null,
+        list.length === 0
+          ? h('div', { style: { fontSize: SMALL, color: C.faint, padding: '6px 2px' } }, t('noNotes'))
+          : h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', border: `1px solid ${C.border1}`, borderRadius: 12, overflow: 'hidden', background: C.layer1 } },
+              list.map((n, i) =>
+                h(
+                  'div',
+                  { key: n.id, 'data-dsh-bots-note': n.id, style: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '9px 12px', borderTop: i ? `1px solid ${C.border1}` : 'none', background: n.pinned ? tint(C.label, 5) : 'transparent' } },
+                  h(Badge, { color: C.muted }, t(`note_${n.kind}`)),
+                  editing?.id === n.id
+                    ? h(
+                        'div',
+                        { style: { flex: 1, display: 'flex', gap: 6 } },
+                        h(Input, { value: editing.text, maxLength: 400, onChange: (e) => setEditing({ ...editing, text: e.target.value }), onKeyDown: (e) => e.key === 'Enter' && !e.isComposing && put({ id: n.id, text: editing.text }), style: { flex: 1, height: 28 } }),
+                        h(Btn, { size: 'sm', kind: 'primary', onClick: () => put({ id: n.id, text: editing.text }) }, t('save')),
+                        h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setEditing(null) }, t('cancel')),
+                      )
+                    : h(
+                        'div',
+                        { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
+                        h('span', { style: { fontSize: SMALL, color: C.primary, lineHeight: 1.5, wordBreak: 'break-word', cursor: 'text' }, onClick: () => setEditing({ id: n.id, text: n.text }) }, n.text),
+                        h('span', { style: { fontSize: TINY, color: C.faint } }, `${t(`src_${n.source}`)} · ${fmtAgo(t, n.updated)}`),
+                      ),
+                  h('button', { type: 'button', className: 'dshb-link', title: n.pinned ? t('unpin') : t('pin'), 'data-dsh-bots-note-pin': n.id, onClick: () => put({ id: n.id, pinned: !n.pinned }), style: { color: n.pinned ? '#d99a00' : C.faint, display: 'inline-flex', paddingTop: 2 } }, Icon.star(13)),
+                  h('button', { type: 'button', className: 'dshb-link', title: t('delete'), 'data-dsh-bots-note-delete': n.id, onClick: () => remove(n.id), style: { color: C.faint, display: 'inline-flex', paddingTop: 2 } }, Icon.trash(13)),
+                ),
+              ),
+            ),
+      );
+    }
+    function JournalList({ t, items, showBot }) {
+      if (!items?.length) return h('div', { style: { fontSize: SMALL, color: C.faint } }, t('noJournal'));
+      return h(
+        'div',
+        { 'data-dsh-bots-journal': true, style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+        items.slice(0, 60).map((j) =>
+          h(
+            'div',
+            { key: j.id, style: { display: 'flex', gap: 10, alignItems: 'flex-start', padding: '6px 2px', fontSize: SMALL } },
+            h('span', { style: { color: C.faint, fontSize: TINY, width: 132, flex: 'none', paddingTop: 2, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' } }, fmtDate(j.at)),
+            showBot ? h('span', { style: { flex: 'none', width: 130 } }, h(BotCell, { t, id: j.bot })) : null,
+            h('span', { style: { flex: 1, color: C.primary, lineHeight: 1.5, wordBreak: 'break-word' } }, j.summary || j.title),
+          ),
+        ),
+      );
+    }
+    const memModelText = (t, m) => (m ? `${m.provider} · ${m.model}` : t('botsOwnModel'));
+
+    function MemoryTab({ t, bot, toast, onSettings }) {
+      const { data, reload } = useJson(`memory?bot=${encodeURIComponent(bot.id)}`, 15_000);
+      const [busy, setBusy] = useState(false);
+      const name = bot.name || `@${bot.handle}`;
+      const topic = data?.topic;
+      const startTopic = () => {
+        setBusy(true);
+        postJson('topic/new', { id: bot.id })
+          .then((r) => {
+            if (r?.ok) {
+              toast(t('newTopicDone', { name }));
+              void reload();
+              void refreshState();
+            } else toast(r?.reason || t('actionFailed'), 'error');
+          })
+          .finally(() => setBusy(false));
+      };
+      return h(
+        'div',
+        { className: 'dshb-scroll', 'data-dsh-bots-memory': bot.id, style: { flex: 1, padding: '20px 24px 28px' } },
+        h(
+          'div',
+          { style: { maxWidth: 820, display: 'flex', flexDirection: 'column', gap: 26 } },
+          h(
+            Section,
+            { title: t('memoryOf', { name }), hint: t('memoryHint', { name }), right: h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, whiteSpace: 'nowrap' }, onClick: onSettings }, t('memoryModelIs', { model: memModelText(t, data?.settings?.model) })) },
+            data ? h(NotesEditor, { t, scope: bot.id, notes: data.notes, reload, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading')),
+          ),
+          h(Section, { title: t('recentWork'), hint: t('recentWorkHint') }, data ? h(JournalList, { t, items: data.journal }) : null),
+          h(
+            Section,
+            { title: t('topicsTitle'), hint: t('topicsHint'), right: h(Btn, { size: 'sm', icon: Icon.plus(12), disabled: busy || bot.status === 'running', onClick: startTopic, 'data-dsh-bots-new-topic': 'memory' }, t('newTopic')) },
+            topic ? h('div', { className: 'dshb-card', style: { fontSize: SMALL } }, t('topicNow', { when: fmtAgo(t, topic.startedAt), n: topic.tasks, ctx: fmtNum(topic.lastPrompt) })) : null,
+            ...(data?.topics ?? []).map((p) =>
+              h(
+                'div',
+                { key: p.sessionId, 'data-dsh-bots-past-topic': p.sessionId, style: { display: 'flex', alignItems: 'center', gap: 10, padding: '4px 2px', fontSize: SMALL } },
+                h('span', { style: { color: C.muted, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' } }, t('pastTopic', { from: fmtDate(p.startedAt), to: fmtDate(p.endedAt), n: p.tasks })),
+                h(Badge, { color: C.muted }, t(`topicReason_${p.reason}`)),
+                h('span', { style: { flex: 1, minWidth: 0, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (p.titles ?? []).join(' · ')),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    function TeamMemoryView({ t, toast, onSettings }) {
+      const { data, reload } = useJson('memory?bot=team', 20_000);
+      const [busy, setBusy] = useState(false);
+      const dream = () => {
+        setBusy(true);
+        postJson('memory/dream', {})
+          .then((r) => {
+            if (r?.ok) {
+              const errs = r.result?.errors ?? [];
+              toast(errs.length ? t('dreamPartly', { reason: errs[0].reason }) : t('dreamDone', { bots: (r.result?.bots ?? []).length, digest: r.result?.digest ? t('dreamDigest') : '' }), errs.length ? 'error' : 'ok');
+              void reload();
+              void refreshState();
+            } else toast(r?.reason || t('actionFailed'), 'error');
+          })
+          .finally(() => setBusy(false));
+      };
+      const st = data?.settings;
+      const last = data?.dream?.lastAt;
+      return h(
+        'div',
+        { 'data-dsh-bots-team-memory': true, style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
+        h(
+          'header',
+          { style: { padding: '18px 24px 14px', borderBottom: `1px solid ${C.border1}`, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' } },
+          h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 220 } },
+            h('span', { style: { fontWeight: 700, fontSize: 19 } }, t('teamMemoryTitle')),
+            h('span', { style: { fontSize: SMALL, color: C.muted } }, !st ? '' : !st.dream ? t('dreamOff') : last ? `${t('lastDream', { when: fmtAgo(t, last) })} · ${t('dreamDaily', { time: st.dreamTime })}` : t('neverDreamed', { time: st.dreamTime })),
+          ),
+          h(Btn, { kind: 'ghost', size: 'sm', icon: Icon.edit(12), onClick: onSettings }, t('settings')),
+          h(Btn, { kind: 'primary', size: 'sm', icon: busy ? h('span', { className: 'dshb-spinner' }) : Icon.sparkle(13), disabled: busy, onClick: dream, 'data-dsh-bots-dream': true }, busy ? t('dreaming') : t('dreamNow')),
+        ),
+        h(
+          'div',
+          { className: 'dshb-scroll', style: { flex: 1, padding: '20px 24px 28px' } },
+          h(
+            'div',
+            { style: { maxWidth: 860, display: 'flex', flexDirection: 'column', gap: 26 } },
+            h(Section, { title: t('teamNotes'), hint: t('teamNotesHint') }, data ? h(NotesEditor, { t, scope: 'team', notes: data.notes, reload, toast }) : h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading'))),
+            h(
+              Section,
+              { title: t('digests'), hint: t('digestsHint') },
+              !data?.digests?.length
+                ? h('div', { style: { fontSize: SMALL, color: C.faint } }, t('noDigests'))
+                : data.digests.slice(0, 14).map((d) => h('div', { key: d.date, className: 'dshb-card', 'data-dsh-bots-digest': d.date, style: { display: 'flex', flexDirection: 'column', gap: 6 } }, h('span', { style: { fontSize: TINY, fontWeight: 700, color: C.muted } }, d.date), h(Clamp, { t, text: d.text, lines: 10, style: { fontSize: SMALL } }))),
+            ),
+            h(Section, { title: t('teamJournal'), hint: t('recentWorkHint') }, data ? h(JournalList, { t, items: data.journal, showBot: true }) : null),
+          ),
+        ),
+      );
+    }
+
+    function SettingsModal({ t, catalog, onClose, toast }) {
+      const [form, setForm] = useState(null);
+      const [busy, setBusy] = useState(false);
+      useEffect(() => {
+        void getJson('settings').then((r) => r?.settings && setForm(r.settings));
+      }, []);
+      const set = (part, patch) => setForm((f) => ({ ...f, [part]: { ...f[part], ...patch } }));
+      const models = Array.isArray(catalog?.models) ? catalog.models : [];
+      const save = () => {
+        setBusy(true);
+        postJson('settings', { patch: { topics: { idleHours: Number(form.topics.idleHours) || 0, maxContextK: Number(form.topics.maxContextK) || 0 }, memory: form.memory } })
+          .then((r) => {
+            if (r?.ok) {
+              toast(t('settingsSaved'));
+              onClose();
+            } else toast(r?.reason || t('saveFailed'), 'error');
+          })
+          .finally(() => setBusy(false));
+      };
+      const row = (label, hint, control) => h('div', { style: { display: 'flex', alignItems: 'center', gap: 14 } }, h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { style: { fontWeight: 600, fontSize: SMALL } }, label), hint ? h('div', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5, marginTop: 2 } }, hint) : null), control);
+      return h(
+        Modal,
+        {
+          title: t('settingsTitle'),
+          onClose,
+          width: 560,
+          closeLabel: t('close'),
+          footer: [h(Btn, { key: 'c', kind: 'ghost', onClick: onClose }, t('cancel')), h(Btn, { key: 's', kind: 'primary', disabled: !form || busy, onClick: save, 'data-dsh-bots-settings-save': true }, t('save'))],
+        },
+        !form
+          ? h('div', { style: { color: C.faint, fontSize: SMALL } }, t('loading'))
+          : [
+              h(
+                Section,
+                { key: 'topics', title: t('setTopics') },
+                row(t('setIdle'), t('setIdleHint'), h(Input, { type: 'number', min: 0, max: 720, value: form.topics.idleHours, onChange: (e) => set('topics', { idleHours: e.target.value }), 'data-dsh-bots-setting': 'idleHours', style: { width: 90 } })),
+                row(t('setContext'), t('setContextHint'), h(Input, { type: 'number', min: 0, max: 4096, value: form.topics.maxContextK, onChange: (e) => set('topics', { maxContextK: e.target.value }), 'data-dsh-bots-setting': 'maxContextK', style: { width: 90 } })),
+              ),
+              h(
+                Section,
+                { key: 'memory', title: t('setMemory') },
+                row(t('setAuto'), t('setAutoHint'), h(Switch, { on: form.memory.auto, onChange: (v) => set('memory', { auto: v }), title: t('setAuto'), 'data-dsh-bots-setting': 'auto' })),
+                row(
+                  t('setMemoryModel'),
+                  t('setMemoryModelHint'),
+                  h(
+                    'select',
+                    {
+                      className: 'dshb-input',
+                      value: modelKey(form.memory.model),
+                      style: { width: 230 },
+                      'data-dsh-bots-setting': 'memoryModel',
+                      onChange: (e) => {
+                        const v = e.target.value;
+                        if (!v) return set('memory', { model: null });
+                        const [provider, ...rest] = v.split('::');
+                        set('memory', { model: { provider, model: rest.join('::') } });
+                      },
+                    },
+                    h('option', { value: '' }, t('botsOwnModel')),
+                    form.memory.model && !models.some((m) => modelKey(m) === modelKey(form.memory.model)) ? h('option', { value: modelKey(form.memory.model) }, `${form.memory.model.provider} · ${form.memory.model.model}`) : null,
+                    modelGroups(models).map((g) => h('optgroup', { key: g.name, label: g.name }, g.models.map((m) => h('option', { key: modelKey(m), value: modelKey(m) }, m.name || m.model)))),
+                  ),
+                ),
+                row(t('setDream'), t('setDreamHint'), h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } }, h(Input, { type: 'time', value: form.memory.dreamTime, disabled: !form.memory.dream, onChange: (e) => set('memory', { dreamTime: e.target.value }), style: { width: 136 } }), h(Switch, { on: form.memory.dream, onChange: (v) => set('memory', { dream: v }), title: t('setDream'), 'data-dsh-bots-setting': 'dream' }))),
+              ),
+            ],
+      );
+    }
+
+    /** Catalog models by provider, in catalog order. */
+    function modelGroups(models) {
+      const groups = [];
+      for (const m of models) {
+        const name = m.group || m.provider;
+        let g = groups.find((x) => x.name === name);
+        if (!g) groups.push((g = { name, source: m.source ?? '', models: [] }));
+        g.models.push(m);
+      }
+      return groups;
+    }
+
+    function EndpointForm({ t, value, apis, onCancel, onSaved, toast }) {
+      const editing = Boolean(value?.route);
+      const [f, setF] = useState(() => ({ name: value?.name ?? '', api: value?.api ?? 'openai-completions', baseURL: value?.baseURL ?? '', key: '', models: (value?.models ?? []).map((m) => m.id).join('\n') }));
+      const [found, setFound] = useState(null);
+      const [busy, setBusy] = useState('');
+      const set = (p) => setF((x) => ({ ...x, ...p }));
+      const ids = [...new Set(f.models.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean))];
+      const fetchModels = () => {
+        setBusy('fetch');
+        postJson('models/custom/test', { api: f.api, baseURL: f.baseURL, key: f.key, ...(editing ? { route: value.route } : {}) })
+          .then((r) => {
+            if (r?.ok) {
+              setFound(r.models);
+              toast(t('fetchedN', { n: r.models.length }));
+            } else toast(r?.reason || t('actionFailed'), 'error');
+          })
+          .finally(() => setBusy(''));
+      };
+      const toggle = (id, on) => set({ models: (on ? [...ids, id] : ids.filter((x) => x !== id)).join('\n') });
+      const save = () => {
+        setBusy('save');
+        postJson('models/custom/save', { ...(editing ? { route: value.route } : {}), name: f.name, api: f.api, baseURL: f.baseURL, key: f.key, models: ids })
+          .then((r) => {
+            if (r?.ok) {
+              toast(t('epSaved'));
+              onSaved();
+            } else toast(r?.reason || t('saveFailed'), 'error');
+          })
+          .finally(() => setBusy(''));
+      };
+      const valid = f.name.trim() && /^https?:\/\/\S+/.test(f.baseURL.trim()) && ids.length > 0 && (editing || f.key.trim());
+      return h(
+        'div',
+        { className: 'dshb-card', 'data-dsh-bots-endpoint-form': value?.route ?? 'new', style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+        h('div', { style: { fontWeight: 700, fontSize: SMALL } }, editing ? t('editEndpoint') : t('addEndpoint')),
+        h(
+          'div',
+          { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 } },
+          h(Field, { label: t('epName'), hint: editing ? value.route : '' }, h(Input, { value: f.name, disabled: editing, maxLength: 40, placeholder: 'My gateway', onChange: (e) => set({ name: e.target.value }), 'data-dsh-bots-ep': 'name' })),
+          h(Field, { label: t('epApi') }, h('select', { className: 'dshb-input', value: f.api, onChange: (e) => set({ api: e.target.value }), 'data-dsh-bots-ep': 'api' }, (apis ?? Object.keys(API_LABELS)).map((a) => h('option', { key: a, value: a }, API_LABELS[a] ?? a)))),
+          h(Field, { label: t('epBase'), style: { gridColumn: '1 / -1' } }, h(Input, { value: f.baseURL, mono: true, placeholder: f.api === 'anthropic-messages' ? 'https://api.anthropic.com' : 'https://api.example.com/v1', onChange: (e) => set({ baseURL: e.target.value }), 'data-dsh-bots-ep': 'baseURL' })),
+          h(Field, { label: t('epKey'), hint: t('epKeyHint'), style: { gridColumn: '1 / -1' } }, h(Input, { type: 'password', autoComplete: 'off', value: f.key, placeholder: editing ? t('epKeyKeep') : '', onChange: (e) => set({ key: e.target.value }), 'data-dsh-bots-ep': 'key' })),
+        ),
+        h(
+          Field,
+          { label: t('epModels'), hint: t('epModelsHint'), right: h(Btn, { size: 'sm', kind: 'ghost', icon: busy === 'fetch' ? h('span', { className: 'dshb-spinner' }) : Icon.download(12), disabled: busy !== '' || !/^https?:\/\//.test(f.baseURL.trim()), onClick: fetchModels, 'data-dsh-bots-ep-fetch': true }, busy === 'fetch' ? t('fetching') : t('fetchModels')) },
+          found && found.length
+            ? h(
+                'div',
+                { className: 'dshb-scroll', style: { maxHeight: 180, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 4, padding: 6, border: `1px solid ${C.border1}`, borderRadius: 9 } },
+                found.map((m) => h('label', { key: m.id, style: { display: 'flex', gap: 6, alignItems: 'center', fontSize: SMALL, cursor: 'pointer', minWidth: 0 } }, h('input', { type: 'checkbox', checked: ids.includes(m.id), onChange: (e) => toggle(m.id, e.target.checked), style: { accentColor: 'var(--dsw-alias-brand-primary)' } }), h('span', { className: 'dshb-mono', style: { fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: m.name ?? m.id }, m.id))),
+              )
+            : null,
+          h(TextArea, { rows: 3, mono: true, value: f.models, placeholder: 'gpt-5.1\ndeepseek-chat', onChange: (e) => set({ models: e.target.value }), 'data-dsh-bots-ep': 'models' }),
+        ),
+        h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } }, h(Btn, { kind: 'ghost', onClick: onCancel }, t('cancel')), h(Btn, { kind: 'primary', disabled: !valid || busy !== '', onClick: save, 'data-dsh-bots-ep-save': true }, busy === 'save' ? t('saving') : t('save'))),
+      );
+    }
+
+    function ModelSourcesModal({ t, onClose, toast }) {
+      const { data, reload } = useJson('models/sources');
+      const [form, setForm] = useState(null);
+      const [busy, setBusy] = useState('');
+      const [confirm, setConfirm] = useState(null);
+      const act = (path, body, ok) => {
+        setBusy(path);
+        return postJson(path, body)
+          .then((r) => {
+            if (r?.ok) {
+              if (ok) toast(ok);
+              void reload();
+              void loadCatalog(true);
+              void refreshState();
+            } else toast(r?.reason || t('actionFailed'), 'error');
+          })
+          .finally(() => setBusy(''));
+      };
+      return h(
+        Modal,
+        { title: t('sourcesTitle'), onClose, width: 680, closeLabel: t('close') },
+        h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t('sourcesIntro')),
+        data && !data.writable ? h('div', { style: { fontSize: SMALL, color: C.warn } }, t('notWritable')) : null,
+        h(
+          Section,
+          { title: t('endpoints'), right: form ? null : h(Btn, { size: 'sm', icon: Icon.plus(12), disabled: data && !data.writable, onClick: () => setForm({}), 'data-dsh-bots-add-endpoint': true }, t('addEndpoint')) },
+          form ? h(EndpointForm, { t, value: form, apis: data?.apis, toast, onCancel: () => setForm(null), onSaved: () => (setForm(null), void reload(), void loadCatalog(true)) }) : null,
+          !data
+            ? h('div', { style: { fontSize: SMALL, color: C.faint } }, t('loading'))
+            : data.custom.length === 0 && !form
+              ? h('div', { style: { fontSize: SMALL, color: C.faint } }, t('noEndpoints'))
+              : data.custom.map((e) =>
+                  h(
+                    'div',
+                    { key: e.route, className: 'dshb-card', 'data-dsh-bots-endpoint': e.route, style: { display: 'flex', alignItems: 'center', gap: 12 } },
+                    h(
+                      'div',
+                      { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 } },
+                      h('span', { style: { fontWeight: 600 } }, e.name),
+                      h('span', { className: 'dshb-mono', style: { fontSize: 11.5, color: C.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `${API_LABELS[e.api] ?? e.api} · ${e.baseURL}`),
+                      h('span', { style: { fontSize: TINY, color: C.muted } }, `${t('nModels', { n: e.models.length })} · ${e.keyConfigured ? t('keySet') : t('keyMissing')}`),
+                    ),
+                    confirm === e.route
+                      ? h('span', { style: { display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: TINY, color: C.muted } }, t('epRemoveConfirm'), h(Btn, { size: 'sm', kind: 'danger', disabled: busy !== '', onClick: () => act('models/custom/delete', { route: e.route }, t('epRemoved')).then(() => setConfirm(null)) }, t('remove')), h(Btn, { size: 'sm', kind: 'ghost', onClick: () => setConfirm(null) }, t('cancel')))
+                      : h('span', { style: { display: 'inline-flex', gap: 6 } }, h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.edit(12), onClick: () => setForm(e) }, t('edit')), h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.trash(12), onClick: () => setConfirm(e.route), 'data-dsh-bots-endpoint-remove': e.route })),
+                  ),
+                ),
+        ),
+        h(
+          Section,
+          { title: t('logins'), hint: t('loginsHint') },
+          !data
+            ? null
+            : data.logins.map((l) =>
+                h(
+                  'div',
+                  { key: l.id, className: 'dshb-card', 'data-dsh-bots-login': l.id, style: { display: 'flex', alignItems: 'center', gap: 12, opacity: l.found ? 1 : 0.7 } },
+                  h(
+                    'div',
+                    { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 } },
+                    h('span', { style: { fontWeight: 600 } }, `${l.name} · ${l.product}`),
+                    h('span', { style: { fontSize: TINY, color: C.muted, lineHeight: 1.5 } }, !l.found ? t('loginNotFound') : !l.supported ? t(`loginReason_${l.reason}`) : l.connected ? t('loginConnected', { name: l.name }) : [l.account, l.plan].filter(Boolean).join(' · ')),
+                    l.supported && l.found ? h('span', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5 } }, t(`loginHint_${l.id}`)) : null,
+                  ),
+                  l.supported && l.found
+                    ? l.connected
+                      ? h(Btn, { size: 'sm', kind: 'ghost', disabled: busy !== '', onClick: () => act('models/login/disconnect', { id: l.id }), 'data-dsh-bots-login-disconnect': l.id }, t('disconnect'))
+                      : h(Btn, { size: 'sm', kind: 'primary', disabled: busy !== '' || (data && !data.writable), onClick: () => act('models/login/connect', { id: l.id }, t('loginReady', { name: l.product })), 'data-dsh-bots-login-connect': l.id }, t('useLogin'))
+                    : null,
+                ),
+              ),
+        ),
       );
     }
 
@@ -4561,6 +5483,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const [detail, setDetail] = useState(null); // a team shown in the detail modal
       const [hire, setHire] = useState(null); // {team, phase: confirm|start|busy|done|error, primary, result?}
       const [primaryTick, setPrimaryTick] = useState(true);
+      const [settings, setSettings] = useState(false);
       const [toast, showToast] = useToast();
       const seenNav = useRef(0);
       const bots = Array.isArray(s.state?.bots) ? s.state.bots : [];
@@ -4602,10 +5525,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         main = h('div', { style: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.faint, fontSize: SMALL } }, s.failed ? t('unavailable') : t('loading'));
       } else if (shownView === 'activity') {
         main = h(ActivityView, { t, bots });
+      } else if (shownView === 'usage') {
+        main = h(UsageView, { t, bots });
+      } else if (shownView === 'memory') {
+        main = h(TeamMemoryView, { t, toast: showToast, onSettings: () => setSettings(true) });
       } else if (shownView === 'hero' || shownView === 'teams' || !current) {
         main = h(TeamsGallery, { t, lang, teams, hero: shownView !== 'teams', onHire: (team) => startHire(team), onDetail: (team) => (setPrimaryTick(true), setDetail(team)), onBlank: () => setCreating(true), busy: Boolean(hire) });
       } else {
-        main = h(BotDetail, { t, bot: current, primaryId, env: env2, toast: showToast, catalog, tab, setTab, onDeleted: () => setSelected(null) });
+        main = h(BotDetail, { t, bot: current, primaryId, env: env2, toast: showToast, catalog, tab, setTab, onDeleted: () => setSelected(null), onSettings: () => setSettings(true) });
       }
       return h(
         'div',
@@ -4625,6 +5552,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           onNew: () => setCreating(true),
           onTeams: () => setView('teams'),
           onActivity: () => setView('activity'),
+          onUsage: () => setView('usage'),
+          onMemory: () => setView('memory'),
+          onSettings: () => setSettings(true),
+          teamNotes: s.state?.teamNotes ?? 0,
         }),
         h('div', { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 } }, main),
         creating
@@ -4643,6 +5574,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           ? h(TeamDetailModal, { t, lang, team: detail, entries: catalog?.templates, onClose: () => setDetail(null), onHire: (team) => startHire(team, true), askPrimary: hasPrimary && bots.length > 1, primary: primaryTick, setPrimary: setPrimaryTick })
           : null,
         hire ? h(HireModal, { t, lang, hire, setHire, toast: showToast, catalog, onDone: openBotTab, onOpenBot: openBotTab }) : null,
+        settings ? h(SettingsModal, { t, catalog, toast: showToast, onClose: () => setSettings(false) }) : null,
         h(Toast, { toast }),
       );
     }
@@ -5436,6 +6368,176 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         channelPrivate: 'Only paired people reach the team. Anyone else is ignored (at most a one-line "this bot is private" a day). In a group the bot only answers when @mentioned or replied to.',
         viaChannel: '{app} · {who}',
         sentToChannel: 'Also sent to {app}',
+        // Usage, memory, topics, settings, model sources
+        settings: 'Settings',
+        usage: 'Usage',
+        usageHint: '{tokens} tokens today',
+        usageSub: 'Tokens and estimated cost of every bot, task and day: conversations, memory work and context compaction.',
+        usageChart: 'Tokens by bot',
+        other: 'Other',
+        removedBot: 'Removed bot',
+        range_today: 'Today',
+        range_7d: '7 days',
+        range_30d: '30 days',
+        range_90d: '90 days',
+        range_all: 'All',
+        prices: 'Prices',
+        tileTokens: 'Tokens',
+        tileCacheRate: '{pct}% of input from cache',
+        tileCost: 'Estimated cost',
+        tileUnpriced: '{tokens} tokens have no price',
+        tileTasks: 'Tasks',
+        tileCalls: 'Model calls',
+        tileInOut: '{input} in · {output} out',
+        vsPrev: '{delta} vs the period before',
+        noUsage: 'No model calls in this period yet.',
+        byBot: 'By bot',
+        byModel: 'By model',
+        byKind: 'By kind of work',
+        bySchedule: 'Scheduled tasks',
+        recentTasks: 'Recent tasks',
+        colBot: 'Bot',
+        colTask: 'Task',
+        colTasks: 'Tasks',
+        colTokens: 'Tokens',
+        colCost: 'Cost',
+        colCalls: 'Calls',
+        colModel: 'Model',
+        colRuns: 'Runs',
+        colWhen: 'When',
+        work_chat: 'Conversations',
+        work_memory: 'Memory summaries',
+        work_compaction: 'Context compaction',
+        work_dream: 'Daily consolidation',
+        trigger_user: 'From you',
+        trigger_chat: 'From {app}',
+        trigger_schedule: 'Scheduled',
+        trigger_dm: 'From @{handle}',
+        taskRunning: 'Running',
+        taskState_error: 'Failed',
+        taskState_stopped: 'Stopped',
+        setPrice: 'Set price',
+        pricesTitle: 'Model prices',
+        pricesHint: 'Costs are estimates: tokens × the price per million tokens. Your own prices come first, then LiteLLM’s public price list ({count} models, fetched {when}). Gateways and subscriptions may bill differently.',
+        priceInput: 'Input / 1M',
+        priceCached: 'Cached input / 1M',
+        priceOutput: 'Output / 1M',
+        priceCurrency: 'Currency',
+        priceSource_user: 'Your price',
+        priceNone: 'No price',
+        usePriceList: 'Use the price list',
+        refreshPriceList: 'Refresh the price list',
+        priceSaved: 'Price saved',
+        tab_memory: 'Memory',
+        memoryOf: 'What {name} remembers',
+        memoryHint: 'Notes kept across conversations and topics. {name} writes them itself, after every task and whenever you ask it to remember something; edit them here. Pinned notes are never changed by the automatic passes.',
+        memoryModelIs: 'Memory work runs on {model}',
+        botsOwnModel: 'each bot’s own model',
+        addNote: 'Add a note…',
+        noteSaved: 'Note saved',
+        filterNotes: 'Filter notes',
+        noNotes: 'Nothing remembered yet. Notes appear after tasks, or add one.',
+        note_fact: 'Fact',
+        note_preference: 'Preference',
+        note_person: 'Person',
+        note_project: 'Project',
+        note_procedure: 'How-to',
+        note_lesson: 'Lesson',
+        src_auto: 'after a task',
+        src_tool: 'saved by the bot',
+        src_user: 'written by you',
+        src_dream: 'consolidated',
+        pin: 'Pin',
+        unpin: 'Unpin',
+        recentWork: 'Recent work',
+        recentWorkHint: 'One line per finished task, written when it ends.',
+        noJournal: 'No finished tasks yet.',
+        topicsTitle: 'Topics',
+        topicsHint: 'Each topic is a fresh conversation, so the context never grows without end. A new one starts when you send /new, after a long quiet, or once the conversation grows large (see Settings). Memory carries over.',
+        topicNow: 'Current topic: started {when} · tasks done: {n} · last prompt {ctx} tokens',
+        topicShort: 'This topic: {ctx} context · tasks done: {n}',
+        newTopic: 'New topic',
+        newTopicHint: 'Start a fresh conversation; memory carries over. You can also send /new.',
+        newTopicDone: '{name} starts a new topic',
+        topicDivider: 'New topic · {reason}',
+        topicReason_manual: 'started by you',
+        topicReason_idle: 'after a quiet spell',
+        topicReason_context: 'the conversation grew large',
+        pastTopic: '{from} – {to} · tasks: {n}',
+        kind_topic: 'New topic',
+        teamMemoryTitle: 'Team memory',
+        teamMemoryHint: '{n} shared notes · daily digest',
+        teamNotes: 'Shared notes',
+        teamNotesHint: 'Every bot reads these. They hold what all of them should know: about you, your business, shared conventions.',
+        digests: 'Daily digests',
+        digestsHint: 'Each day the team’s work is written up; every bot reads the latest one.',
+        noDigests: 'No digest yet.',
+        teamJournal: 'Team journal',
+        dreamNow: 'Consolidate now',
+        dreaming: 'Consolidating…',
+        dreamDone: 'Consolidated {bots} bots{digest}',
+        dreamDigest: ' and wrote the digest',
+        dreamPartly: 'Consolidation finished with a problem: {reason}',
+        lastDream: 'Last consolidated {when}',
+        dreamDaily: 'every day at {time}',
+        neverDreamed: 'Not consolidated yet; it runs every day at {time}.',
+        dreamOff: 'Daily consolidation is off.',
+        settingsTitle: 'Bots settings',
+        settingsSaved: 'Settings saved',
+        setTopics: 'Topics',
+        setIdle: 'New topic after this many quiet hours',
+        setIdleHint: 'Checked before the next task. 0 = never.',
+        setContext: 'New topic at this context size (thousand tokens)',
+        setContextHint: 'Harness also compacts a conversation near the model’s limit; a new topic keeps every call small and cheap. 0 = never.',
+        setMemory: 'Memory',
+        setAuto: 'Summarize every task into memory',
+        setAutoHint: 'One short model call per finished task. Off: only a one-line journal entry.',
+        setMemoryModel: 'Model for memory work',
+        setMemoryModelHint: 'Summaries and consolidation; a small, cheap model is enough.',
+        setDream: 'Consolidate every day',
+        setDreamHint: 'Merges repeated notes, drops stale ones and writes the team’s daily digest.',
+        modelSources: 'Model sources',
+        modelDefaultIs: 'Harness default ({model})',
+        modelContext: 'context window {k} tokens',
+        reasoning: 'Thinking',
+        effortDefault: 'default',
+        msrc_custom: 'your endpoint',
+        msrc_login: 'subscription',
+        sourcesTitle: 'Model sources',
+        sourcesIntro: 'A bot can run on any model Harness has. Add your own endpoint, or use a login another agent on this computer already has. Both become Harness providers, so they also appear in Settings → Models and in every conversation’s model picker.',
+        notWritable: 'This Harness does not let plugins change its model settings.',
+        endpoints: 'Your endpoints',
+        noEndpoints: 'None yet.',
+        addEndpoint: 'Add endpoint',
+        editEndpoint: 'Edit endpoint',
+        epName: 'Name',
+        epApi: 'API',
+        epBase: 'Base URL',
+        epKey: 'API key',
+        epKeyHint: 'Kept in the Harness credential store and never shown again. Any text for a local server that needs none.',
+        epKeyKeep: 'Leave empty to keep the saved key',
+        epModels: 'Models',
+        epModelsHint: 'One model id per line, or fetch the list from the endpoint and tick the ones you want.',
+        fetchModels: 'Fetch models',
+        fetching: 'Fetching…',
+        fetchedN: '{n} models found',
+        epSaved: 'Endpoint saved',
+        epRemoved: 'Endpoint removed',
+        epRemoveConfirm: 'Remove it? Bots on it go back to the default.',
+        nModels: '{n} models',
+        keySet: 'key saved',
+        keyMissing: 'no key',
+        logins: 'Logins on this computer',
+        loginsHint: 'Subscriptions other agents on this Mac are signed in to.',
+        loginNotFound: 'Not signed in on this computer.',
+        loginConnected: 'In use · kept in sync with {name}',
+        loginHint_codex: 'Your ChatGPT plan, through the Codex CLI’s login. Whichever side refreshes the login, the other gets the new tokens (~/.codex/auth.json is updated in place), so neither signs the other out.',
+        loginReason_terms: 'Not offered: Anthropic allows a Claude subscription only in Claude Code and claude.ai. Add Claude as an endpoint with an API key instead.',
+        loginReason_harness: 'This Harness cannot use it yet.',
+        loginReason_signin: 'Sign in from Harness Settings → Models instead.',
+        useLogin: 'Use it',
+        loginReady: '{name} is ready: pick its models in a bot’s profile',
+        disconnect: 'Stop using',
       },
       zh: {
         lang: 'zh',
@@ -5958,6 +7060,176 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         channelPrivate: '只有配对过的人能找到团队，其他人一律忽略（每天最多回一句“这是私人 Bot”）。在群里，只有 @ 它或回复它时才会回答。',
         viaChannel: '{app} · {who}',
         sentToChannel: '也已发到 {app}',
+        // 用量、记忆、话题、设置、模型来源
+        settings: '设置',
+        usage: '用量',
+        usageHint: '今天 {tokens} tokens',
+        usageSub: '每个 Bot、每个任务、每一天的 tokens 和估算费用：对话、记忆整理和上下文压缩都算在内。',
+        usageChart: '各 Bot 的 tokens',
+        other: '其他',
+        removedBot: '已删除的 Bot',
+        range_today: '今天',
+        range_7d: '7 天',
+        range_30d: '30 天',
+        range_90d: '90 天',
+        range_all: '全部',
+        prices: '价格',
+        tileTokens: 'Tokens',
+        tileCacheRate: '{pct}% 的输入命中缓存',
+        tileCost: '估算费用',
+        tileUnpriced: '{tokens} tokens 没有价格',
+        tileTasks: '任务',
+        tileCalls: '模型调用',
+        tileInOut: '输入 {input} · 输出 {output}',
+        vsPrev: '比上一期 {delta}',
+        noUsage: '这段时间还没有模型调用。',
+        byBot: '按 Bot',
+        byModel: '按模型',
+        byKind: '按用途',
+        bySchedule: '定时任务',
+        recentTasks: '最近的任务',
+        colBot: 'Bot',
+        colTask: '任务',
+        colTasks: '任务',
+        colTokens: 'Tokens',
+        colCost: '费用',
+        colCalls: '调用',
+        colModel: '模型',
+        colRuns: '次数',
+        colWhen: '时间',
+        work_chat: '对话',
+        work_memory: '记忆总结',
+        work_compaction: '上下文压缩',
+        work_dream: '每日整理',
+        trigger_user: '你发起',
+        trigger_chat: '来自 {app}',
+        trigger_schedule: '定时',
+        trigger_dm: '来自 @{handle}',
+        taskRunning: '进行中',
+        taskState_error: '出错',
+        taskState_stopped: '已停止',
+        setPrice: '设价格',
+        pricesTitle: '模型价格',
+        pricesHint: '费用是估算：tokens × 每百万 tokens 的价格。优先用你填的价格，其次是 LiteLLM 公开价格表（{count} 个模型，{when} 获取）。网关和订阅的实际计费可能不同。',
+        priceInput: '输入 / 百万',
+        priceCached: '缓存输入 / 百万',
+        priceOutput: '输出 / 百万',
+        priceCurrency: '币种',
+        priceSource_user: '你填的价格',
+        priceNone: '没有价格',
+        usePriceList: '改用价格表',
+        refreshPriceList: '刷新价格表',
+        priceSaved: '价格已保存',
+        tab_memory: '记忆',
+        memoryOf: '{name} 记得的事',
+        memoryHint: '跨对话、跨话题保留的笔记。{name} 会自己记：每个任务结束后自动总结，你让它记住的也会存进来；可以在这里直接修改。置顶的笔记不会被自动整理改动。',
+        memoryModelIs: '记忆工作使用 {model}',
+        botsOwnModel: '各 Bot 自己的模型',
+        addNote: '添加一条笔记…',
+        noteSaved: '笔记已保存',
+        filterNotes: '筛选笔记',
+        noNotes: '还没有记忆。任务完成后会自动出现，也可以手动添加。',
+        note_fact: '事实',
+        note_preference: '偏好',
+        note_person: '人物',
+        note_project: '项目',
+        note_procedure: '做法',
+        note_lesson: '教训',
+        src_auto: '任务后总结',
+        src_tool: 'Bot 自己记的',
+        src_user: '你写的',
+        src_dream: '整理后',
+        pin: '置顶',
+        unpin: '取消置顶',
+        recentWork: '最近做过的事',
+        recentWorkHint: '每完成一个任务记一行，任务结束时写入。',
+        noJournal: '还没有完成的任务。',
+        topicsTitle: '话题',
+        topicsHint: '每个话题是一段新对话，上下文不会无限变长。发送 /new、闲置较久，或对话变得很长时（见设置）会开始新话题；记忆会延续下去。',
+        topicNow: '当前话题：开始于{when} · {n} 个任务 · 最近一次提示 {ctx} tokens',
+        topicShort: '本话题：上下文 {ctx} · 已完成 {n} 个任务',
+        newTopic: '新话题',
+        newTopicHint: '开始一段新对话，记忆会保留。也可以直接发送 /new。',
+        newTopicDone: '{name} 开始了新话题',
+        topicDivider: '新话题 · {reason}',
+        topicReason_manual: '你开启的',
+        topicReason_idle: '闲置后自动开启',
+        topicReason_context: '对话太长自动开启',
+        pastTopic: '{from} – {to} · {n} 个任务',
+        kind_topic: '新话题',
+        teamMemoryTitle: '团队记忆',
+        teamMemoryHint: '{n} 条共享笔记 · 每日摘要',
+        teamNotes: '共享笔记',
+        teamNotesHint: '每个 Bot 都会读。放所有 Bot 都该知道的事：关于你、你的业务、团队约定。',
+        digests: '每日摘要',
+        digestsHint: '每天把团队做过的事写成摘要，每个 Bot 都会读最新的一份。',
+        noDigests: '还没有摘要。',
+        teamJournal: '团队工作日志',
+        dreamNow: '立即整理',
+        dreaming: '整理中…',
+        dreamDone: '已整理 {bots} 个 Bot{digest}',
+        dreamDigest: '，并写好了每日摘要',
+        dreamPartly: '整理完成，但有问题：{reason}',
+        lastDream: '上次整理：{when}',
+        dreamDaily: '每天 {time}',
+        neverDreamed: '还没整理过，每天 {time} 自动进行。',
+        dreamOff: '每日整理已关闭。',
+        settingsTitle: 'Bots 设置',
+        settingsSaved: '设置已保存',
+        setTopics: '话题',
+        setIdle: '闲置多少小时后开新话题',
+        setIdleHint: '在下一个任务开始前检查。0 表示不自动开。',
+        setContext: '上下文达到多少千 tokens 时开新话题',
+        setContextHint: 'Harness 自己会在接近模型上限时压缩对话；开新话题让每次调用都保持小而便宜。0 表示不自动开。',
+        setMemory: '记忆',
+        setAuto: '每个任务结束后总结进记忆',
+        setAutoHint: '每完成一个任务调用一次模型。关闭后只记一行工作日志。',
+        setMemoryModel: '记忆工作用的模型',
+        setMemoryModelHint: '用于总结和整理，小而便宜的模型就够了。',
+        setDream: '每天整理一次',
+        setDreamHint: '合并重复的笔记、删掉过时的，并写团队每日摘要。',
+        modelSources: '模型来源',
+        modelDefaultIs: 'Harness 默认（{model}）',
+        modelContext: '上下文窗口 {k} tokens',
+        reasoning: '思考强度',
+        effortDefault: '默认',
+        msrc_custom: '自定义端点',
+        msrc_login: '订阅',
+        sourcesTitle: '模型来源',
+        sourcesIntro: 'Bot 可以用 Harness 里的任何模型。你可以添加自己的端点，或者用这台电脑上其他 Agent 已经登录的订阅。两者都会成为 Harness 的模型提供方，也会出现在 设置 → 模型 和每个会话的模型选择里。',
+        notWritable: '当前 Harness 不允许插件修改模型设置。',
+        endpoints: '自定义端点',
+        noEndpoints: '还没有。',
+        addEndpoint: '添加端点',
+        editEndpoint: '编辑端点',
+        epName: '名称',
+        epApi: '接口类型',
+        epBase: 'Base URL',
+        epKey: 'API Key',
+        epKeyHint: '保存在 Harness 凭据库里，之后不再显示。不需要 key 的本地服务随便填点文字即可。',
+        epKeyKeep: '留空则保留已保存的 key',
+        epModels: '模型',
+        epModelsHint: '每行一个模型 id；也可以从端点获取列表后勾选。',
+        fetchModels: '获取模型列表',
+        fetching: '获取中…',
+        fetchedN: '找到 {n} 个模型',
+        epSaved: '端点已保存',
+        epRemoved: '端点已删除',
+        epRemoveConfirm: '确定删除？用它的 Bot 会改回默认模型。',
+        nModels: '{n} 个模型',
+        keySet: '已存 key',
+        keyMissing: '没有 key',
+        logins: '本机其他 Agent 的登录',
+        loginsHint: '这台 Mac 上其他 Agent 已经登录的订阅。',
+        loginNotFound: '本机没有登录。',
+        loginConnected: '使用中 · 与 {name} 保持同步',
+        loginHint_codex: '通过 Codex CLI 的登录使用你的 ChatGPT 订阅。无论哪一边刷新了登录，另一边都会拿到新令牌（会原地更新 ~/.codex/auth.json），两边不会互相踢下线。',
+        loginReason_terms: '不提供：Anthropic 只允许在 Claude Code 和 claude.ai 里使用 Claude 订阅。可以用 API Key 把 Claude 添加为自定义端点。',
+        loginReason_harness: '当前 Harness 还不能使用它。',
+        loginReason_signin: '请改在 Harness 设置 → 模型里登录。',
+        useLogin: '使用',
+        loginReady: '{name} 已就绪：在 Bot 资料页里选它的模型',
+        disconnect: '停用',
       },
     };
 

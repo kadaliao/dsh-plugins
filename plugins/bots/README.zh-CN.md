@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-把 Grok bot 搬进 DeepSeek Harness：一支能互相协作的 bot 团队。每个 bot 有自己的**头像、人设、技能、能力、应用和定时任务**，
+把 Grok bot 搬进 DeepSeek Harness：一支能互相协作的 bot 团队。每个 bot 有自己的**头像、人设、模型、技能、能力、应用、定时任务和记忆**，
 也有自己的会话；bot 之间**私信协作**，其中一个是**调度员**，负责拆解任务、分派、跟进、汇报。
 
 它适合两种场景：
@@ -83,6 +83,56 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
 - **AI 头像**：装了 [图片插件](../images) 就能按 bot 的人设生成头像。
 - **图标**：应用库里每个应用都用它自己的官方 logo（有 App 的用 App Store 图标，没有的用官网或官方仓库里的 logo）。
   这些 logo 是各自所有者的商标，只用来标明是哪个服务。
+
+## 每个 bot 用自己的模型
+
+在 bot 的 **资料 → 模型** 里选它的会话用哪个模型：按提供方分组，模型支持思考强度时还能选强度。
+除了 Harness 里已有的模型，**模型来源** 还能添加：
+
+- **自定义端点**：任意 OpenAI 兼容（Chat Completions 或 Responses）、Anthropic 兼容或 Gemini 的 Base URL，
+  加上 Key 和模型 id（也可以点 **获取模型列表** 从端点勾选）。它会成为 Harness 的提供方 `bots-<名称>`，
+  Key 存进 Harness 凭据库，所以在 设置 → 模型 和所有会话里也能用。
+- **本机其他 Agent 已有的登录**：Codex CLI 的 ChatGPT 登录（`~/.codex/auth.json`）会成为 Harness 的
+  `openai-codex` 提供方。OpenAI 每次刷新登录都会换新令牌，所以两份登录会双向同步：无论哪一边刷新，
+  另一边都会拿到新令牌，谁也不会把谁踢下线。Claude Code 的登录会显示出来但不提供：Anthropic 只允许
+  在 Claude Code 和 claude.ai 里使用 Claude 订阅，请改用 API Key 添加 Claude。
+
+## 话题：对话不会无限变长
+
+bot 的会话就是一个**话题**。新话题是一段全新的会话（旧会话归档，bot 的定时任务一起搬过去），
+bot 知道的事靠记忆延续。下面几种情况会开新话题：
+
+- 在面板或聊天应用里发送 `/new`（也可以是 `/clear`、`/新话题`），后面跟的文字会发到新话题里；
+  或者点输入框下方的 **新话题**；
+- 在下一个任务开始前自动开：闲置超过 **6 小时**，或对话的提示已经达到 **128K tokens**（可在设置里调，
+  0 表示关闭）。如果队友的回复可能还在路上，即使对话很长也不会被切断。
+
+对话接近模型上限时，Harness 自己仍会压缩；话题在那之前很久就让每次调用保持小而便宜。
+
+## 记忆
+
+每个 bot 都有跨话题保留的**笔记**，团队还有一份所有 bot 都会读的共享笔记：
+
+- **每个任务结束后**，一次简短的模型调用会在 bot 的**工作日志**里写一行（要做什么、结果如何），
+  并增补、更正或删除笔记：偏好、人物、决定、做法、教训。所有 bot 都该知道的事写进团队笔记。
+- **bot 自己**也会记：你让它记住什么时它用 `memory_save` 保存，用 `memory_forget` 删除，
+  用 `memory_search` 查笔记、团队工作日志和每日摘要。
+- **每天夜里**（默认 03:00）**整理**一次：结合最近的工作日志，合并、更正、精简每个 bot 的笔记和共享笔记，
+  并把当天的工作写成团队的**每日摘要**。**立即整理** 可以马上运行。
+- 话题开始时，bot 会读到自己的笔记、团队笔记、最近几条工作日志和最新的每日摘要；你在面板里改了记忆、
+  或每晚整理之后，下一个任务会重新读一次。同一个话题里，提示词中的记忆部分保持不变，模型对整段对话的
+  提示缓存照常命中（话题里学到的东西本来就在这段对话里）。很短的往来（一句确认、给队友的一行回复）只记一行
+  工作日志，不调用模型。
+- bot 的 **记忆** 标签页和侧栏的 **团队记忆** 能看到全部内容，可以添加、修改、置顶或删除笔记。
+  置顶的笔记不会被自动整理改动；看起来像 Key 或 Token 的内容一律不存。
+- 记忆工作默认使用各 bot 自己的模型，也可以在设置里指定一个更便宜的。
+
+## 用量
+
+侧栏的 **用量** 统计 bot 的每一次模型调用（它们的对话、记忆工作，以及 Harness 压缩它们的上下文），
+可按 bot、任务、模型、用途、定时任务和日期（今天按小时）查看，并和上一期对比。一个**任务**是 bot
+从收到一个请求（来自你、聊天应用、定时任务或其他 bot）到重新空闲为止做的所有事。费用是估算：
+用你填的价格，或 LiteLLM 公开价格表（**价格**）；没有价格的模型只显示 tokens。
 
 ## 在飞书、Telegram、Slack 或 Discord 里给团队发消息
 
@@ -198,7 +248,11 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 - 该会话运行时，bot 的人设和团队名单加入系统提示词；它自己的技能、能力限制和应用只作用于这个会话。
   修改即时生效；新增或修改应用在下次会话启动时连接。
 - `bot_send_message` 把消息放进对方的收件箱并唤醒它；同一对 bot 10 分钟内最多互发 16 条，防止无限对话。
-- 所有会话都能用 `bot_list`、`bot_create`、`bot_update`、`bot_delete`、`bot_send_message`、`bot_schedule` 管理 bot。
+- 所有会话都能用 `bot_list`、`bot_create`、`bot_update`、`bot_delete`、`bot_send_message`、`bot_schedule` 管理 bot，
+  以及 `memory_save`、`memory_forget`、`memory_search`。
+- bot 的记忆是它系统提示词里的一段，在话题开始时读取（面板里改了记忆或每晚整理后，在下一个任务开始时重读），任务进行中不会变。bot 的 Agent 空闲时任务结束；记忆总结读的是这个任务的过程
+  （提示、回复、工具调用和简短的工具结果）。用量来自 bot 会话的 `assistant/message` 和 `compaction/summary` 事件，
+  再加上插件自己的记忆调用。
 - 聊天应用不是 MCP 服务：Host 为每个聊天应用保持一个连接（Telegram 用长轮询，Discord 用 Gateway，Slack 用 Socket Mode，飞书用长连接），
   随你添加、修改、关闭或删除应用而启动和停止，并把配对者的消息作为用户提示交给 bot，开头标着 `[Telegram · 名字]`。
 
@@ -210,8 +264,12 @@ Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网�
 ## 存储与外发
 
 - `~/.dsh/cache/bots/`（`bots.json` 和 `channels.json` 只有你自己的账户能读）：`bots.json`（bot，含应用里填的 Key 和聊天 Bot Token）、`messages.jsonl`（时间线）、
-  `channels.json`（每个聊天应用的配对者，以及每个聊天处理过的最后一条消息）、`avatars/`、`skills/`（从 GitHub 导入的技能）。
-- 除了 bot 自身会话（你配置的模型）、你连接的应用、生成头像时的图片模型、导入技能时访问 GitHub，
+  `channels.json`（每个聊天应用的配对者，以及每个聊天处理过的最后一条消息）、`avatars/`、`skills/`（从 GitHub 导入的技能）、
+  `memory/`（笔记、工作日志、每日摘要）、`usage.jsonl` 和 `tasks.jsonl`（每次调用和每个任务的 tokens，保留 400 天）、
+  `topics.json`、`settings.json`、`price-catalog.json`。
+- 自定义端点和借用的 Codex 登录写在 Harness 自己的模型设置（`llm-pi-ai`）和凭据库里。使用 Codex 登录时，
+  Harness 刷新得到的令牌会写回 `~/.codex/auth.json`。
+- 除了 bot 自身会话（你配置的模型）、记忆整理（把任务过程和 bot 的笔记发给 bot 的模型或记忆模型）、LiteLLM 价格表（每周从 GitHub 下载一次）、你连接的应用、生成头像时的图片模型、导入技能时访问 GitHub，
   以及连接聊天应用后访问飞书 / Lark、Telegram、Slack、Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示），不向外发送任何内容。
 
 ## 安装
@@ -237,4 +295,6 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/bots
 
 - 仅 Web 界面。
 - 暂无 bot 群聊，bot 之间通过私信协作。
+- 费用是估算，网关、订阅和折扣的实际计费会不同；可以填自己的价格。
+- 目前只能借用 Codex CLI 的登录；其他订阅请在 Harness 支持的情况下，到 设置 → 模型 里登录。
 - 团队模板引用的 Harness 技能，你没装的会被跳过；可以之后再从 GitHub 导入或让 bot 自己写。

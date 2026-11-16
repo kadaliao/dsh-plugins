@@ -227,3 +227,83 @@ export function createConnector({ token, onMessage, onStatus?, fetchImpl?, WebSo
 ```
 Telegram reads `BOTS_TELEGRAM_API` (default https://api.telegram.org) so a local stand-in of the Bot API can be
 used for testing.
+
+## v0.7 — models, topics, memory, usage
+
+### Models
+`Bot.model = { provider, model, reasoningEffort? } | null` — `reasoningEffort` is one of the model's efforts.
+`catalog.models[] += { group /* provider display name */, name, source?: 'custom'|'login', efforts?: {id, name}[], defaultEffort?, context? /* tokens */ }`,
+`catalog.defaultModel = { provider, model } | null` (the Harness default).
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| GET | `models/sources` | – | `{ custom: Endpoint[], logins: Login[], apis: string[], writable }` |
+| POST | `models/custom/test` | `{ api, baseURL, key?, route? }` (no key + route = the stored key) | `{ ok, models: {id, name?}[] }` |
+| POST | `models/custom/save` | `{ route?, name, api, baseURL, key?, models: (string \| {id, contextWindow?})[] }` | `{ ok, route }` |
+| POST | `models/custom/delete` | `{ route }` | `{ ok }` (bots on it go back to `model: null`) |
+| POST | `models/login/connect` | `{ id: 'codex' }` | `{ ok, route: 'openai-codex' }` |
+| POST | `models/login/disconnect` | `{ id: 'codex' }` | `{ ok }` |
+
+```ts
+Endpoint = { route /* 'bots-<slug>' */, name, api: 'openai-completions'|'openai-responses'|'anthropic-messages'|'google-generative-ai', baseURL, models: {id, name?, contextWindow?}[], keyConfigured: boolean }
+Login = { id: 'codex'|'claude-code'|'gemini-cli'|'copilot', name, product, found, supported, account?, plan?, connected?, sync?, reason?: 'terms'|'harness'|'signin' }
+```
+An endpoint is a route in Harness's `llm-pi-ai` settings (`providers.<route>`, `apiKeyEnv: BOTS_<SLUG>_API_KEY`),
+its key set through the credential store. The Codex login is the grant record `llm-pi-ai/openai-codex`
+(`{type:'oauth', access, refresh, expires, accountId}`) plus a `providers.openai-codex` route; while in use it is
+compared with `~/.codex/auth.json` every 5 minutes and on every `credentials/record-updated`, and the side holding
+the older refresh token takes the other's tokens.
+
+### Topics
+`state.bots[].topic = { startedAt, lastActiveAt, tasks, context /* prompt tokens of the last call */ } | null`.
+Message `kind: 'topic'` (`from: 'system'`, `text`: `'manual'|'idle'|'context'`) marks a new topic in the timeline.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| POST | `topic/new` | `{ id }` | `{ ok, sessionId }` (refused while the bot runs) |
+
+`send` with `/new`, `/clear`, `/reset`, `/新话题` or `/新对话` first starts a new topic; text after the command goes
+there. The same commands work from chat apps. A new topic = a new session for the bot; its schedules are
+retargeted (`schedule.edit` patch `target`) before the old session is archived.
+
+### Memory
+```ts
+Note = { id /* 'n-…' bot, 't-…' team */, text, kind: 'fact'|'preference'|'person'|'project'|'procedure'|'lesson', pinned?, source: 'auto'|'tool'|'user'|'dream', at, updated }
+Journal = { id, at, bot, task, trigger, title, summary }
+Digest = { date /* YYYY-MM-DD local */, text /* Markdown */, at }
+```
+| Method | Path | Body / query | Answer |
+|---|---|---|---|
+| GET | `memory` | `?bot=<id>` | `{ scope, notes, journal /* newest first */, topic, topics /* past, newest first */, model, settings, tz }` |
+| GET | `memory` | `?bot=team` | `{ scope: 'team', notes, digests, journal, dream: {lastDate, lastAt, result}, settings, tz }` |
+| POST | `memory/put` | `{ scope: botId \| 'team', note: {id?, text?, kind?, pinned?} }` | `{ ok, note }` (no id = add) |
+| POST | `memory/delete` | `{ scope, id }` | `{ ok }` |
+| POST | `memory/dream` | `{}` | `{ ok, result: {bots: {bot, added, updated, removed}[], digest, team?, errors} }` |
+
+`state.bots[].memoryNotes`, `state.teamNotes`: counts. Tools: `memory_save {text, scope?, kind?, replace_id?}`,
+`memory_forget {id, scope?}`, `memory_search {query}`.
+
+### Usage
+| Method | Path | Body / query | Answer |
+|---|---|---|---|
+| GET | `usage` | `?range=today\|7d\|30d\|90d\|all&bot=<id>&tz=<minutes east of UTC>` | `Report` |
+| GET | `prices` | – | `{ overrides, list: {name, count, fetchedAt, loading, error}, models: {model, provider, price}[] }` |
+| POST | `prices` | `{ model, price: {input, output, cacheRead?, cacheWrite?, currency: 'USD'\|'CNY'} \| null }` | `{ ok, …prices }` |
+| POST | `prices/refresh` | `{}` | `{ ok, …prices }` |
+
+```ts
+Cost = { [currency]: number }
+Totals = { tokens, input, output, cacheRead, cacheWrite, calls, cost: Cost, unpriced /* tokens */ }
+Report = { range: {name, from, to, bucket /* ms */}, totals: Totals & {tasks, cacheRate}, prev: Totals & {tasks},
+  series: {t, tokens, byBot: {[botId]: tokens}, cost}[], bots: ({bot, tasks} & Totals)[], models: ({provider, model, priced, priceSource} & Totals)[],
+  kinds: ({kind: 'chat'|'compaction'|'memory'|'dream'} & Totals)[], schedules: {id, title, bot, runs, tokens, cost}[],
+  tasks: TaskView[] /* running first, then newest */, topTasks: TaskView[], priceList }
+TaskView = { id, bot, trigger: 'user'|'chat'|'schedule'|'dm', via?, from?, sched?, title, start, end, status: 'running'|'done'|'error'|'stopped', tokens, calls, cost }
+```
+`state.bots[].usageToday`: tokens today.
+
+### Settings
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| GET | `settings` | – | `{ settings }` |
+| POST | `settings` | `{ patch: {topics?: {idleHours, maxContextK}, memory?: {auto, model, dream, dreamTime}} }` | `{ ok, settings }` |

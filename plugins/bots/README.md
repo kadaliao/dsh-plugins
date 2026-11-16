@@ -3,7 +3,7 @@
 English | [简体中文](README.zh-CN.md)
 
 Grok-style bots inside DeepSeek Harness: a team of bots that work together. Each bot has its own **avatar,
-persona, skills, abilities, apps and scheduled tasks**, and its own conversation. Bots **message each
+persona, model, skills, abilities, apps, scheduled tasks and memory**, and its own conversation. Bots **message each
 other**, and one of them, the **dispatcher**, splits the work, hands it out, follows up and reports back.
 
 It is built for two situations:
@@ -99,6 +99,65 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
 - **Logos**: each app in the gallery shows its vendor's own logo (the App Store icon where there is an app,
   otherwise the logo from the vendor's site or repository). The logos are their owners' trademarks and
   only identify each service.
+
+## Each bot on its own model
+
+A bot's **Profile → Model** picks the model its conversation runs on, grouped by provider, with the
+model's thinking levels when it has them. Besides the models Harness already has, **Model sources** adds:
+
+- **Your own endpoint**: any OpenAI-compatible (Chat Completions or Responses), Anthropic-compatible or
+  Gemini base URL, a key and model ids (or **Fetch models** to tick them from the endpoint's list). It
+  becomes a Harness provider `bots-<name>`, its key in the Harness credential store, so it also shows up in
+  Settings → Models and in every conversation.
+- **A login another agent on this computer already has**: the Codex CLI's ChatGPT login
+  (`~/.codex/auth.json`) becomes Harness's `openai-codex` provider. OpenAI rotates the login on every
+  refresh, so the two copies are kept in sync both ways — whichever side refreshes, the other gets the new
+  tokens, and neither signs the other out. Claude Code's login is shown but not offered: Anthropic allows a
+  Claude subscription only in Claude Code and claude.ai, so add Claude with an API key instead.
+
+## Topics: conversations that don't grow forever
+
+A bot's conversation is a **topic**. A new topic is a fresh conversation (the old one is archived, the
+bot's scheduled tasks move along); what the bot knows carries over in its memory. A new topic starts:
+
+- when you send `/new` (or `/clear`, `/新话题`) in the panel or from a chat app — text after it goes to the
+  new topic — or click **New topic** under the composer;
+- by itself before the next task, after **6 hours** of quiet, or once the conversation's prompt reached
+  **128K tokens** (Settings; 0 turns either off). A big conversation is never cut while a teammate's
+  answer may still be coming.
+
+Harness still compacts a conversation that nears the model's limit; topics keep every call small and cheap
+long before that.
+
+## Memory
+
+Every bot keeps **notes** that outlast its topics, and the team shares one more list every bot reads:
+
+- **After every task** a short model call writes one line to the bot's **journal** (what was asked, what
+  came of it) and adds, corrects or removes notes — preferences, people, decisions, procedures, lessons.
+  Facts every bot should know go to the team notes.
+- **The bot itself** saves notes with `memory_save` when you tell it to remember something, removes them
+  with `memory_forget`, and looks through notes, the team journal and digests with `memory_search`.
+- **Every night** (03:00 by default) memory is **consolidated**: each bot's notes are merged, corrected
+  and trimmed with its recent journal, the shared notes too, and the day's work is written up as the
+  team's **daily digest**. **Consolidate now** runs it at once.
+- A bot reads its notes, the team notes, its last few journal lines and the latest digest when a topic
+  starts, and again at the next task after you edit memory or the nightly consolidation ran. Within a
+  topic the memory part of its prompt stays the same, so the model's prompt cache over the conversation
+  keeps working (what it learns in a topic is in that conversation anyway). A short exchange — an
+  acknowledgement, a one-line answer to a teammate — gets a journal line without a model call.
+- The **Memory** tab of a bot and **Team memory** in the sidebar show everything; add, edit, pin or
+  delete notes there. Pinned notes are never changed by the automatic passes. Text that looks like a key
+  or token is never stored.
+- Memory work runs on each bot's own model unless Settings names a cheaper one.
+
+## Usage
+
+**Usage** in the sidebar counts every model call the bots make — their conversations, the memory work and
+Harness compacting their context — by bot, task, model, kind of work, scheduled task and day (or hour,
+for today), with the change from the period before. A **task** is everything a bot does from one request
+(you, a chat app, a schedule or another bot) until it is idle again. Costs are estimates from your own
+prices or LiteLLM's public price list (**Prices**); a model with no price shows its tokens only.
 
 ## Message your team from Feishu, Telegram, Slack or Discord
 
@@ -234,7 +293,12 @@ one connection. If you change scopes later, reinstall the app to the workspace a
 - `bot_send_message` puts the text into the other bot's inbox and wakes it. Two bots may exchange at
   most 16 messages in 10 minutes, so conversations end.
 - Every conversation gets `bot_list`, `bot_create`, `bot_update`, `bot_delete`, `bot_send_message`
-  and `bot_schedule` to manage bots.
+  and `bot_schedule` to manage bots, and `memory_save`, `memory_forget` and `memory_search`.
+- A bot's memory is a section of its system prompt, read when a topic starts (and at the next task after
+  a memory edit in the panel or the nightly consolidation), never in the middle of a task. A task ends when the bot's
+  Agent is idle; its transcript (prompts, replies, tool calls, short tool results) is what the memory pass
+  reads. Usage comes from the `assistant/message` and `compaction/summary` events of the bots'
+  conversations, plus the plugin's own memory calls.
 - A chat app is not an MCP server: the Host keeps one connection per chat app (long polling for Telegram,
   the gateway for Discord, Socket Mode for Slack, the long connection for Feishu), starts and stops it as you add, change, switch off or remove the
   app, and hands paired people's messages to the bot as user prompts headed `[Telegram · Name]`.
@@ -250,9 +314,15 @@ permission and restart it.
 - `~/.dsh/cache/bots/` (`bots.json` and `channels.json` are readable by your user only): `bots.json` (bots,
   including keys and chat bot tokens entered for apps),
   `messages.jsonl` (timeline), `channels.json` (paired people per chat app, and the last message handled
-  per chat), `avatars/`, `skills/` (skills imported from GitHub).
+  per chat), `avatars/`, `skills/` (skills imported from GitHub), `memory/` (notes, journal, digests),
+  `usage.jsonl` and `tasks.jsonl` (token counts per call and task, kept 400 days), `topics.json`,
+  `settings.json`, `price-catalog.json`.
+- Custom endpoints and a borrowed Codex login are written to Harness's own model settings (`llm-pi-ai`) and
+  credential store. With the Codex login in use, tokens Harness refreshes are written back to
+  `~/.codex/auth.json`.
 - Nothing leaves your machine except through the bots' own conversations (your configured model), the
-  apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
+  memory passes (a task's transcript and the bot's notes, to the bot's model or the memory model), the
+  LiteLLM price list (downloaded from GitHub weekly), the apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
   Feishu / Lark, Telegram, Slack or Discord API when you connect a chat app (the bots' replies to paired
   people, typing indicators, and the one-line note to strangers).
 
@@ -279,5 +349,8 @@ Refresh the page once after installing. For AI avatars, install [Images](../imag
 
 - Web UI only.
 - Group chats between bots are not there yet; bots collaborate through direct messages.
+- Costs are estimates. Gateways, subscriptions and discounts bill differently; set your own prices.
+- Only the Codex CLI's login can be borrowed so far; other subscriptions sign in from Harness Settings →
+  Models where Harness supports them.
 - Harness skills a team template names that you don't have are skipped; import them from GitHub or have
   the bot write them later.

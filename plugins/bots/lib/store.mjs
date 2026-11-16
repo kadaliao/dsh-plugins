@@ -196,7 +196,10 @@ export function normalizeBot(input, prev, seed = 0) {
   const skills = capSkillsOn(dedupeSkills((Array.isArray(b.skills) ? b.skills : []).map(normalizeSkill).filter(Boolean)).slice(0, MAX_SKILLS), prev?.skills);
   const apps = (Array.isArray(b.apps) ? b.apps : []).map(normalizeApp).filter(Boolean).slice(0, 20);
   const deny = Array.isArray(b.tools?.deny) ? [...new Set(b.tools.deny.map(String).filter(Boolean))].slice(0, 200) : [];
-  const model = b.model && typeof b.model === 'object' && str(b.model.provider) && str(b.model.model) ? { provider: str(b.model.provider, 200), model: str(b.model.model, 200) } : null;
+  const model =
+    b.model && typeof b.model === 'object' && str(b.model.provider) && str(b.model.model)
+      ? { provider: str(b.model.provider, 200), model: str(b.model.model, 200), ...(/^[a-z0-9_-]{1,32}$/.test(str(b.model.reasoningEffort)) ? { reasoningEffort: b.model.reasoningEffort } : {}) }
+      : null;
   return {
     id: prev?.id ?? (str(b.id, 40) || newId('bot', now)),
     name,

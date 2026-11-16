@@ -263,6 +263,23 @@ export function welcomeText(bot, roster, { paired = false } = {}) {
 }
 export const PRIVATE_TEXT = 'This bot is private. / 这是私人 Bot，不对外开放。';
 
+/**
+ * A "start a new topic" command at the start of a message: `/new`, `/clear`,
+ * `/reset` (with an optional `@botname` suffix) or `/新话题`. Returns the rest of
+ * the message, or null when it is no such command.
+ */
+export function topicCommand(text) {
+  const m = /^\/(new|clear|reset|新话题|新对话)(@\S+)?(?=$|\s)\s*/i.exec(String(text ?? '').trim());
+  return m ? { rest: String(text).trim().slice(m[0].length).trim() } : null;
+}
+
+/** What a chat app hears when a new topic started. */
+export function newTopicText(bot) {
+  return zhBot(bot)
+    ? `已开始新话题：${bot.name} 的对话从头开始，它记得的事都还在。`
+    : `New topic: ${bot.name} starts a fresh conversation and keeps what it remembers.`;
+}
+
 // --- hint for the panel ----------------------------------------------------------------
 
 /** A short code the panel words in its own language, from a connector's error text. */
@@ -639,6 +656,21 @@ export function createChannels(deps) {
     }
     const routed = routeMessage(text, owner, deps.bots());
     if (!routed.text) return;
+    // `/new` starts the bot's next topic; text after it goes to the new one.
+    const cmd = typeof deps.newTopic === 'function' ? topicCommand(routed.text) : null;
+    if (cmd) {
+      try {
+        await deps.newTopic(routed.bot);
+      } catch (error) {
+        await reply(rec, chatId, redact(error?.message ?? error, rec.secrets).slice(0, 200));
+        return;
+      }
+      if (!cmd.rest) {
+        await reply(rec, chatId, newTopicText(routed.bot));
+        return;
+      }
+      routed.text = cmd.rest;
+    }
     const header = sourceHeader(rec.kind, msg);
     const origin = {
       key: rec.key,
