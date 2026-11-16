@@ -26,7 +26,7 @@ import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
-import { createStore, initialsOf, slugify, SKILL_RE, PALETTE } from './lib/store.mjs';
+import { createStore, initialsOf, slugify, SKILL_RE, PALETTE, MAX_SKILLS, MAX_SKILLS_ON } from './lib/store.mjs';
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
 import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
@@ -695,6 +695,15 @@ export function apply(ctx, config, deps = {}) {
     items: { type: 'object', additionalProperties: false, properties: { name: { type: 'string', required: true }, description: { type: 'string' }, content: { type: 'string', description: 'Markdown instructions the bot loads when the skill applies.' } } },
   };
   const card = (bot) => `@${bot.handle} — ${bot.name}${bot.role === 'primary' ? ' (dispatcher)' : ''}`;
+  const tooManySkills = (n) => {
+    if (n > MAX_SKILLS) throw new Error(`a bot keeps at most ${MAX_SKILLS} skills (this would make ${n}); remove some first`);
+  };
+  /** The tool-result sentence for skills asked on that the store had to leave off (past MAX_SKILLS_ON). */
+  const offNote = (asked, saved) => {
+    const names = new Set((asked ?? []).map((s) => String(s?.name ?? '').trim().toLowerCase()));
+    const off = saved.skills.filter((s) => !s.enabled && names.has(s.name.toLowerCase())).map((s) => s.name);
+    return off.length ? ` Added switched off, since at most ${MAX_SKILLS_ON} skills can be on at once: ${off.join(', ')}. To use them, remove skills it no longer needs (remove_skills) or ask the user to switch some off in Bots.` : '';
+  };
 
   const tools = [
     defineTool({
@@ -735,6 +744,7 @@ export function apply(ctx, config, deps = {}) {
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ bot: v.bot }) },
       execute: async (args, exec) => {
         const by = callerBot(exec);
+        tooManySkills((args.skills ?? []).length);
         const bot = store.save(
           {
             name: args.name,
@@ -746,7 +756,7 @@ export function apply(ctx, config, deps = {}) {
           },
           { createdBy: by?.id ?? 'user' },
         );
-        return { ok: true, text: `Created ${card(bot)}. Message it with bot_send_message to @${bot.handle}.`, bot: face(bot) };
+        return { ok: true, text: `Created ${card(bot)}. Message it with bot_send_message to @${bot.handle}.${offNote(args.skills, bot)}`, bot: face(bot) };
       },
     }),
     defineTool({
@@ -759,7 +769,7 @@ export function apply(ctx, config, deps = {}) {
         persona: { type: 'string', description: 'Replaces the whole persona.' },
         initials: { type: 'string', description: 'Avatar letters, at most two.' },
         color: { type: 'string', description: 'Avatar background colour, CSS hex.' },
-        add_skills: { ...skillInput, description: 'Skills to add (a skill with the same name is replaced).' },
+        add_skills: { ...skillInput, description: `Skills to add (a skill with the same name is replaced). At most ${MAX_SKILLS_ON} can be on at once; past that they are added switched off.` },
         remove_skills: { type: 'array', items: { type: 'string' }, description: 'Names of skills to remove.' },
         make_dispatcher: { type: 'boolean', description: 'true to make this bot the dispatcher.' },
       },
@@ -772,10 +782,11 @@ export function apply(ctx, config, deps = {}) {
         if (args.add_skills || args.remove_skills) {
           const drop = new Set([...(args.remove_skills ?? []), ...(args.add_skills ?? []).map((s) => s.name)].map((s) => String(s).toLowerCase()));
           next.skills = [...bot.skills.filter((s) => !drop.has(s.name.toLowerCase())), ...(args.add_skills ?? []).map((s) => ({ ...s, enabled: true }))];
+          tooManySkills(next.skills.length);
         }
         if (args.make_dispatcher === true) next.role = 'primary';
         const saved = store.save(next);
-        return { ok: true, text: `Updated ${card(saved)}.`, bot: face(saved) };
+        return { ok: true, text: `Updated ${card(saved)}.${offNote(args.add_skills, saved)}`, bot: face(saved) };
       },
     }),
     defineTool({
@@ -985,7 +996,7 @@ export function apply(ctx, config, deps = {}) {
     });
     const sessionMap = {};
     for (const b of bots) if (b.sessionId) sessionMap[b.sessionId] = b.id;
-    return { bots, primaryId: store.primary()?.id ?? null, sessionMap, messageCount: store.messageCount(), version: store.version() };
+    return { bots, primaryId: store.primary()?.id ?? null, sessionMap, messageCount: store.messageCount(), version: store.version(), limits: { skills: MAX_SKILLS, skillsOn: MAX_SKILLS_ON } };
   }
 
   let ocuInstalling = false;
@@ -1150,6 +1161,7 @@ export function apply(ctx, config, deps = {}) {
           bot: publicBot(saved),
           added: merged.added,
           updated: merged.updated,
+          off: merged.off,
           skipped: merged.skipped,
           failed,
           ...(failed.length && !changed ? { reason: failed[0].reason } : {}),

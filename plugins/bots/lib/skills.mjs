@@ -14,6 +14,7 @@
 import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, normalize, resolve } from 'node:path';
+import { MAX_SKILLS, MAX_SKILLS_ON } from './store.mjs';
 
 /** Skill collections worth browsing, shown as one-click sources. */
 export const SKILL_SOURCES = [
@@ -300,18 +301,21 @@ export const isLocalOrigin = (origin) => typeof origin === 'string' && origin !=
  * Merge freshly imported skills into a bot's list without doubling any:
  * - a new name is added;
  * - the same name from the same origin replaces the old entry in place (an update: id and on/off kept);
- * - the same name from anywhere else is left alone and reported (`exists`), as is one past the limit (`full`).
+ * - the same name from anywhere else is left alone and reported (`exists`), as is one past `limit` skills (`full`);
+ * - a new one past `maxOn` skills on is added switched off and reported (`off`).
  * Names compare case-insensitively.
- * @returns {{skills: object[], added: string[], updated: string[], skipped: {name, reason}[], dropped: object[]}}
+ * @returns {{skills: object[], added: string[], updated: string[], off: string[], skipped: {name, reason}[], dropped: object[]}}
  *   `dropped` are skill objects whose copied folder is no longer used.
  */
-export function mergeImported(current, incoming, { limit = 50 } = {}) {
+export function mergeImported(current, incoming, { limit = MAX_SKILLS, maxOn = MAX_SKILLS_ON } = {}) {
   const skills = [...current];
   const added = [];
   const updated = [];
+  const off = [];
   const skipped = [];
   const dropped = [];
   const key = (s) => String(s.name).trim().toLowerCase();
+  let on = skills.filter((s) => s.enabled !== false).length;
   for (const item of incoming) {
     const at = skills.findIndex((s) => key(s) === key(item));
     if (at < 0) {
@@ -320,7 +324,13 @@ export function mergeImported(current, incoming, { limit = 50 } = {}) {
         dropped.push(item);
         continue;
       }
-      skills.push(item);
+      if (item.enabled !== false && on >= maxOn) {
+        skills.push({ ...item, enabled: false });
+        off.push(item.name);
+      } else {
+        skills.push(item);
+        if (item.enabled !== false) on += 1;
+      }
       added.push(item.name);
       continue;
     }
@@ -335,5 +345,5 @@ export function mergeImported(current, incoming, { limit = 50 } = {}) {
       dropped.push(item);
     }
   }
-  return { skills, added, updated, skipped, dropped };
+  return { skills, added, updated, off, skipped, dropped };
 }

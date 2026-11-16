@@ -2311,6 +2311,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     }
 
     const skillSource = (s) => (s?.source === 'dsh' || s?.source === 'import' ? s.source : 'own');
+    /** How many skills a bot keeps, and how many of them may be on at once (from the host; lib/store.mjs). */
+    const skillLimits = () => ({ max: Number(store.state?.limits?.skills) || 200, on: Number(store.state?.limits?.skillsOn) || 50 });
+    const onCount = (skills) => skills.filter((s) => s.enabled !== false).length;
     /** A skill linked to a folder on this machine (its origin is a path, not a URL): read live, never copied. */
     const isLocalSkill = (s) => s?.source === 'import' && typeof s.origin === 'string' && s.origin !== '' && !/^https?:\/\//i.test(s.origin);
     const SOURCE_COLOR = { dsh: '#2563eb', import: '#475569', own: '#16a34a' };
@@ -2332,7 +2335,18 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     /** One line for what an import did: added, updated, skipped. */
     function importSummary(t, r) {
       const n = (k) => (Array.isArray(r?.[k]) ? r[k].length : 0);
-      return [n('added') ? t('importedN', { n: n('added') }) : '', n('updated') ? t('updatedN', { n: n('updated') }) : '', n('skipped') ? t('skippedN', { n: n('skipped') }) : ''].filter(Boolean).join(' ');
+      const skipped = Array.isArray(r?.skipped) ? r.skipped : [];
+      const full = skipped.filter((x) => x?.reason === 'full').length;
+      const lim = skillLimits();
+      return [
+        n('added') ? t('importedN', { n: n('added') }) : '',
+        n('off') ? t('offN', { n: n('off'), max: lim.on }) : '',
+        n('updated') ? t('updatedN', { n: n('updated') }) : '',
+        skipped.length - full ? t('skippedN', { n: skipped.length - full }) : '',
+        full ? t('fullN', { n: full, max: lim.max }) : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
     }
     /** Run an import and report it; resolves to the rows that failed, or null when nothing came back. */
     function runImport(t, toast, botId, items) {
@@ -2790,14 +2804,30 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           toast(t('skillNameTaken', { name: s.name.trim() }), 'error');
           return;
         }
-        const item = { ...(prev ?? {}), id: s.id || rid('skill'), name: s.name.trim(), source: prev ? skillSource(prev) : 'own', description: s.description.trim(), content: s.content, enabled: s.enabled !== false };
+        const lim = skillLimits();
+        if (!prev && skills.length >= lim.max) {
+          toast(t('skillsFull', { max: lim.max }), 'error');
+          return;
+        }
+        // A new skill past the limit of skills on is kept, switched off.
+        const off = !prev && s.enabled !== false && onCount(skills) >= lim.on;
+        const item = { ...(prev ?? {}), id: s.id || rid('skill'), name: s.name.trim(), source: prev ? skillSource(prev) : 'own', description: s.description.trim(), content: s.content, enabled: s.enabled !== false && !off };
         const next = s.id ? skills.map((x) => (x.id === s.id ? item : x)) : [...skills, item];
-        void commit(next, t('skillSaved')).then((ok) => ok && setEditing(null));
+        void commit(next, off ? `${t('skillSaved')} ${t('offN', { n: 1, max: lim.on })}` : t('skillSaved')).then((ok) => ok && setEditing(null));
       };
       const addHarness = (list) => {
         const have = new Set(skills.map((x) => str(x.name).toLowerCase()));
-        const add = list.filter((x) => !have.has(str(x.name).toLowerCase())).map((x) => ({ name: x.name, source: 'dsh', enabled: true, description: str(x.description) }));
-        void commit([...skills, ...add], t('addedN', { n: add.length })).then((ok) => ok && setPicker(null));
+        const lim = skillLimits();
+        const fresh = list.filter((x) => !have.has(str(x.name).toLowerCase()));
+        if (skills.length + fresh.length > lim.max) {
+          toast(t('skillsRoom', { max: lim.max, n: Math.max(0, lim.max - skills.length) }), 'error');
+          return;
+        }
+        // Past the limit of skills on, the rest come in switched off.
+        const room = Math.max(0, lim.on - onCount(skills));
+        const add = fresh.map((x, i) => ({ name: x.name, source: 'dsh', enabled: i < room, description: str(x.description) }));
+        const off = add.length - Math.min(room, add.length);
+        void commit([...skills, ...add], off ? `${t('addedN', { n: add.length })} ${t('offN', { n: off, max: lim.on })}` : t('addedN', { n: add.length })).then((ok) => ok && setPicker(null));
       };
       const counts = { dsh: 0, import: 0, local: 0, own: 0 };
       for (const s of skills) counts[isLocalSkill(s) ? 'local' : skillSource(s)] += 1;
@@ -2822,7 +2852,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             {
               title: t('botSkills', { n: skills.length }),
               hint: t('skillsHint2', { name: bot.name }),
-              right: skills.length ? h('span', { style: { fontSize: TINY, color: C.faint } }, t('skillMix', counts)) : null,
+              right: skills.length
+                ? h(
+                    'span',
+                    { style: { fontSize: TINY, color: C.faint } },
+                    `${t('skillMix', counts)} · `,
+                    h('span', { 'data-dsh-bots-skills-on': onCount(skills), style: onCount(skills) >= skillLimits().on ? { color: C.warn, fontWeight: 600 } : null }, t('skillsOnOf', { n: onCount(skills), max: skillLimits().on })),
+                  )
+                : null,
             },
             editing ? h(SkillEditor, { t, skill: editing, onChange: setEditing, onCancel: () => setEditing(null), onSave: saveSkill, busy }) : null,
             skills.length === 0 && !editing
@@ -2840,7 +2877,15 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         { style: { display: 'flex', alignItems: 'center', gap: 8 } },
                         h('span', { className: 'dshb-mono', style: { fontWeight: 650, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: s.name }, s.name),
                         h(SourceBadge, { t, source: src, local: isLocalSkill(s) }),
-                        h(Switch, { on: s.enabled !== false, disabled: busy, title: s.enabled !== false ? t('disable') : t('enable'), onChange: (on) => void commit(skills.map((x) => (x === s ? { ...x, enabled: on } : x))) }),
+                        h(Switch, {
+                          on: s.enabled !== false,
+                          disabled: busy,
+                          title: s.enabled !== false ? t('disable') : t('enable'),
+                          onChange: (on) => {
+                            if (on && onCount(skills) >= skillLimits().on) return void toast(t('tooManyOn', { max: skillLimits().on }), 'error');
+                            void commit(skills.map((x) => (x === s ? { ...x, enabled: on } : x)));
+                          },
+                        }),
                       ),
                       h('div', { className: 'dshb-clamp2', style: { fontSize: SMALL, color: C.muted, minHeight: 37, lineHeight: 1.5 }, title: s.description }, s.description || h('i', { style: { color: C.faint } }, t('noDescription'))),
                       h(
@@ -5274,6 +5319,12 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         importedN: "Imported {n} skills.",
         updatedN: "Updated {n}.",
         skippedN: "Skipped {n}: a skill of that name is already here.",
+        fullN: "Skipped {n}: a bot keeps at most {max} skills.",
+        offN: "{n} came in switched off: at most {max} skills can be on at once.",
+        tooManyOn: "At most {max} skills can be on at once. Switch one off first.",
+        skillsFull: "A bot keeps at most {max} skills. Remove one first.",
+        skillsRoom: "A bot keeps at most {max} skills; there is room for {n} more.",
+        skillsOnOf: "{n}/{max} on",
         nameTaken: "Name already used",
         reimport: "Imported · import again to update",
         skillNameTaken: "This bot already has a skill named “{name}”.",
@@ -5790,6 +5841,12 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         importedN: "已导入 {n} 个技能。",
         updatedN: "已更新 {n} 个。",
         skippedN: "跳过 {n} 个：已有同名技能。",
+        fullN: "跳过 {n} 个：一个 Bot 最多放 {max} 个技能。",
+        offN: "其中 {n} 个先关着：最多同时开 {max} 个技能。",
+        tooManyOn: "最多同时开 {max} 个技能，先关掉一个。",
+        skillsFull: "一个 Bot 最多放 {max} 个技能，先删掉一个。",
+        skillsRoom: "一个 Bot 最多放 {max} 个技能，还能加 {n} 个。",
+        skillsOnOf: "开着 {n}/{max}",
         nameTaken: "已有同名技能",
         reimport: "已导入 · 再次导入可更新",
         skillNameTaken: "这个 Bot 已经有名为“{name}”的技能。",

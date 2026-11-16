@@ -20,7 +20,12 @@ export const HANDLE_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 export const SERVER_RE = /^[A-Za-z0-9_-]{1,32}$/;
 export const SKILL_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-export const PALETTE = ['#7c5cff', '#2f80ed', '#00a3a3', '#27ae60', '#f2994a', '#eb5757', '#d6409f', '#9b51e0', '#56ccf2', '#828282'];
+/** Skills one bot may have on at once: each one on is in its prompt and its skill catalog every turn. */
+export const MAX_SKILLS_ON = 50;
+/** Skills one bot may keep, on or off: a bound on what bots.json holds. */
+export const MAX_SKILLS = 200;
+
+export const PALETTE =['#7c5cff', '#2f80ed', '#00a3a3', '#27ae60', '#f2994a', '#eb5757', '#d6409f', '#9b51e0', '#56ccf2', '#828282'];
 
 /** A short, sortable, unique id. */
 export function newId(prefix, now = Date.now()) {
@@ -138,6 +143,18 @@ function dedupeSkills(list) {
   });
 }
 
+/**
+ * Keep at most `max` skills on. The ones that were on in `prev` stay on first, then the
+ * rest in list order; past that they are switched off, never dropped.
+ */
+export function capSkillsOn(list, prev = [], max = MAX_SKILLS_ON) {
+  const on = list.filter((s) => s.enabled);
+  if (on.length <= max) return list;
+  const wasOn = new Set(prev.filter((s) => s.enabled).map((s) => s.id));
+  const keep = new Set([...on.filter((s) => wasOn.has(s.id)), ...on.filter((s) => !wasOn.has(s.id))].slice(0, max));
+  return list.map((s) => (s.enabled && !keep.has(s) ? { ...s, enabled: false } : s));
+}
+
 const kv = (o) => {
   const out = {};
   if (o && typeof o === 'object' && !Array.isArray(o)) {
@@ -176,7 +193,7 @@ export function normalizeBot(input, prev, seed = 0) {
   const b = { ...(prev ?? {}), ...(input ?? {}) };
   const now = Date.now();
   const name = str(b.name, 60).trim() || prev?.name || 'New bot';
-  const skills = dedupeSkills((Array.isArray(b.skills) ? b.skills : []).map(normalizeSkill).filter(Boolean)).slice(0, 50);
+  const skills = capSkillsOn(dedupeSkills((Array.isArray(b.skills) ? b.skills : []).map(normalizeSkill).filter(Boolean)).slice(0, MAX_SKILLS), prev?.skills);
   const apps = (Array.isArray(b.apps) ? b.apps : []).map(normalizeApp).filter(Boolean).slice(0, 20);
   const deny = Array.isArray(b.tools?.deny) ? [...new Set(b.tools.deny.map(String).filter(Boolean))].slice(0, 200) : [];
   const model = b.model && typeof b.model === 'object' && str(b.model.provider) && str(b.model.model) ? { provider: str(b.model.provider, 200), model: str(b.model.model, 200) } : null;

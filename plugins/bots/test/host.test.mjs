@@ -700,3 +700,46 @@ test('local skills: a folder is scanned and linked once, read live, and name cla
   ] });
   assert.deepEqual(twice.skills.map((s) => s.name), ['xlsx', 'pdf', 'draft', 'draft']);
 });
+
+test('skills: at most 50 are on at once, the rest kept switched off; at most 200 are kept', async () => {
+  const { mergeImported } = await import('../lib/skills.mjs');
+  const { MAX_SKILLS, MAX_SKILLS_ON } = await import('../lib/store.mjs');
+  assert.deepEqual([MAX_SKILLS, MAX_SKILLS_ON], [200, 50]);
+  assert.deepEqual(api.state().limits, { skills: 200, skillsOn: 50 });
+  const names = (n, p) => Array.from({ length: n }, (_, i) => ({ name: `${p}${i}`, content: 'x' }));
+  const onOf = (b) => b.skills.filter((s) => s.enabled).map((s) => s.name);
+
+  // Created with 60: all kept, the first 50 on, and the tool says which came in off.
+  const r = await call('bot_create', { name: 'Many', skills: names(60, 's') });
+  let bot = api.store.find(r.bot.handle);
+  assert.equal(bot.skills.length, 60);
+  assert.equal(onOf(bot).length, 50);
+  assert.deepEqual(bot.skills.filter((s) => !s.enabled).map((s) => s.name), names(10, 's').map((s, i) => `s${50 + i}`));
+  assert.match(r.text, /switched off.*: s50, s51/);
+
+  // One off, another on: fits.
+  bot = api.store.save({ id: bot.id, skills: bot.skills.map((s) => (s.name === 's0' ? { ...s, enabled: false } : s.name === 's55' ? { ...s, enabled: true } : s)) });
+  assert.deepEqual([onOf(bot).length, onOf(bot).includes('s55'), onOf(bot).includes('s0')], [50, true, false]);
+  // One more on past 50: the newcomer stays off, the ones on before stay on.
+  bot = api.store.save({ id: bot.id, skills: bot.skills.map((s) => (s.name === 's56' ? { ...s, enabled: true } : s)) });
+  assert.deepEqual([onOf(bot).length, onOf(bot).includes('s56'), onOf(bot).includes('s55')], [50, false, true]);
+
+  // bot_update adds past 50 on switched off, and says so.
+  const u = await call('bot_update', { bot: `@${bot.handle}`, add_skills: [{ name: 'late', content: 'x' }] });
+  assert.match(u.text, /switched off.*: late\./);
+  bot = api.store.find(bot.handle);
+  assert.deepEqual([bot.skills.length, bot.skills.find((s) => s.name === 'late').enabled], [61, false]);
+  // Past 200 kept: refused, nothing changed.
+  await assert.rejects(call('bot_update', { bot: `@${bot.handle}`, add_skills: names(140, 't') }), /at most 200 skills/);
+  assert.equal(api.store.find(bot.handle).skills.length, 61);
+
+  // Imports: a new one past 50 on comes in off; past 200 kept is skipped as full.
+  const m = mergeImported(bot.skills, [{ id: 'n1', name: 'fresh', source: 'import', origin: '/x/fresh', enabled: true }]);
+  assert.deepEqual([m.added, m.off, m.skills.at(-1).enabled], [['fresh'], ['fresh'], false]);
+  const few = mergeImported([{ id: 'a', name: 'a', enabled: true }], [{ id: 'b', name: 'b', enabled: true }]);
+  assert.deepEqual([few.off, few.skills[1].enabled], [[], true]);
+  const full = mergeImported(Array.from({ length: 200 }, (_, i) => ({ id: `k${i}`, name: `k${i}`, enabled: false })), [{ id: 'z', name: 'z', enabled: true }]);
+  assert.deepEqual([full.added, full.skipped], [[], [{ name: 'z', reason: 'full' }]]);
+
+  await call('bot_delete', { bot: `@${bot.handle}` });
+});

@@ -850,6 +850,45 @@ test('skills: the Harness picker adds dsh skills by name; the GitHub picker impo
   v.hooks.runCleanups();
 });
 
+test('skills: past the limit on, the switch refuses and new ones come in off; past the limit kept, adding is refused', async () => {
+  const keep = { limits: STATE.limits, skills: BOTS[0].skills };
+  STATE.limits = { skills: 3, skillsOn: 1 };
+  BOTS[0].skills = [...keep.skills, { id: 's2', name: 'idle', description: 'Off for now', content: '# x', enabled: false }];
+  try {
+    const v = await openTab('skills', 'bot-a');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-skills-on'] === 1).length, 1);
+    assert.match(collect(v.tree).join(' '), /1\/1 on/);
+    // One is on already: switching the other on is refused, nothing is saved.
+    findAll(findAll(v.tree, (n) => n.props['data-dsh-bots-skill'] === 's2')[0], (n) => n.props.role === 'switch')[0].props.onClick();
+    await v.rerender(1);
+    assert.equal(v.posts.filter((p) => p.path.endsWith('/save')).length, 0);
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-toast'] === 'error')[0]).join(' '), /At most 1 skills can be on/);
+
+    // Two from Harness would make four, past three kept: refused.
+    findAll(v.tree, (n) => n.props['data-dsh-bots-add-harness'])[0].props.onClick();
+    await v.rerender(3);
+    const tick = (name) => findAll(findAll(v.tree, (n) => n.props['data-dsh-bots-harness-skill'] === name)[0], (n) => n.type === 'input')[0].props.onChange();
+    tick('deep-research');
+    await v.rerender(1);
+    tick('xlsx');
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-harness-add'])[0].props.onClick();
+    await flush();
+    assert.equal(v.posts.filter((p) => p.path.endsWith('/save')).length, 0);
+    // One fits, and comes in off.
+    tick('xlsx');
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-harness-add'])[0].props.onClick();
+    await flush();
+    const saved = v.posts.find((p) => p.path.endsWith('/save')).body.bot;
+    assert.deepEqual(saved.skills.at(-1), { name: 'deep-research', source: 'dsh', enabled: false, description: 'Research a topic.' });
+    v.hooks.runCleanups();
+  } finally {
+    STATE.limits = keep.limits;
+    BOTS[0].skills = keep.skills;
+  }
+});
+
 test('skills: the Harness list scrolls by itself and its rows never shrink', async () => {
   const v = await openTab('skills', 'bot-a');
   findAll(v.tree, (n) => n.props['data-dsh-bots-add-harness'])[0].props.onClick();

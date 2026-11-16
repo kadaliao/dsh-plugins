@@ -72,6 +72,8 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
     `~/.claude/skills`); linked, not copied, so editing the folder is enough;
   - a skill name is used once per bot: adding one that is already there is skipped, and importing again
     from the same GitHub folder updates it in place;
+  - up to 50 skills can be on at once (each one on is in the bot's prompt every turn); a bot keeps up to
+    200 in all, so past 50 new ones come in switched off;
   - **Let the bot write it**: describe what you need in a sentence; the bot writes it with skill-creator
     and saves it to itself;
   - writing one by hand is still possible, as the last resort.
