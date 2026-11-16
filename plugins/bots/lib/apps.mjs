@@ -1,7 +1,7 @@
 /**
  * The app catalog: MCP servers a bot can connect, each described well enough
  * that the panel shows a form (keys, paths) instead of a command line, and
- * chat channels (`kind: 'channel'`: Telegram, Discord) people message the team
+ * chat channels (`kind: 'channel'`: Telegram, Discord, Feishu / Lark, Slack) people message the team
  * from, which lib/channels.mjs runs instead of an MCP client.
  *
  * Every entry is checked against its registry (npm / PyPI) or vendor docs;
@@ -294,7 +294,7 @@ export function catalog(ocuPath = '') {
     },
     {
       id: 'slack',
-      name: L('Slack', 'Slack'),
+      name: L('Slack workspace', 'Slack 工作区'),
       description: L('Read channels and threads, post messages and reactions in a Slack workspace.', '读取 Slack 频道与讨论串，发消息、加表情。'),
       category: 'work',
       icon: 'SL',
@@ -368,6 +368,87 @@ export function catalog(ocuPath = '') {
       ],
     },
     {
+      id: 'feishu-chat',
+      kind: 'channel',
+      channel: 'feishu',
+      name: L('Feishu / Lark', '飞书'),
+      description: L(
+        'Message your bot team from Feishu or Lark: chat with the bot one to one, or @ it in a group. Only people you pair can talk to it.',
+        '在飞书里给 Bot 团队发消息：和机器人单聊，或在群里 @ 它。只有你配对过的人能和它说话。',
+      ),
+      category: 'work',
+      icon: '飞',
+      color: '#3370ff',
+      serverName: 'feishu-chat',
+      homepage: 'https://open.feishu.cn/document/server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case',
+      keyUrl: 'https://open.feishu.cn/app',
+      featured: true,
+      fields: [
+        {
+          key: 'appId',
+          kind: 'text',
+          required: true,
+          label: L('App ID', 'App ID'),
+          placeholder: 'cli_…',
+          help: L(
+            'Developer console (open.feishu.cn/app; for Lark open.larksuite.com/app) → Create Custom App. Add Features → Bot. Permissions & Scopes: add im:message.p2p_msg:readonly, im:message.group_at_msg:readonly and im:message:send_as_bot (optional: contact:contact.base:readonly and contact:user.base:readonly for names, im:message.reactions:write_only for a typing sign, im:chat:readonly for group names). Copy the App ID and App Secret from Credentials & Basic Info and save. Then, with this channel running (the console only accepts it while it is online), Events & Callbacks → subscription mode "Receive events through persistent connection" → save, add the event im.message.receive_v1, and publish a version. Use an app made for this team only.',
+            '开发者后台（open.feishu.cn/app；Lark 用 open.larksuite.com/app）→ 创建企业自建应用 → 添加应用能力「机器人」。在「权限管理」开通 im:message.p2p_msg:readonly、im:message.group_at_msg:readonly、im:message:send_as_bot（可选：contact:contact.base:readonly 和 contact:user.base:readonly 显示姓名，im:message.reactions:write_only 显示"正在处理"，im:chat:readonly 显示群名）。到「凭证与基础信息」复制 App ID 和 App Secret 填到这里并保存。保存后保持这个频道运行（长连接在线时后台才允许保存），再到「事件与回调」把订阅方式设为「使用长连接接收事件」并保存，添加事件 im.message.receive_v1，最后在「版本管理与发布」发布版本。请用专门给这个团队新建的应用。',
+          ),
+        },
+        {
+          key: 'appSecret',
+          kind: 'secret',
+          required: true,
+          label: L('App secret', 'App Secret'),
+          help: L(
+            'In Credentials & Basic Info, next to the App ID. If another program already uses this app, Feishu hands each message to only one of them.',
+            '在「凭证与基础信息」里，App ID 旁边。如果别的程序也在用这个应用，飞书每条消息只会交给其中一个。',
+          ),
+        },
+      ],
+    },
+    {
+      id: 'slack-chat',
+      kind: 'channel',
+      channel: 'slack',
+      name: L('Slack', 'Slack'),
+      description: L(
+        'Message your bot team from Slack: DM the app, or @mention it in a channel. Only people you pair can talk to it.',
+        '在 Slack 里给 Bot 团队发消息：私信这个应用，或在频道里 @ 它。只有你配对过的人能和它说话。',
+      ),
+      category: 'work',
+      icon: 'SL',
+      color: '#4a154b',
+      serverName: 'slack-chat',
+      homepage: 'https://docs.slack.dev/apis/events-api/using-socket-mode',
+      keyUrl: 'https://api.slack.com/apps',
+      featured: true,
+      fields: [
+        {
+          key: 'token',
+          kind: 'secret',
+          required: true,
+          label: L('Bot token', 'Bot Token'),
+          placeholder: 'xoxb-…',
+          help: L(
+            'At api.slack.com/apps choose Create New App → From a manifest and paste the manifest from the Bots README (it turns on Socket Mode, DMs and the permissions). Then Install App → Install to Workspace, and copy the Bot User OAuth Token. Use an app made for this team only.',
+            '在 api.slack.com/apps 选 Create New App → From a manifest，粘贴 Bots README 里的清单（它会打开 Socket Mode、私信和所需权限）。再点 Install App → Install to Workspace，复制 Bot User OAuth Token。请用专门给这个团队新建的应用。',
+          ),
+        },
+        {
+          key: 'appToken',
+          kind: 'secret',
+          required: true,
+          label: L('App-level token', 'App 级 Token'),
+          placeholder: 'xapp-…',
+          help: L(
+            'Same app → Basic Information → App-Level Tokens → Generate Token and Scopes: add the connections:write scope, generate, and copy the token. With it the Harness connects out to Slack, so no public URL is needed.',
+            '同一个应用 → Basic Information → App-Level Tokens → Generate Token and Scopes：添加 connections:write 权限，生成后复制 Token。有了它 Harness 主动连到 Slack，不需要公网地址。',
+          ),
+        },
+      ],
+    },
+    {
       id: 'stripe',
       name: L('Stripe', 'Stripe 收款'),
       description: L('Customers, payment links, invoices, subscriptions, refunds and balance (official remote server).', '客户、收款链接、发票、订阅、退款与余额（官方远程服务）。'),
@@ -400,7 +481,7 @@ export function catalog(ocuPath = '') {
     },
     {
       id: 'feishu',
-      name: L('Feishu / Lark', '飞书'),
+      name: L('Feishu / Lark Open Platform', '飞书开放平台'),
       description: L('Feishu docs, Bitable, messages, calendars and contacts through the official Open Platform server.', '官方开放平台服务：飞书文档、多维表格、消息、日历与通讯录。'),
       category: 'work',
       icon: '飞',
@@ -476,7 +557,7 @@ export function catalog(ocuPath = '') {
  */
 export function mcpConfigFor(app, entries, ctx = {}) {
   const t = entries.find((e) => e.id === app.template);
-  // A chat channel (Telegram, Discord) is no MCP server: lib/channels.mjs runs it.
+  // A chat channel (Telegram, Discord, Feishu, Slack) is no MCP server: lib/channels.mjs runs it.
   if (t?.kind === 'channel') return null;
   const values = app.values && typeof app.values === 'object' ? app.values : {};
   const reconnect = { maxAttempts: 3 };

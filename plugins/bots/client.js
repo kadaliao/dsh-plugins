@@ -1158,7 +1158,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             : h(
                 'span',
                 { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', alignItems: 'center', gap: 6 } },
-                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, t('viaChannel', { app: channelName(m.via), who: str(m.who) || t('you') })) : null,
+                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, t('viaChannel', { app: channelName(m.via, t), who: str(m.who) || t('you') })) : null,
                 m.to !== botId && to.kind === 'bot' ? `${t('toName', { name: to.name })} · ${time}` : time,
               ),
           h('div', { style: { maxWidth: '78%', padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: '#fff', fontSize: FONT } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
@@ -1181,7 +1181,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 from.kind === 'bot' ? h('span', { style: { color: C.faint } }, `@${from.bot.handle}`) : null,
                 m.to !== 'user' && to.kind === 'bot' && m.to !== botId ? h('span', { style: { color: C.faint } }, `→ ${to.name}`) : null,
                 h('span', { style: { color: C.faint } }, time),
-                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, title: t('sentToChannel', { app: channelName(m.via) }), 'data-dsh-bots-via': m.via }, `→ ${channelName(m.via)}`) : null,
+                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, title: t('sentToChannel', { app: channelName(m.via, t) }), 'data-dsh-bots-via': m.via }, `→ ${channelName(m.via, t)}`) : null,
               ),
           h('div', { style: { padding: '8px 12px', borderRadius: '4px 14px 14px 14px', background: C.layer2, border: `1px solid ${C.border1}`, fontSize: FONT, minWidth: 0 } }, h(Clamp, { t, text: m.text, lines: 24 })),
           h(LinkCards, { t, text: m.text }),
@@ -1875,7 +1875,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         h('span', { style: { color: C.faint, display: 'inline-flex' } }, Icon.arrow(11)),
                         h('span', { style: { fontWeight: 600 } }, to.name),
                         h(Badge, { color: m.kind === 'dm' ? C.label : m.kind === 'system' ? C.warn : C.muted }, t(`kind_${m.kind}`) || m.kind),
-                        m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via)} · ${str(m.who)}` : channelName(m.via)) : null,
+                        m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via, t)} · ${str(m.who)}` : channelName(m.via, t)) : null,
                         h('span', { style: { marginLeft: 'auto', color: C.faint, fontSize: TINY }, title: fmtDate(toMs(m.at)) }, fmtAgo(t, m.at)),
                       ),
                       h(Clamp, { t, text: m.text, lines: 3, style: { fontSize: SMALL, color: C.muted } }),
@@ -3243,19 +3243,21 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       }
       return out;
     }
-    // --- chat channels (Telegram, Discord): apps people message the team from -----------------
+    // --- chat channels (Telegram, Discord, Feishu, Slack): apps people message the team from --
 
-    const CHANNEL_NAMES = { telegram: 'Telegram', discord: 'Discord' };
-    const CHANNEL_COLORS = { telegram: '#229ED9', discord: '#5865F2' };
-    const channelName = (kind) => CHANNEL_NAMES[kind] ?? str(kind);
+    const CHANNEL_NAMES = { telegram: 'Telegram', discord: 'Discord', slack: 'Slack', feishu: 'Feishu' };
+    const CHANNEL_COLORS = { telegram: '#229ED9', discord: '#5865F2', slack: '#4a154b', feishu: '#3370ff' };
+    const channelName = (kind, t) => (kind === 'feishu' && langOf(t) === 'zh' ? '飞书' : CHANNEL_NAMES[kind] ?? str(kind));
     const isChannelEntry = (entry) => entry?.kind === 'channel';
+    /** Hint codes that read differently per chat app. */
+    const KIND_HINTS = new Set(['slack_scopes', 'feishu_scopes']);
 
     /** Under a chat channel's row: whether it is connected, the pairing code, and who is paired. */
     function ChannelPanel({ t, bot, app, entry, view, toast }) {
       const [working, setWorking] = useState('');
       const v = view && typeof view === 'object' ? view : { state: 'connecting', paired: [] };
       const kind = str(v.kind || entry?.channel);
-      const appName = channelName(kind);
+      const appName = channelName(kind, t);
       const handle = v.account?.username ? `@${v.account.username}` : appName;
       const paired = Array.isArray(v.paired) ? v.paired : [];
       const call = (path, body, okText) => {
@@ -3271,7 +3273,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           .finally(() => setWorking(''));
       };
       const state = str(v.state) || 'connecting';
-      const hintText = v.hint ? t(`channelHint_${v.hint}`, { app: appName }) : '';
+      const hintText = v.hint ? t(KIND_HINTS.has(`${kind}_${v.hint}`) ? `channelHint_${kind}_${v.hint}` : `channelHint_${v.hint}`, { app: appName }) : '';
       const dot = (color) => h('span', { style: { width: 8, height: 8, borderRadius: '50%', background: color, flex: 'none' } });
       const statusLine =
         state === 'connected'
@@ -3284,7 +3286,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 ? [dot(C.faint), h('span', { key: 's', style: { color: C.muted } }, t('channelOff'))]
                 : [dot('#d97706'), h('span', { key: 's', style: { color: C.muted } }, t('channelMissing', { app: appName }))];
       const live = state !== 'off' && state !== 'missing';
-      const step = kind === 'telegram' ? t('pairStepTelegram', { handle }) : kind === 'discord' ? t('pairStepDiscord', { handle }) : t('pairStep', { handle, app: appName });
+      const step = kind === 'telegram' ? t('pairStepTelegram', { handle }) : kind === 'discord' ? t('pairStepDiscord', { handle }) : kind === 'slack' ? t('pairStepSlack', { handle }) : kind === 'feishu' ? t('pairStepFeishu', { handle }) : t('pairStep', { handle, app: appName });
       return h(
         'div',
         { 'data-dsh-bots-channel': app.id, 'data-state': state, style: { display: 'flex', flexDirection: 'column', gap: 10, margin: '0 14px 12px 62px', padding: '10px 12px', borderRadius: 10, background: C.base, border: `1px solid ${C.border1}`, fontSize: SMALL } },
@@ -5124,7 +5126,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         installedApps: 'Installed apps ({n})',
         noApps: 'No apps yet. Add one from the gallery below.',
         appGallery: 'App gallery',
-        appGalleryHint: '{n} apps. Most are MCP servers whose tools appear to this bot only; chat apps (Telegram, Discord) let you message the team from your phone.',
+        appGalleryHint: '{n} apps. Most are MCP servers whose tools appear to this bot only; chat apps (Feishu / Lark, Telegram, Slack, Discord) let you message the team from your phone.',
         noTemplates: 'No templates.',
         featured: 'Featured',
         allApps: 'All',
@@ -5347,6 +5349,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         channelHint_intent: 'Turn on Message Content Intent: Developer Portal → your app → Bot → Privileged Gateway Intents. Then reconnect.',
         channelHint_conflict: 'Another program is using this bot token. Stop it, or create a separate bot for the team.',
         channelHint_duplicate: 'This token is already connected on another bot; one token can run in one place.',
+        channelHint_app_token: 'Slack rejected the app-level token (xapp-…). In your Slack app open Basic Information → App-Level Tokens, generate one with the connections:write scope, paste it and save.',
+        channelHint_app_scope: 'The app-level token lacks the connections:write scope. Generate a new one with it under Basic Information → App-Level Tokens, paste it and save.',
+        channelHint_token_kind: 'The tokens are in the wrong fields: the Bot token starts with xoxb- (OAuth & Permissions), the App-level token with xapp- (Basic Information → App-Level Tokens).',
+        channelHint_slack_scopes: 'The Slack app is missing permissions. Add them under OAuth & Permissions → Bot Token Scopes (or create the app from the manifest), reinstall it to the workspace, then reconnect.',
+        channelHint_socket_mode: 'Socket Mode is off for this Slack app. Turn it on (your app → Socket Mode → Enable Socket Mode), then reconnect.',
+        channelHint_secret: '{app} rejected the App Secret. Copy it again from the developer console (Credentials & Basic Info) and save.',
+        channelHint_appId: 'Neither Feishu nor Lark knows this App ID. Copy it from the developer console (Credentials & Basic Info); it starts with cli_.',
+        channelHint_disabled: '{app} says this app is disabled. Enable it in the developer console (or ask your admin), then reconnect.',
+        channelHint_bot: 'Turn on the bot: developer console → Add Features → Bot, then publish a version. The long connection is already up, so you can set up Events & Callbacks now; this connects by itself once the bot is live.',
+        channelHint_feishu_scopes: 'The app may not send messages. Add the permission im:message:send_as_bot (Permissions & Scopes) and publish a version.',
+        channelHint_connlimit: 'This app already has the most long connections Feishu allows (50). Stop other programs that use this App ID.',
         reconnect: 'Reconnect',
         pairedPeople: 'Paired people ({n})',
         nobodyPaired: 'Nobody yet. Until someone is paired, the bot answers no one in {app}.',
@@ -5355,6 +5368,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         unpaired: '{name} removed.',
         pairStepTelegram: 'From your own Telegram account, send this code to {handle}, or open the link and press Start. It works once.',
         pairStepDiscord: 'From your own Discord account, send this code to {handle} in a direct message. It works once.',
+        pairStepFeishu: 'In Feishu, open a chat with {handle} (search for the app, or use Open in Feishu) and send this code. It works once.',
+        pairStepSlack: 'From your own Slack account, open the app\'s Messages tab (or the link) and send this code. It works once.',
         pairStep: 'From your own {app} account, send this code to {handle}. It works once.',
         copy: 'Copy',
         copied: 'Copied.',
@@ -5628,7 +5643,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         installedApps: '已安装的应用（{n}）',
         noApps: '还没有应用。从下方的应用库添加一个。',
         appGallery: '应用库',
-        appGalleryHint: '共 {n} 个应用。大多是 MCP 服务器，工具只对这个 Bot 可见；聊天应用（Telegram、Discord）让你用手机给团队发消息。',
+        appGalleryHint: '共 {n} 个应用。大多是 MCP 服务器，工具只对这个 Bot 可见；聊天应用（飞书、Telegram、Slack、Discord）让你用手机给团队发消息。',
         noTemplates: '没有模板。',
         featured: '推荐',
         allApps: '全部',
@@ -5850,6 +5865,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         channelHint_intent: '请打开 Message Content Intent：开发者后台 → 你的应用 → Bot → Privileged Gateway Intents，然后重新连接。',
         channelHint_conflict: '另一个程序正在使用这个 Bot Token。请停掉它，或给团队单独建一个 Bot。',
         channelHint_duplicate: '这个 Token 已经在另一个 Bot 上连接了；一个 Token 只能在一处运行。',
+        channelHint_app_token: 'Slack 拒绝了 App 级 Token（xapp-…）。请在 Slack 应用的 Basic Information → App-Level Tokens 里生成一个带 connections:write 权限的 Token，粘贴后保存。',
+        channelHint_app_scope: 'App 级 Token 缺少 connections:write 权限。请在 Basic Information → App-Level Tokens 重新生成一个带该权限的 Token，粘贴后保存。',
+        channelHint_token_kind: 'Token 填错位置了：Bot Token 以 xoxb- 开头（OAuth & Permissions 页），App 级 Token 以 xapp- 开头（Basic Information → App-Level Tokens）。',
+        channelHint_slack_scopes: 'Slack 应用缺少权限。请在 OAuth & Permissions → Bot Token Scopes 里补上（或用清单重新创建应用），重新安装到工作区，然后点重新连接。',
+        channelHint_socket_mode: '这个 Slack 应用没有开启 Socket Mode。请在应用的 Socket Mode 页打开 Enable Socket Mode，然后点重新连接。',
+        channelHint_secret: '{app} 拒绝了这个 App Secret。请到开发者后台「凭证与基础信息」重新复制并保存。',
+        channelHint_appId: '飞书和 Lark 都找不到这个 App ID。请到开发者后台「凭证与基础信息」复制，它以 cli_ 开头。',
+        channelHint_disabled: '{app} 提示这个应用已停用。请在开发者后台启用（或联系管理员），然后重新连接。',
+        channelHint_bot: '请开启机器人：开发者后台 →「添加应用能力」→「机器人」，然后发布版本。长连接已经在线，现在就可以去配置「事件与回调」；机器人生效后会自动连上。',
+        channelHint_feishu_scopes: '应用没有发消息的权限。请在「权限管理」开通 im:message:send_as_bot 并发布版本。',
+        channelHint_connlimit: '这个应用的长连接数已达飞书上限（50 个）。请停掉其他使用这个 App ID 的程序。',
         reconnect: '重新连接',
         pairedPeople: '已配对的人（{n}）',
         nobodyPaired: '还没有人。配对之前，Bot 在 {app} 里不回复任何人。',
@@ -5858,6 +5884,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         unpaired: '已移除 {name}。',
         pairStepTelegram: '用你自己的 Telegram 账号把这个配对码发给 {handle}，或打开链接后点 Start。只能用一次。',
         pairStepDiscord: '用你自己的 Discord 账号私信 {handle}，发送这个配对码。只能用一次。',
+        pairStepFeishu: '在飞书里打开和 {handle} 的单聊（搜索应用名，或点「在飞书中打开」），发送这个配对码。只能用一次。',
+        pairStepSlack: '用你自己的 Slack 账号打开这个应用的 Messages 标签页（或点链接），发送这个配对码。只能用一次。',
         pairStep: '用你自己的 {app} 账号把这个配对码发给 {handle}。只能用一次。',
         copy: '复制',
         copied: '已复制。',

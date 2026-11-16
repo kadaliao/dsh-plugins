@@ -21,7 +21,7 @@ test('every logo key is a catalog app, and the entries carry it', () => {
   const ids = new Set(catalog().map((e) => e.id));
   for (const id of Object.keys(LOGOS)) assert.ok(ids.has(id), id);
   const byId = Object.fromEntries(templates().map((e) => [e.id, e]));
-  assert.equal(byId.feishu.logo, 'feishu');
+  assert.equal(byId['feishu-chat'].logo, 'feishu');
   assert.equal(byId.telegram.logo, 'telegram');
   assert.equal(byId['mcp-stdio'].logo, undefined);
   assert.equal(withLogo({ id: 'nope' }).logo, undefined);

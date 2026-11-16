@@ -84,7 +84,7 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
 | Category | Apps (🔑 = needs a key) |
 | --- | --- |
 | Sales & payments | Stripe 🔑, HubSpot CRM 🔑 |
-| Team & office | Telegram 🔑 and Discord 🔑 (chat apps, below), Feishu / Lark 🔑, Notion 🔑, Slack 🔑, Memory |
+| Team & office | Feishu / Lark 🔑, Telegram 🔑, Slack 🔑 and Discord 🔑 (chat apps, below), Feishu / Lark Open Platform 🔑, Notion 🔑, Slack workspace 🔑, Memory |
 | Build & ship | GitHub 🔑, Git, Supabase 🔑, Sentry 🔑, Context7 Docs |
 | Research & content | Exa, Tavily 🔑, Brave 🔑, Firecrawl 🔑 |
 | Computer & browser | Open Computer Use (operate macOS apps), Playwright |
@@ -98,9 +98,9 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
   otherwise the logo from the vendor's site or repository). The logos are their owners' trademarks and
   only identify each service.
 
-## Message your team from Telegram or Discord
+## Message your team from Feishu, Telegram, Slack or Discord
 
-Add **Telegram** or **Discord** to a bot (normally the dispatcher) in its **Apps** tab, and you can hand out
+Add **Feishu / Lark**, **Telegram**, **Slack** or **Discord** to a bot (normally the dispatcher) in its **Apps** tab, and you can hand out
 work from your phone: what you send the chat bot goes to the team as if you typed it in the panel, and
 the replies come back to the chat, including the dispatcher's report once its teammates have answered.
 
@@ -130,6 +130,78 @@ the replies come back to the chat, including the dispatcher's report once its te
    (any server you are in, a private one is fine): Discord only lets you DM a bot you share a server with.
 3. DM the bot the pairing code, then DM it your requests, or @mention it in a channel.
 
+### Feishu / Lark
+
+Feishu uses its long connection: the Harness connects out to Feishu, so your computer needs no public
+address. The same steps work for Lark; the panel finds out which one your app belongs to.
+
+1. Open the developer console at https://open.feishu.cn/app (Lark: https://open.larksuite.com/app) and
+   **Create Custom App**.
+2. **Add Features** → **Bot**.
+3. **Permissions & Scopes** (**Batch import/export scopes** accepts the JSON below):
+   - required: `im:message.p2p_msg:readonly`, `im:message.group_at_msg:readonly`, `im:message:send_as_bot`
+   - optional: `contact:contact.base:readonly` + `contact:user.base:readonly` (sender names),
+     `im:message.reactions:write_only` (a "Typing" reaction while the team works), `im:chat:readonly` (group names)
+4. Copy the **App ID** and **App Secret** from **Credentials & Basic Info** into the bot's **Apps** →
+   **Feishu / Lark**, and save. The long connection comes up. If the panel asks you to turn on the bot,
+   that only means no version is published yet; the connection is already online.
+5. With the Harness running, go to **Events & Callbacks** → **Event Configuration**, set the subscription
+   mode to **Receive events through persistent connection** and save. The console only accepts this while
+   a connection is online.
+6. **Add Events** → `im.message.receive_v1`.
+7. **Version Management & Release** → create a version whose availability includes the people who will
+   use it, and publish (an admin may need to approve).
+8. In Feishu, open a chat with the bot (search for the app, or use **Open in Feishu** in the panel) and
+   send the pairing code. For a group, add the bot to the group and @ it.
+
+Use an app made for this team only: when several programs connect with the same App ID, Feishu hands each
+message to just one of them.
+
+```json
+{"scopes":{"tenant":["im:message.p2p_msg:readonly","im:message.group_at_msg:readonly","im:message:send_as_bot","im:message.reactions:write_only","contact:contact.base:readonly","contact:user.base:readonly","im:chat:readonly"],"user":[]}}
+```
+
+### Slack
+
+Slack uses Socket Mode: the Harness connects out to Slack, so your computer needs no public address.
+
+1. Open https://api.slack.com/apps → **Create New App** → **From a manifest**, pick your workspace, choose
+   the JSON tab and paste the manifest below (rename "Bot Team" if you like) → **Next** → **Create**.
+2. **Install App** → **Install to Workspace** → **Allow**. Copy the **Bot User OAuth Token** (`xoxb-…`).
+3. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes**: any name, **Add Scope** →
+   `connections:write`, **Generate**, and copy the token (`xapp-…`).
+4. In Bots, open the bot → **Apps** → add **Slack**, paste both tokens and save. Once it shows
+   *Connected*, a pairing code appears.
+5. In Slack, open the app (**Open in Slack** next to the code, or Apps → your app → Messages) and send it
+   the code.
+6. To use it in a channel, invite the app (`/invite @Bot Team`) and @mention it; it answers in the thread.
+
+Use one Slack app per bot, and don't run the same app in another program: Slack hands each message to only
+one connection. If you change scopes later, reinstall the app to the workspace and press **Reconnect**.
+
+```json
+{
+  "display_information": {
+    "name": "Bot Team",
+    "description": "Message your bot team from Slack: DM the app, or @mention it in a channel.",
+    "background_color": "#4a154b"
+  },
+  "features": {
+    "app_home": { "home_tab_enabled": false, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false },
+    "bot_user": { "display_name": "Bot Team", "always_online": true }
+  },
+  "oauth_config": {
+    "scopes": { "bot": ["app_mentions:read", "channels:read", "chat:write", "groups:read", "im:history", "users:read"] }
+  },
+  "settings": {
+    "event_subscriptions": { "bot_events": ["app_mention", "message.im"] },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}
+```
+
 ### What else to know
 
 - **Who can talk to it**: only people you paired. Anyone else is ignored; in a private chat they get at
@@ -140,7 +212,8 @@ the replies come back to the chat, including the dispatcher's report once its te
   including whatever their abilities and apps allow on this Mac. Pair only yourself or people you trust,
   and turn off risky abilities on the bot that owns the channel if others are paired.
 - **Where replies go**: to the chat your latest request came from. Write in the panel and the conversation
-  is back in the panel. Telegram gets plain text (Markdown markers removed); Discord keeps its Markdown.
+  is back in the panel. Telegram gets plain text (Markdown markers removed); Discord, Slack and Feishu
+  show the Markdown. In a Slack channel the answer goes into the thread of your message.
 - **Scheduled reports**: a scheduled task of the bot that owns the channel reports to the first paired
   person (switch it off in the panel), so "every weekday at nine Atlas briefs you" lands on your phone.
 - **One token, one place**: a chat bot token can be connected on one bot of one Harness at a time. If
@@ -160,8 +233,8 @@ the replies come back to the chat, including the dispatcher's report once its te
   most 16 messages in 10 minutes, so conversations end.
 - Every conversation gets `bot_list`, `bot_create`, `bot_update`, `bot_delete`, `bot_send_message`
   and `bot_schedule` to manage bots.
-- A chat app is not an MCP server: the Host keeps one connection per Telegram or Discord app (long polling
-  for Telegram, the gateway for Discord), starts and stops it as you add, change, switch off or remove the
+- A chat app is not an MCP server: the Host keeps one connection per chat app (long polling for Telegram,
+  the gateway for Discord, Socket Mode for Slack, the long connection for Feishu), starts and stops it as you add, change, switch off or remove the
   app, and hands paired people's messages to the bot as user prompts headed `[Telegram · Name]`.
 
 ## Open Computer Use
@@ -172,13 +245,14 @@ permission and restart it.
 
 ## What it stores and sends
 
-- `~/.dsh/cache/bots/`: `bots.json` (bots, including keys and chat bot tokens entered for apps),
+- `~/.dsh/cache/bots/` (`bots.json` and `channels.json` are readable by your user only): `bots.json` (bots,
+  including keys and chat bot tokens entered for apps),
   `messages.jsonl` (timeline), `channels.json` (paired people per chat app, and the last message handled
   per chat), `avatars/`, `skills/` (skills imported from GitHub).
 - Nothing leaves your machine except through the bots' own conversations (your configured model), the
   apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
-  Telegram or Discord API when you connect a chat app (the bots' replies to paired people, typing
-  indicators, and the one-line note to strangers).
+  Feishu / Lark, Telegram, Slack or Discord API when you connect a chat app (the bots' replies to paired
+  people, typing indicators, and the one-line note to strangers).
 
 ## Install
 

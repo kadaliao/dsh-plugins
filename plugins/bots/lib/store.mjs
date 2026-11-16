@@ -235,7 +235,8 @@ export function createStore(dir) {
     mkdirSync(dir, { recursive: true });
     state.version += 1;
     const tmp = `${file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+    // Bots carry app keys and chat bot tokens: readable by this user only.
+    writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
     renameSync(tmp, file);
     seen = mtime(file);
     for (const fn of listeners) {

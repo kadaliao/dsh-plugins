@@ -13,7 +13,7 @@
  * Nothing touches other conversations, except the bot tools themselves, which
  * every conversation gets so the user can manage bots from anywhere.
  *
- * Chat channel apps (Telegram, Discord) are no MCP servers: lib/channels.mjs
+ * Chat channel apps (Telegram, Discord, Feishu / Lark, Slack) are no MCP servers: lib/channels.mjs
  * keeps a connector running for each, so paired people can message the team
  * from that chat app and read the replies there.
  *
@@ -477,7 +477,7 @@ export function apply(ctx, config, deps = {}) {
     return agent.session.id;
   }
 
-  // --- chat channels: Telegram, Discord -----------------------------------------------------
+  // --- chat channels: Telegram, Discord, Feishu / Lark, Slack -------------------------------
   const channels = createChannels({
     file: join(dir, 'channels.json'),
     bots: () => store.list(),

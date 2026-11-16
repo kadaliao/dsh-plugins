@@ -137,36 +137,42 @@ excel, sequential-thinking, chrome-devtools). New: stripe, hubspot, feishu (飞�
 | GET | `apps/external` | – | `{ items: {from, name, serverName, template, config /* values masked */}[] }` MCP servers found in Codex / Claude Code / Claude Desktop / Cursor / Windsurf / Gemini / opencode configs |
 | POST | `apps/import` | `{ botId, names: ['<from>/<name>'] }` | `{ ok, bot, added }` |
 
-## Chat channels (Telegram, Discord)
+## Chat channels (Telegram, Discord, Feishu / Lark, Slack)
 
 People message the team from a chat app; replies go back to the chat. A channel is an ordinary app on a
 bot whose catalog entry has `kind: 'channel'`; it is **not** an MCP server (`mcpConfigFor` returns `null`,
 no MCP client starts for it, and editing it never restarts the bot's MCP clients).
 
 ```ts
-AppEntry += { kind?: 'channel', channel?: 'telegram' | 'discord' }   // channel entries have no transport/command
-// Catalog: telegram (#229ED9, keyUrl https://t.me/BotFather), discord (#5865F2, keyUrl https://discord.com/developers/applications),
-// category 'work', one required secret field `token`.
-App.values.token   // in `state` and every route that returns a bot, a stored token reads as '••••••••' (SECRET_MASK);
-                   // POST save with the mask keeps the stored token, any other value replaces it.
+AppEntry += { kind?: 'channel', channel?: 'telegram' | 'discord' | 'feishu' | 'slack', logo?: string }
+  // channel entries have no transport/command; `logo` names logos/<logo>.png, served at GET /__dsh_bots/logo/<logo>.png
+// Catalog (category 'work'):
+//   telegram     #229ED9  fields: token (secret)
+//   discord      #5865F2  fields: token (secret)
+//   feishu-chat  #3370ff  channel 'feishu', fields: appId (text), appSecret (secret)   // Feishu or Lark, found by App ID
+//   slack-chat   #4a154b  channel 'slack', fields: token (bot, xoxb-), appToken (app-level, xapp-; both secret)
+App.values[secret field]   // in `state` and every route that returns a bot, a stored secret reads as '••••••••' (SECRET_MASK);
+                           // POST save with the mask keeps the stored value, any other value replaces it.
 
 state.bots[].channels: { [appId]: ChannelView }
 ChannelView = {
-  kind: 'telegram' | 'discord',
-  state: 'connecting' | 'connected' | 'error' | 'off' /* app disabled */ | 'missing' /* no token */,
+  kind: 'telegram' | 'discord' | 'feishu' | 'slack',
+  state: 'connecting' | 'connected' | 'error' | 'off' /* app disabled */ | 'missing' /* a required field is empty */,
   detail?: string,              // connector's words (never the token); with error/connecting
-  hint?: 'token' | 'intent' | 'conflict' | 'duplicate',   // the panel words these itself
+  hint?: string,                // the panel words these itself: token, intent, conflict, duplicate;
+                                // Slack: app_token, app_scope, token_kind, scopes, socket_mode;
+                                // Feishu: secret, appId, disabled, bot, scopes, connlimit
   fatal?: true,                 // will not retry until the token changes or `channels/reconnect`
   account: { username, name } | null,     // the chat bot it is connected as
   paired: { id, name, at, direct: boolean }[],   // paired[0] gets scheduled reports
   code: { code: string, expiresAt: number } | null,   // one-time pairing code, 10 minutes
-  link: string | null,          // Telegram deep link t.me/<bot>?start=<code>
+  link: string | null,          // Telegram deep link t.me/<bot>?start=<code>; Slack: the app's DM; Feishu / Lark: a chat with the bot
   invite: string | null,        // Discord: OAuth2 invite URL for the bot
   scheduleReplies: boolean,     // scheduled runs report to paired[0] (default true)
   ignored: { count, lastName?, lastAt? },   // messages from unpaired people since the Host started
 }
 
-Message += { via?: 'telegram' | 'discord', who?: string }
+Message += { via?: 'telegram' | 'discord' | 'feishu' | 'slack', who?: string }
   // kind 'user' + via: typed in that chat app by `who` (text is the message without the source line);
   // kind 'reply' + via: this reply was also sent to that chat.
 ```
@@ -177,6 +183,15 @@ Message += { via?: 'telegram' | 'discord', who?: string }
 | POST | `channels/unpair` | `{ botId, appId, userId }` | `{ ok }` |
 | POST | `channels/options` | `{ botId, appId, scheduleReplies: boolean }` | `{ ok, scheduleReplies }` |
 | POST | `channels/reconnect` | `{ botId, appId }` | `{ ok }` drop and reconnect (after fixing a setting in the chat app's console) |
+
+A connector is `lib/channels/<kind>.mjs` (transport only; `lib/channels.mjs` does pairing, routing and reply
+targets). It exports `createConnector({ token, values, onMessage, onStatus, log })` returning
+`{ start() → {id, username, name}, stop(), send(chatId, text, {replyTo}?), typing(chatId) }`, and may export
+`TEXT_LIMIT`, `MARKDOWN` (the app renders Markdown replies), `THREADS` (every part of a reply goes to the
+thread of `replyTo`) and `links({account, code, values})` → `{link?, invite?}`. Messages it reports:
+`{chatId, userId, userName, text, isDirect, mentioned, messageId, order?, chatTitle?, source?}`, where `order`
+is a decimal string rising within a chat (the replay guard) and `source` overrides the label in the
+`[Feishu · Name]` line the bot reads (`Lark` for a Lark app).
 
 Behaviour (lib/channels.mjs):
 - A connector runs per enabled channel app with a token; it is started, restarted (token change) and stopped

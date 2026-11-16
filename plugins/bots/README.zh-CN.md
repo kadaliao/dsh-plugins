@@ -70,7 +70,7 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
 | 分类 | 应用（🔑 = 需要 Key） |
 | --- | --- |
 | 销售与收款 | Stripe 收款 🔑、HubSpot 客户管理 🔑 |
-| 团队与办公 | Telegram 🔑、Discord 🔑（聊天应用，见下文）、飞书 🔑、Notion 🔑、Slack 🔑、长期记忆 |
+| 团队与办公 | 飞书 🔑、Telegram 🔑、Slack 🔑、Discord 🔑（聊天应用，见下文）、飞书开放平台 🔑、Notion 🔑、Slack 工作区 🔑、长期记忆 |
 | 研发与交付 | GitHub 🔑、Git 仓库、Supabase 🔑、Sentry 🔑、Context7 文档 |
 | 调研与内容 | Exa、Tavily 🔑、Brave 🔑、Firecrawl 🔑 |
 | 电脑与浏览器 | Open Computer Use（操控 macOS 应用）、Playwright 浏览器 |
@@ -83,9 +83,9 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
 - **图标**：应用库里每个应用都用它自己的官方 logo（有 App 的用 App Store 图标，没有的用官网或官方仓库里的 logo）。
   这些 logo 是各自所有者的商标，只用来标明是哪个服务。
 
-## 在 Telegram 或 Discord 里给团队发消息
+## 在飞书、Telegram、Slack 或 Discord 里给团队发消息
 
-在某个 bot（一般是调度员）的**应用**页加上 **Telegram** 或 **Discord**，就能用手机派活：你发给聊天 Bot 的话，
+在某个 bot（一般是调度员）的**应用**页加上**飞书**、**Telegram**、**Slack** 或 **Discord**，就能用手机派活：你发给聊天 Bot 的话，
 会像在面板里输入一样交给团队；回复会回到聊天里，包括队友回复之后调度员的汇总汇报。
 
 > **你（在 Telegram 里）**：把下周的发布安排一下。
@@ -113,6 +113,68 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
    Discord 只允许你私信和你同在一个服务器的 Bot。
 3. 私信 Bot 发送配对码，之后直接私信它派活，或在频道里 @ 它。
 
+### 飞书
+
+飞书走长连接：由 Harness 主动连到飞书，电脑不需要公网地址。国际版 Lark 步骤相同，面板会自己判断应用属于哪一边。
+
+1. 打开开发者后台 https://open.feishu.cn/app （Lark：https://open.larksuite.com/app），创建企业自建应用。
+2. 「添加应用能力」→ 添加「机器人」。
+3. 「权限管理」开通权限（可用「批量导入/导出权限」粘贴下方 JSON）：
+   - 必需：`im:message.p2p_msg:readonly`、`im:message.group_at_msg:readonly`、`im:message:send_as_bot`
+   - 可选：`contact:contact.base:readonly` + `contact:user.base:readonly`（显示姓名），
+     `im:message.reactions:write_only`（处理中显示表情），`im:chat:readonly`（显示群名）
+4. 在「凭证与基础信息」复制 App ID 和 App Secret，填到 Bot 的「应用 → 飞书」并保存。长连接会上线；
+   如果提示开启机器人，说明还没发布版本，长连接此时已在线，不影响下一步。
+5. 保持 Harness 运行，到「事件与回调」→「事件配置」把订阅方式改为「使用长连接接收事件」并保存（必须有长连接在线才能保存）。
+6. 「添加事件」→ 添加 `im.message.receive_v1`（接收消息）。
+7. 「版本管理与发布」→ 创建版本，可用范围包含要使用的人 → 发布（可能需要管理员审核）。
+8. 在飞书里打开和机器人的单聊（搜索应用名，或点面板里的「在飞书中打开」），发送配对码。群聊里先把机器人拉进群，再 @ 它。
+
+请用专门给这个团队新建的应用：同一个 App ID 有多个程序连着时，每条消息只会交给其中一个。
+
+```json
+{"scopes":{"tenant":["im:message.p2p_msg:readonly","im:message.group_at_msg:readonly","im:message:send_as_bot","im:message.reactions:write_only","contact:contact.base:readonly","contact:user.base:readonly","im:chat:readonly"],"user":[]}}
+```
+
+### Slack
+
+Slack 走 Socket Mode：由 Harness 主动连到 Slack，电脑不需要公网地址。
+
+1. 打开 https://api.slack.com/apps → **Create New App** → **From a manifest**，选择工作区，切到 JSON 标签，
+   粘贴下方清单（"Bot Team" 可以改名）→ **Next** → **Create**。
+2. **Install App** → **Install to Workspace** → **Allow**，复制 **Bot User OAuth Token**（`xoxb-…`）。
+3. **Basic Information** → **App-Level Tokens** → **Generate Token and Scopes**：名字随意，**Add Scope** 选
+   `connections:write`，点 **Generate**，复制 Token（`xapp-…`）。
+4. 在 Bots 里打开这个 Bot → **应用** → 添加 **Slack**，填入两个 Token 并保存。显示「已连接」后会出现配对码。
+5. 在 Slack 里打开这个应用（点配对码旁的「在 Slack 中打开」，或 Apps → 你的应用 → Messages），把配对码发给它。
+6. 想在频道里用：先把应用邀请进频道（`/invite @Bot Team`），再 @ 它；它会在那条消息的讨论串里回复。
+
+每个 Bot 用一个单独的 Slack 应用，不要让别的程序同时使用同一个应用（Slack 每条消息只交给其中一个连接）。
+以后改了权限，要重新安装到工作区，再点「重新连接」。
+
+```json
+{
+  "display_information": {
+    "name": "Bot Team",
+    "description": "Message your bot team from Slack: DM the app, or @mention it in a channel.",
+    "background_color": "#4a154b"
+  },
+  "features": {
+    "app_home": { "home_tab_enabled": false, "messages_tab_enabled": true, "messages_tab_read_only_enabled": false },
+    "bot_user": { "display_name": "Bot Team", "always_online": true }
+  },
+  "oauth_config": {
+    "scopes": { "bot": ["app_mentions:read", "channels:read", "chat:write", "groups:read", "im:history", "users:read"] }
+  },
+  "settings": {
+    "event_subscriptions": { "bot_events": ["app_mention", "message.im"] },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}
+```
+
 ### 其他须知
 
 - **谁能和它说话**：只有你配对过的人。其他人一律忽略；在私聊里最多每天收到一句「这是私人 Bot」。
@@ -121,7 +183,7 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
 - **配对等同于你自己的登录**：配对的人能让 bot 做你能做的任何事，包括它们的能力和应用在这台 Mac 上允许的操作。
   只配对你自己或你信任的人；如果配对了别人，请在拥有该聊天应用的 bot 上关掉有风险的能力。
 - **回复发到哪里**：发到你最近一次请求来自的那个聊天。在面板里发消息，对话就回到面板。
-  Telegram 收到纯文本（去掉 Markdown 标记）；Discord 保留 Markdown。
+  Telegram 收到纯文本（去掉 Markdown 标记）；Discord、Slack 和飞书会显示 Markdown 格式。在 Slack 频道里，回复发在你那条消息的讨论串里。
 - **定时汇报**：拥有聊天应用的 bot 的定时任务会把结果发给第一个配对的人（可在面板里关闭），
   于是「工作日早上九点 Atlas 给你做简报」会直接出现在你手机上。
 - **一个 Token 只能在一处使用**：同一个聊天 Bot Token 同时只能连在一个 Harness 的一个 bot 上。
@@ -136,7 +198,7 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
   修改即时生效；新增或修改应用在下次会话启动时连接。
 - `bot_send_message` 把消息放进对方的收件箱并唤醒它；同一对 bot 10 分钟内最多互发 16 条，防止无限对话。
 - 所有会话都能用 `bot_list`、`bot_create`、`bot_update`、`bot_delete`、`bot_send_message`、`bot_schedule` 管理 bot。
-- 聊天应用不是 MCP 服务：Host 为每个 Telegram / Discord 应用保持一个连接（Telegram 用长轮询，Discord 用 Gateway），
+- 聊天应用不是 MCP 服务：Host 为每个聊天应用保持一个连接（Telegram 用长轮询，Discord 用 Gateway，Slack 用 Socket Mode，飞书用长连接），
   随你添加、修改、关闭或删除应用而启动和停止，并把配对者的消息作为用户提示交给 bot，开头标着 `[Telegram · 名字]`。
 
 ## Open Computer Use
@@ -146,10 +208,10 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
 
 ## 存储与外发
 
-- `~/.dsh/cache/bots/`：`bots.json`（bot，含应用里填的 Key 和聊天 Bot Token）、`messages.jsonl`（时间线）、
+- `~/.dsh/cache/bots/`（`bots.json` 和 `channels.json` 只有你自己的账户能读）：`bots.json`（bot，含应用里填的 Key 和聊天 Bot Token）、`messages.jsonl`（时间线）、
   `channels.json`（每个聊天应用的配对者，以及每个聊天处理过的最后一条消息）、`avatars/`、`skills/`（从 GitHub 导入的技能）。
 - 除了 bot 自身会话（你配置的模型）、你连接的应用、生成头像时的图片模型、导入技能时访问 GitHub，
-  以及连接聊天应用后访问 Telegram / Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示），不向外发送任何内容。
+  以及连接聊天应用后访问飞书 / Lark、Telegram、Slack、Discord 的 API（给配对者的回复、正在输入提示、给陌生人的那一句提示），不向外发送任何内容。
 
 ## 安装
 

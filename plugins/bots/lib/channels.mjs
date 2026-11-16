@@ -33,9 +33,11 @@ import { dirname } from 'node:path';
 const CONNECTORS = {
   telegram: () => import('./channels/telegram.mjs'),
   discord: () => import('./channels/discord.mjs'),
+  feishu: () => import('./channels/feishu.mjs'),
+  slack: () => import('./channels/slack.mjs'),
 };
 export const CHANNEL_KINDS = Object.keys(CONNECTORS);
-export const CHANNEL_LABELS = { telegram: 'Telegram', discord: 'Discord' };
+export const CHANNEL_LABELS = { telegram: 'Telegram', discord: 'Discord', feishu: 'Feishu', slack: 'Slack' };
 /** Chat apps that render Markdown themselves; the rest get replies as plain text. */
 const RENDERS_MARKDOWN = new Set(['discord']);
 
@@ -143,7 +145,8 @@ export function redact(text, secrets = []) {
   return s
     .replace(/bot\d{4,}:[A-Za-z0-9_-]{20,}/g, 'bot<token>')
     .replace(/\b\d{4,}:[A-Za-z0-9_-]{30,}\b/g, '<token>')
-    .replace(/\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g, '<token>');
+    .replace(/\b[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g, '<token>')
+    .replace(/\b(?:xox[a-z]|xapp|xoxe)(?:\.xox[a-z])?-[A-Za-z0-9-]{6,}/g, '<token>');
 }
 
 /**
@@ -785,7 +788,8 @@ export function createChannels(deps) {
         let first = true;
         for (const part of splitText(plain, rec.limit)) {
           if (!rec.conn) break;
-          await rec.conn.send(target.chatId, part, first && target.replyTo ? { replyTo: target.replyTo } : undefined);
+          // A chat app that threads replies (Slack) keeps every part in the thread; elsewhere only the first part quotes.
+          await rec.conn.send(target.chatId, part, target.replyTo && (first || rec.mod?.THREADS === true) ? { replyTo: target.replyTo } : undefined);
           first = false;
         }
       });
