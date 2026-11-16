@@ -97,6 +97,8 @@ Bot 就是一个普通的 Harness 会话，所以 Harness 能做的它都能做�
   另一边都会拿到新令牌，谁也不会把谁踢下线。Claude Code 的登录会显示出来但不提供：Anthropic 只允许
   在 Claude Code 和 claude.ai 里使用 Claude 订阅，请改用 API Key 添加 Claude。
 
+![模型来源](docs/model-sources.png)
+
 ## 话题：对话不会无限变长
 
 bot 的会话就是一个**话题**。新话题是一段全新的会话（旧会话归档，bot 的定时任务一起搬过去），
@@ -127,12 +129,18 @@ bot 知道的事靠记忆延续。下面几种情况会开新话题：
   置顶的笔记不会被自动整理改动；看起来像 Key 或 Token 的内容一律不存。
 - 记忆工作默认使用各 bot 自己的模型，也可以在设置里指定一个更便宜的。
 
+![bot 的记忆](docs/memory.png)
+
+![团队记忆](docs/team-memory.png)
+
 ## 用量
 
 侧栏的 **用量** 统计 bot 的每一次模型调用（它们的对话、记忆工作，以及 Harness 压缩它们的上下文），
 可按 bot、任务、模型、用途、定时任务和日期（今天按小时）查看，并和上一期对比。一个**任务**是 bot
 从收到一个请求（来自你、聊天应用、定时任务或其他 bot）到重新空闲为止做的所有事。费用是估算：
 用你填的价格，或 LiteLLM 公开价格表（**价格**）；没有价格的模型只显示 tokens。
+
+![用量](docs/usage.png)
 
 ## 在飞书、Telegram、Slack 或 Discord 里给团队发消息
 

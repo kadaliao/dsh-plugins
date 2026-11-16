@@ -115,6 +115,8 @@ model's thinking levels when it has them. Besides the models Harness already has
   tokens, and neither signs the other out. Claude Code's login is shown but not offered: Anthropic allows a
   Claude subscription only in Claude Code and claude.ai, so add Claude with an API key instead.
 
+![Model sources](docs/en-model-sources.png)
+
 ## Topics: conversations that don't grow forever
 
 A bot's conversation is a **topic**. A new topic is a fresh conversation (the old one is archived, the
@@ -151,6 +153,10 @@ Every bot keeps **notes** that outlast its topics, and the team shares one more 
   or token is never stored.
 - Memory work runs on each bot's own model unless Settings names a cheaper one.
 
+![A bot's memory](docs/en-memory.png)
+
+![Team memory](docs/en-team-memory.png)
+
 ## Usage
 
 **Usage** in the sidebar counts every model call the bots make — their conversations, the memory work and
@@ -158,6 +164,8 @@ Harness compacting their context — by bot, task, model, kind of work, schedule
 for today), with the change from the period before. A **task** is everything a bot does from one request
 (you, a chat app, a schedule or another bot) until it is idle again. Costs are estimates from your own
 prices or LiteLLM's public price list (**Prices**); a model with no price shows its tokens only.
+
+![Usage](docs/en-usage.png)
 
 ## Message your team from Feishu, Telegram, Slack or Discord
 
