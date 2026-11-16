@@ -13,12 +13,17 @@
  * Nothing touches other conversations, except the bot tools themselves, which
  * every conversation gets so the user can manage bots from anywhere.
  *
+ * Chat channel apps (Telegram, Discord) are no MCP servers: lib/channels.mjs
+ * keeps a connector running for each, so paired people can message the team
+ * from that chat app and read the replies there.
+ *
  * @module @kadaliao/dsh-bots
  */
 
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 import { createStore, initialsOf, slugify, SKILL_RE, PALETTE } from './lib/store.mjs';
@@ -28,6 +33,8 @@ import { SKILL_SOURCES, importGithubSkill, importUrlSkill, listGithubSkills, par
 import { TEAMS, teamTiming, teamView } from './lib/teams.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
+import { isLogoName, withLogo } from './lib/logos.mjs';
+import { CHANNEL_LABELS, channelEntry, channelIssue, createChannels, maskBot, unmaskApps } from './lib/channels.mjs';
 import { describeTiming, dmBody, dmHeader, personaText, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
 
 /**
@@ -95,10 +102,13 @@ export function ocuPath() {
 
 /** The app catalog the Apps tab offers, with the open-computer-use path in force. */
 export function templates() {
-  return appCatalog(ocuPath());
+  return appCatalog(ocuPath()).map(withLogo);
 }
 
-/** The mcp-client row of one app of `bot`. Throws APP_INCOMPLETE when a required field is empty. */
+/**
+ * The mcp-client row of one app of `bot`. Throws APP_INCOMPLETE when a required
+ * field is empty; null for a chat channel app, which is no MCP server.
+ */
 export function mcpConfigOf(app, bot) {
   return mcpConfigFor(app, templates(), { bot: bot?.handle ?? 'bot' });
 }
@@ -159,7 +169,12 @@ const service = (ctx, name) => {
   }
 };
 
-export function apply(ctx, config) {
+/**
+ * @param {object} ctx
+ * @param {object} config
+ * @param {{loadConnector?: (kind: string) => Promise<object>, typingEveryMs?: number}} [deps] - for tests: a stand-in chat connector.
+ */
+export function apply(ctx, config, deps = {}) {
   const cfg = config && typeof config === 'object' ? config : {};
   const dir = join(homeDir(), 'cache', 'bots');
   const store = createStore(dir);
@@ -198,7 +213,14 @@ export function apply(ctx, config) {
   /** sessionId → {agent, signature, disposers[]} */
   const installed = new Map();
 
-  const signatureOf = (bot) => JSON.stringify({ s: bot.skills, a: bot.apps, t: bot.tools, h: bot.handle });
+  const isChannel = (app) => Boolean(channelEntry(app, templates()));
+  // Chat channels run outside the Agent; changing one does not restart the bot's MCP clients.
+  const signatureOf = (bot) => JSON.stringify({ s: bot.skills, a: bot.apps.filter((a) => !isChannel(a)), t: bot.tools, h: bot.handle });
+  /** The chat apps the team can be reached from ('Telegram'), for the persona. */
+  const channelNames = (bots) => {
+    const tpl = templates();
+    return [...new Set(bots.flatMap((b) => b.apps.filter((a) => a.enabled && channelEntry(a, tpl)).map((a) => CHANNEL_LABELS[channelEntry(a, tpl).channel] ?? channelEntry(a, tpl).name.en)))];
+  };
 
   function uninstall(sessionId) {
     const rec = installed.get(sessionId);
@@ -250,7 +272,7 @@ export function apply(ctx, config) {
         }
       } else skillsInline = true;
     }
-    const apps = bot.apps.filter((a) => a.enabled);
+    const apps = bot.apps.filter((a) => a.enabled && !isChannel(a));
     const appNames = [];
     if (apps.length > 0 && mcpClient && typeof actx.plugin === 'function') {
       for (const app of apps) {
@@ -276,7 +298,8 @@ export function apply(ctx, config) {
             // Read on every assembly: a renamed teammate or edited persona applies at once.
             text: () => {
               const now = store.get(bot.id);
-              return now ? personaText(now, store.list(), { skillsInline, skillNames, apps: appNames }) : '';
+              const roster = store.list();
+              return now ? personaText(now, roster, { skillsInline, skillNames, apps: appNames, channels: channelNames(roster) }) : '';
             },
           }),
         );
@@ -449,6 +472,32 @@ export function apply(ctx, config) {
     return agent.session.id;
   }
 
+  // --- chat channels: Telegram, Discord -----------------------------------------------------
+  const channels = createChannels({
+    file: join(dir, 'channels.json'),
+    bots: () => store.list(),
+    entries: () => templates(),
+    // A chat message is a user prompt like one typed in the panel, after a line naming where it came from.
+    deliver: async (target, { header, body }) => {
+      const agent = await agentOf(target);
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: header }, { type: 'text', text: body }], source: { kind: 'user' } }));
+      await flush(agent);
+      return agent.session.id;
+    },
+    running: (sessionId) => agents()?.get?.(sessionId)?.status === 'running',
+    ...(deps.loadConnector ? { loadConnector: deps.loadConnector } : {}),
+    ...(deps.typingEveryMs ? { typingEveryMs: deps.typingEveryMs } : {}),
+    log: (line) => ctx.logger?.info?.(`bots: ${line}`),
+  });
+  ctx.effect(() => {
+    channels.sync();
+    const off = store.onChange(() => channels.sync());
+    return () => {
+      off();
+      void channels.stopAll();
+    };
+  }, 'bots: chat channels');
+
   // The timeline: what the user typed to a bot, what the bot answered, scheduled runs.
   const trigger = new Map();
   /** Sessions whose current turn already sent a bot_send_message. */
@@ -463,8 +512,11 @@ export function apply(ctx, config) {
         if (kind === 'schedule' && /^\[SCHEDULE CHANGE\]/.test(textOf(event.data.content))) kind = 'schedule-notice';
         trigger.set(session.id, kind);
         answered.delete(session.id);
-        if (kind === 'user') store.log({ from: 'user', to: bot.id, text: textOf(event.data.content), kind: 'user' });
-        else if (kind === 'schedule') store.log({ from: 'schedule', to: bot.id, text: textOf(event.data.content), kind: 'system' });
+        const said = textOf(event.data.content);
+        // A chat message makes its chat where replies go; any other user message brings them back here.
+        const via = channels.noteUserMessage(session.id, bot, kind, said);
+        if (kind === 'user') store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who } : { from: 'user', to: bot.id, text: said, kind: 'user' });
+        else if (kind === 'schedule') store.log({ from: 'schedule', to: bot.id, text: said, kind: 'system' });
       } else if (event.type === 'assistant/message') {
         const content = event.data?.message?.content ?? [];
         const calls = content.filter((b) => b?.type === 'tool-call');
@@ -476,7 +528,13 @@ export function apply(ctx, config) {
         // and the closing words of a turn that answered a bot by DM (they reach no one). The
         // dispatcher reporting back after its teammates answered is a message to the user.
         const hidden = why === 'schedule-notice' || (why === 'agent-message' && (bot.role !== 'primary' || answered.has(session.id)));
-        if (text && !hidden) store.log({ from: bot.id, to: 'user', text, kind: 'reply' });
+        if (text && !hidden) {
+          // Also to the chat the user wrote from, when that is where the conversation is.
+          const sent = channels.noteReply(session.id, text);
+          store.log({ from: bot.id, to: 'user', text, kind: 'reply', ...(sent ? { via: sent.kind } : {}) });
+        }
+      } else if (event.type === 'turn/end') {
+        channels.noteTurnEnd(session.id);
       }
     } catch {
       // The timeline must never disturb a conversation.
@@ -891,10 +949,20 @@ export function apply(ctx, config) {
     };
   }
 
+  /** A bot as the page sees it: channel tokens masked. */
+  const publicBot = (bot) => (bot ? maskBot(bot, templates()) : bot);
+
   function state() {
+    const tpl = templates();
     const bots = store.list().map((b) => {
       const appIssues = {};
       for (const app of b.apps) {
+        const entry = channelEntry(app, tpl);
+        if (entry) {
+          const issue = channelIssue(app, entry);
+          if (issue) appIssues[app.id] = issue;
+          continue;
+        }
         try {
           mcpConfigOf(app, b);
         } catch (error) {
@@ -902,7 +970,7 @@ export function apply(ctx, config) {
         }
       }
       const skills = b.skills.map((s) => (s.source === 'dsh' && !s.description && dshSkillInfo.get(s.name) ? { ...s, description: dshSkillInfo.get(s.name) } : s));
-      return { ...b, skills, status: botStatus(b), appIssues };
+      return { ...publicBot(b), skills, status: botStatus(b), appIssues, channels: channels.view(b) };
     });
     const sessionMap = {};
     for (const b of bots) if (b.sessionId) sessionMap[b.sessionId] = b.id;
@@ -1013,7 +1081,10 @@ export function apply(ctx, config) {
   const routes = {
     teams: { get: () => teamsView() },
     'teams/hire': {
-      post: async (body) => ({ ok: true, ...(await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en', { primary: body.primary !== false })) }),
+      post: async (body) => {
+        const r = await hireTeam(String(body.id ?? ''), body.lang === 'zh' ? 'zh' : 'en', { primary: body.primary !== false });
+        return { ok: true, ...r, bots: r.bots.map(publicBot) };
+      },
     },
     'skills/library': { get: async () => ({ skills: await dshSkills(), sources: SKILL_SOURCES }) },
     'skills/github': {
@@ -1038,7 +1109,7 @@ export function apply(ctx, config) {
           }
         }
         const saved = store.save({ id: bot.id, skills: [...store.get(bot.id).skills, ...added] });
-        return { ok: added.length > 0 || failed.length === 0, bot: saved, added: added.map((x) => x.name), failed, ...(failed.length && !added.length ? { reason: failed[0].reason } : {}) };
+        return { ok: added.length > 0 || failed.length === 0, bot: publicBot(saved), added: added.map((x) => x.name), failed, ...(failed.length && !added.length ? { reason: failed[0].reason } : {}) };
       },
     },
     'skills/write': {
@@ -1070,7 +1141,7 @@ export function apply(ctx, config) {
           return { template: a.template, name: a.name, serverName, enabled: true, config: a.config, values: {} };
         });
         const saved = store.save({ id: bot.id, apps: [...bot.apps, ...apps] });
-        return { ok: true, bot: saved, added: apps.map((a) => a.name) };
+        return { ok: true, bot: publicBot(saved), added: apps.map((a) => a.name) };
       },
     },
     // The first read fills Harness skill descriptions for skills stored without one.
@@ -1097,9 +1168,11 @@ export function apply(ctx, config) {
         delete input.sessionId;
         delete input.status;
         if (prev?.avatar?.kind === 'image' && input.avatar?.kind === 'image') input.avatar = { ...input.avatar, url: prev.avatar.url };
+        // The page holds channel tokens masked; a mask sent back keeps the stored token.
+        if (Array.isArray(input.apps)) input.apps = unmaskApps(input.apps, prev?.apps ?? [], templates());
         const bot = store.save(input, { createdBy: 'user' });
         applyModel(bot);
-        return { ok: true, bot: { ...bot, status: botStatus(bot) } };
+        return { ok: true, bot: { ...publicBot(bot), status: botStatus(bot) } };
       },
     },
     delete: {
@@ -1138,14 +1211,14 @@ export function apply(ctx, config) {
         writeFileSync(join(dir, 'avatars', bot.id), bytes);
         writeFileSync(join(dir, 'avatars', `${bot.id}.type`), m[1]);
         const saved = store.patch(bot.id, { avatar: { kind: 'image', url: `${R}/avatar/${bot.id}?v=${Date.now().toString(36)}`, color: bot.avatar.color } });
-        return { ok: true, bot: saved };
+        return { ok: true, bot: publicBot(saved) };
       },
     },
     'avatar/generate': {
       post: async (body) => {
         const bot = store.get(String(body.id ?? ''));
         if (!bot) return { ok: false, reason: 'no such bot' };
-        return { ok: true, bot: await generateAvatar(bot, body.style) };
+        return { ok: true, bot: publicBot(await generateAvatar(bot, body.style)) };
       },
     },
     'avatar/clear': {
@@ -1153,7 +1226,7 @@ export function apply(ctx, config) {
         const bot = store.get(String(body.id ?? ''));
         if (!bot) return { ok: false, reason: 'no such bot' };
         for (const f of [bot.id, `${bot.id}.type`]) rmSync(join(dir, 'avatars', f), { force: true });
-        return { ok: true, bot: store.patch(bot.id, { avatar: { kind: 'initials', color: bot.avatar.color } }) };
+        return { ok: true, bot: publicBot(store.patch(bot.id, { avatar: { kind: 'initials', color: bot.avatar.color } })) };
       },
     },
     'ocu/install': {
@@ -1189,6 +1262,15 @@ export function apply(ctx, config) {
       post: async (body) => ({ ok: true, task: entryView(checkEntry(await schedule().edit({ id: String(body.id ?? ''), action: 'update', patch: { active: body.active === true } }))) }),
     },
     'schedules/run': { post: async (body) => (checkEntry(await schedule().run({ id: String(body.id ?? '') })), { ok: true }) },
+    // Chat channels: a pairing code, forgetting a paired person, options, reconnecting.
+    'channels/code': { post: (body) => ({ ok: true, ...channels.newCode(String(body.botId ?? ''), String(body.appId ?? '')) }) },
+    'channels/unpair': {
+      post: (body) => (channels.unpair(String(body.botId ?? ''), String(body.appId ?? ''), String(body.userId ?? '')) ? { ok: true } : { ok: false, reason: 'no such paired person' }),
+    },
+    'channels/options': {
+      post: (body) => ({ ok: true, ...channels.setOptions(String(body.botId ?? ''), String(body.appId ?? ''), { ...(typeof body.scheduleReplies === 'boolean' ? { scheduleReplies: body.scheduleReplies } : {}) }) }),
+    },
+    'channels/reconnect': { post: (body) => ({ ok: channels.reconnect(String(body.botId ?? ''), String(body.appId ?? '')) }) },
   };
 
   const mountRoutes = (scope) => {
@@ -1210,11 +1292,12 @@ export function apply(ctx, config) {
       );
     }
     scope.effect(() => web.register({ kind: 'prefix', path: `${R}/avatar`, handler: (req, res) => serveAvatar(dir, req, res) }));
+    scope.effect(() => web.register({ kind: 'prefix', path: `${R}/logo`, handler: (req, res) => serveLogo(req, res) }));
   };
   if (typeof ctx.inject === 'function') ctx.inject(['webServer'], mountRoutes);
   else if (ctx.webServer) mountRoutes({ webServer: ctx.webServer, effect: (fn) => ctx.effect(fn) });
 
-  return { store, state, deliver, install, reconcile, installed, routes };
+  return { store, state, deliver, install, reconcile, installed, routes, channels };
 }
 
 function serveAvatar(dir, req, res) {
@@ -1236,6 +1319,30 @@ function serveAvatar(dir, req, res) {
   res.setHeader('content-type', type);
   res.setHeader('content-length', String(size));
   res.setHeader('cache-control', 'private, max-age=31536000, immutable');
+  if (req.method === 'HEAD') return void res.end();
+  createReadStream(file).pipe(res);
+}
+
+const LOGO_DIR = fileURLToPath(new URL('./logos/', import.meta.url));
+
+/** `${R}/logo/<name>.png`: an app logo shipped with the plugin. */
+export function serveLogo(req, res) {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const m = /^([a-z0-9-]+)\.png$/.exec(decodeURIComponent(url.pathname.slice(`${R}/logo/`.length)));
+  const file = m && isLogoName(m[1]) ? join(LOGO_DIR, `${m[1]}.png`) : '';
+  let size = 0;
+  try {
+    if (!file) throw new Error('bad name');
+    size = statSync(file).size;
+  } catch {
+    res.statusCode = 404;
+    res.end();
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader('content-type', 'image/png');
+  res.setHeader('content-length', String(size));
+  res.setHeader('cache-control', 'public, max-age=86400');
   if (req.method === 'HEAD') return void res.end();
   createReadStream(file).pipe(res);
 }

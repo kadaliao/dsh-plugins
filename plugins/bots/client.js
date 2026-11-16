@@ -1112,7 +1112,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           );
         }
         const prev = items[i - 1];
-        const grouped = prev && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && at - toMs(prev.at) < 5 * 60_000;
+        const grouped = prev && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && at - toMs(prev.at) < 5 * 60_000;
         rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped }));
       });
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 880, margin: '0 auto' } }, rows, h('div', { ref: end }));
@@ -1152,7 +1152,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         return h(
           'div',
           { 'data-dsh-bots-msg': 'user', className: 'dshb-fade', style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, marginTop: grouped ? 0 : 6 } },
-          grouped ? null : h('span', { style: { fontSize: TINY, color: C.faint } }, m.to !== botId && to.kind === 'bot' ? `${t('toName', { name: to.name })} · ${time}` : time),
+          grouped
+            ? null
+            : h(
+                'span',
+                { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', alignItems: 'center', gap: 6 } },
+                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, t('viaChannel', { app: channelName(m.via), who: str(m.who) || t('you') })) : null,
+                m.to !== botId && to.kind === 'bot' ? `${t('toName', { name: to.name })} · ${time}` : time,
+              ),
           h('div', { style: { maxWidth: '78%', padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: '#fff', fontSize: FONT } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
           h('div', { style: { width: 'min(480px, 78%)', display: 'flex', justifyContent: 'flex-end' } }, h(LinkCards, { t, text: m.text, align: 'flex-end' })),
         );
@@ -1173,6 +1180,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 from.kind === 'bot' ? h('span', { style: { color: C.faint } }, `@${from.bot.handle}`) : null,
                 m.to !== 'user' && to.kind === 'bot' && m.to !== botId ? h('span', { style: { color: C.faint } }, `→ ${to.name}`) : null,
                 h('span', { style: { color: C.faint } }, time),
+                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, title: t('sentToChannel', { app: channelName(m.via) }), 'data-dsh-bots-via': m.via }, `→ ${channelName(m.via)}`) : null,
               ),
           h('div', { style: { padding: '8px 12px', borderRadius: '4px 14px 14px 14px', background: C.layer2, border: `1px solid ${C.border1}`, fontSize: FONT, minWidth: 0 } }, h(Clamp, { t, text: m.text, lines: 24 })),
           h(LinkCards, { t, text: m.text }),
@@ -1866,6 +1874,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         h('span', { style: { color: C.faint, display: 'inline-flex' } }, Icon.arrow(11)),
                         h('span', { style: { fontWeight: 600 } }, to.name),
                         h(Badge, { color: m.kind === 'dm' ? C.label : m.kind === 'system' ? C.warn : C.muted }, t(`kind_${m.kind}`) || m.kind),
+                        m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via)} · ${str(m.who)}` : channelName(m.via)) : null,
                         h('span', { style: { marginLeft: 'auto', color: C.faint, fontSize: TINY }, title: fmtDate(toMs(m.at)) }, fmtAgo(t, m.at)),
                       ),
                       h(Clamp, { t, text: m.text, lines: 3, style: { fontSize: SMALL, color: C.muted } }),
@@ -2462,7 +2471,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                     },
                     style: { flex: '1 1 260px', flexDirection: 'row', alignItems: 'center', gap: 12, cursor: 'pointer', textAlign: 'left', font: 'inherit', color: 'inherit', background: `linear-gradient(135deg, ${tint('#d97706', 10)}, ${C.layer1} 70%)` },
                   },
-                  h(AppIcon, { entry: { icon: 'A', color: '#c2410c' }, size: 38 }),
+                  h(AppIcon, { entry: { icon: 'A', color: '#c2410c', logo: src.logo }, size: 38 }),
                   h(
                     'span',
                     { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 } },
@@ -2954,8 +2963,31 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       return n;
     }
 
-    /** A coloured rounded square with the app's letters (or one CJK character) in white. */
+    /** The app's logo, or a coloured rounded square with its letters (or one CJK character) in white. */
     function AppIcon({ entry, size = 36 }) {
+      const logo = str(entry?.logo);
+      const [broken, setBroken] = useState('');
+      if (logo && broken !== logo) {
+        return h(
+          'span',
+          {
+            'data-dsh-bots-app-icon': entry?.id ?? true,
+            'data-dsh-bots-app-logo': logo,
+            style: {
+              width: size,
+              height: size,
+              borderRadius: Math.round(size * 0.26),
+              display: 'inline-flex',
+              flex: 'none',
+              overflow: 'hidden',
+              background: '#fff',
+              boxShadow: '0 0 0 1px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.12)',
+              userSelect: 'none',
+            },
+          },
+          h('img', { src: `${R}logo/${encodeURIComponent(logo)}.png`, alt: '', draggable: false, onError: () => setBroken(logo), style: { width: '100%', height: '100%', display: 'block', objectFit: 'cover' } }),
+        );
+      }
       const icon = str(entry?.icon) || '?';
       const color = str(entry?.color) || '#475569';
       const n = [...icon].length;
@@ -2991,6 +3023,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     const RUNTIME_WORD = { node: 'npx', uv: 'uvx' };
     function runtimeLabel(t, entry) {
       if (!entry) return '';
+      if (isChannelEntry(entry)) return t('chatChannel');
       if (entry.transport === 'streamable-http') return t('runtimeRemote');
       return RUNTIME_WORD[entry.runtime] ?? (entry.runtime === 'binary' ? t('runtimeBinary') : str(entry.command));
     }
@@ -3004,6 +3037,120 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       }
       return out;
     }
+    // --- chat channels (Telegram, Discord): apps people message the team from -----------------
+
+    const CHANNEL_NAMES = { telegram: 'Telegram', discord: 'Discord' };
+    const CHANNEL_COLORS = { telegram: '#229ED9', discord: '#5865F2' };
+    const channelName = (kind) => CHANNEL_NAMES[kind] ?? str(kind);
+    const isChannelEntry = (entry) => entry?.kind === 'channel';
+
+    /** Under a chat channel's row: whether it is connected, the pairing code, and who is paired. */
+    function ChannelPanel({ t, bot, app, entry, view, toast }) {
+      const [working, setWorking] = useState('');
+      const v = view && typeof view === 'object' ? view : { state: 'connecting', paired: [] };
+      const kind = str(v.kind || entry?.channel);
+      const appName = channelName(kind);
+      const handle = v.account?.username ? `@${v.account.username}` : appName;
+      const paired = Array.isArray(v.paired) ? v.paired : [];
+      const call = (path, body, okText) => {
+        setWorking(path);
+        return postJson(path, { botId: bot.id, appId: app.id, ...body })
+          .then((r) => {
+            if (r?.ok) {
+              if (okText) toast(okText);
+              void refreshState();
+            } else toast(r?.reason || t('actionFailed'), 'error');
+            return r;
+          })
+          .finally(() => setWorking(''));
+      };
+      const state = str(v.state) || 'connecting';
+      const hintText = v.hint ? t(`channelHint_${v.hint}`, { app: appName }) : '';
+      const dot = (color) => h('span', { style: { width: 8, height: 8, borderRadius: '50%', background: color, flex: 'none' } });
+      const statusLine =
+        state === 'connected'
+          ? [dot(C.ok), h('span', { key: 's', style: { fontWeight: 600 } }, t('channelConnected', { handle }))]
+          : state === 'connecting'
+            ? [h('span', { key: 'sp', className: 'dshb-spinner', style: { width: 12, height: 12 } }), h('span', { key: 's' }, t('channelConnecting', { app: appName }))]
+            : state === 'error'
+              ? [h('span', { key: 'i', style: { color: C.error, display: 'inline-flex' } }, Icon.alert(13)), h('span', { key: 's', style: { color: C.error, fontWeight: 600 } }, hintText || str(v.detail) || t('channelError'))]
+              : state === 'off'
+                ? [dot(C.faint), h('span', { key: 's', style: { color: C.muted } }, t('channelOff'))]
+                : [dot('#d97706'), h('span', { key: 's', style: { color: C.muted } }, t('channelMissing', { app: appName }))];
+      const live = state !== 'off' && state !== 'missing';
+      const step = kind === 'telegram' ? t('pairStepTelegram', { handle }) : kind === 'discord' ? t('pairStepDiscord', { handle }) : t('pairStep', { handle, app: appName });
+      return h(
+        'div',
+        { 'data-dsh-bots-channel': app.id, 'data-state': state, style: { display: 'flex', flexDirection: 'column', gap: 10, margin: '0 14px 12px 62px', padding: '10px 12px', borderRadius: 10, background: C.base, border: `1px solid ${C.border1}`, fontSize: SMALL } },
+        h(
+          'div',
+          { 'data-dsh-bots-channel-status': state, style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, title: str(v.detail) || undefined },
+          statusLine,
+          h('span', { style: { flex: 1 } }),
+          state === 'error' || state === 'connecting'
+            ? h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.refresh(12), disabled: Boolean(working), onClick: () => void call('channels/reconnect', {}), 'data-dsh-bots-channel-reconnect': app.id }, t('reconnect'))
+            : null,
+        ),
+        state === 'error' && hintText && v.detail ? h('div', { style: { fontSize: TINY, color: C.faint, marginTop: -6 } }, str(v.detail)) : null,
+        live
+          ? h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h('div', { style: { fontSize: TINY, fontWeight: 700, color: C.muted, textTransform: 'uppercase', letterSpacing: '.02em' } }, t('pairedPeople', { n: paired.length })),
+              paired.length === 0
+                ? h('div', { style: { color: C.faint } }, t('nobodyPaired', { app: appName }))
+                : paired.map((p, i) =>
+                    h(
+                      'div',
+                      { key: p.id, 'data-dsh-bots-paired': p.id, style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                      h('span', { style: { color: C.muted, display: 'inline-flex' } }, Icon.user(13)),
+                      h('span', { style: { fontWeight: 600 } }, str(p.name) || str(p.id)),
+                      i === 0 ? h(Badge, { color: C.muted }, t('pairedFirst')) : null,
+                      h('span', { style: { color: C.faint, fontSize: TINY } }, t('pairedSince', { when: fmtDate(toMs(p.at)) })),
+                      h('span', { style: { flex: 1 } }),
+                      h(Btn, { size: 'sm', kind: 'ghost', className: 'dshb-btn dshb-btn-sm dshb-btn-ghost dshb-btn-danger', disabled: Boolean(working), onClick: () => void call('channels/unpair', { userId: p.id }, t('unpaired', { name: str(p.name) })), 'data-dsh-bots-unpair': p.id }, t('remove')),
+                    ),
+                  ),
+            )
+          : null,
+        live && v.code
+          ? h(
+              'div',
+              { 'data-dsh-bots-pairing': app.id, style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', borderRadius: 9, background: tint(CHANNEL_COLORS[kind] ?? C.label, 8), border: `1px solid ${tint(CHANNEL_COLORS[kind] ?? C.label, 25)}` } },
+              h('div', { style: { color: C.muted, lineHeight: 1.5 } }, step),
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+                h('span', { className: 'dshb-mono', 'data-dsh-bots-pair-code': str(v.code.code), style: { fontSize: 20, fontWeight: 700, letterSpacing: '.18em', color: C.primary } }, str(v.code.code)),
+                h(Btn, { size: 'sm', kind: 'ghost', onClick: () => (copyText(kind === 'telegram' ? `/start ${v.code.code}` : str(v.code.code)), toast(t('copied'))) }, t('copy')),
+                v.link ? h(ExtLink, { href: v.link, 'data-dsh-bots-pair-link': true }, t('openIn', { app: appName })) : null,
+                h('span', { style: { flex: 1 } }),
+                h('span', { style: { fontSize: TINY, color: C.faint } }, t('codeExpires', { when: fmtAgo(t, v.code.expiresAt) })),
+                h(Btn, { size: 'sm', disabled: Boolean(working), onClick: () => void call('channels/code', {}), 'data-dsh-bots-new-code': app.id }, t('newCode')),
+              ),
+            )
+          : live
+            ? h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                h(Btn, { size: 'sm', kind: paired.length ? 'default' : 'primary', icon: Icon.plus(12), disabled: Boolean(working) || state !== 'connected', onClick: () => void call('channels/code', {}), 'data-dsh-bots-new-code': app.id }, paired.length ? t('pairAnother') : t('pairSomeone')),
+                state !== 'connected' ? h('span', { style: { fontSize: TINY, color: C.faint } }, t('pairWhenConnected')) : null,
+              )
+            : null,
+        live && v.invite ? h('div', null, h(ExtLink, { href: v.invite, 'data-dsh-bots-invite': true }, t('inviteDiscord'))) : null,
+        live && paired.length
+          ? h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+              h(Switch, { on: v.scheduleReplies !== false, disabled: Boolean(working), title: t('channelSchedules', { name: str(paired[0].name), app: appName }), onChange: (on) => void call('channels/options', { scheduleReplies: on }), 'data-dsh-bots-channel-schedules': app.id }),
+              h('span', { style: { color: C.muted } }, t('channelSchedules', { name: str(paired[0].name), app: appName })),
+            )
+          : null,
+        live && v.ignored?.count ? h('div', { 'data-dsh-bots-ignored': v.ignored.count, style: { fontSize: TINY, color: C.faint } }, t('channelIgnored', { n: v.ignored.count, name: str(v.ignored.lastName) })) : null,
+        h('div', { style: { fontSize: TINY, color: C.faint, lineHeight: 1.5 } }, t('channelPrivate', { app: appName })),
+      );
+    }
+
     const missingFields = (entry, values) => (entry?.fields ?? []).filter((f) => f.required && str(values?.[f.key]).trim() === '').map((f) => f.key);
     const needsForm = (entry) => (entry?.fields ?? []).some((f) => f.required);
 
@@ -3151,10 +3298,11 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                     const entry = entryOf(app);
                     const issue = str(issues[app.id]);
                     const custom = !entry || entry.custom;
+                    const channel = isChannelEntry(entry);
                     const detail = custom ? (isHttp(app, entry) ? str(app.config?.url) : [app.config?.command, ...(app.config?.args ?? [])].filter(Boolean).join(' ')) : pick(entry.description, lang);
-                    return h(
+                    const row = h(
                       'div',
-                      { key: app.id, 'data-dsh-bots-app': app.id, style: { display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderTop: i ? `1px solid ${C.border1}` : 'none', opacity: app.enabled === false ? 0.6 : 1 } },
+                      { key: app.id, 'data-dsh-bots-app': app.id, style: { display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderTop: i && !channel ? `1px solid ${C.border1}` : 'none', opacity: app.enabled === false ? 0.6 : 1 } },
                       h(AppIcon, { entry: entry ?? { icon: '{ }', color: '#475569' }, size: 36 }),
                       h(
                         'div',
@@ -3163,7 +3311,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                           'div',
                           { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' } },
                           h('span', { style: { fontWeight: 600 } }, nameOf(app, entry)),
-                          h('span', { className: 'dshb-mono', style: { fontSize: 11.5, color: C.faint } }, `mcp__${app.serverName}__*`),
+                          channel ? h(Badge, { color: entry.color || C.label }, Icon.chat(10), t('chatChannel')) : h('span', { className: 'dshb-mono', style: { fontSize: 11.5, color: C.faint } }, `mcp__${app.serverName}__*`),
                           issue ? h(Badge, { color: '#d97706', title: issue, 'data-dsh-bots-app-issue': app.id }, Icon.alert(11), t('needsSetup')) : null,
                         ),
                         issue
@@ -3173,6 +3321,13 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                       h(Switch, { on: app.enabled !== false, disabled: busy, title: app.enabled !== false ? t('disable') : t('enable'), onChange: (on) => void commit(apps.map((a) => (a.id === app.id ? { ...a, enabled: on } : a))) }),
                       h(Btn, { size: 'sm', kind: issue ? 'primary' : 'default', icon: Icon.edit(12), onClick: () => configure(app), 'data-dsh-bots-configure': app.id }, t('configure')),
                       h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.trash(12), title: t('remove'), className: 'dshb-btn dshb-btn-sm dshb-btn-icon dshb-btn-ghost dshb-btn-danger', onClick: () => setConfirm(app) }),
+                    );
+                    if (!channel) return row;
+                    return h(
+                      'div',
+                      { key: app.id, style: { borderTop: i ? `1px solid ${C.border1}` : 'none' } },
+                      row,
+                      h(ChannelPanel, { t, bot, app, entry, view: bot.channels?.[app.id], toast }),
                     );
                   }),
                 ),
@@ -3332,7 +3487,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         h(
           'div',
           { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 'auto' } },
-          entry.keyUrl ? h(ExtLink, { href: entry.keyUrl }, t('getKey')) : entry.homepage ? h(ExtLink, { href: entry.homepage, style: { color: C.faint } }, t('docs')) : null,
+          entry.keyUrl ? h(ExtLink, { href: entry.keyUrl }, isChannelEntry(entry) ? t('createChatBot') : t('getKey')) : entry.homepage ? h(ExtLink, { href: entry.homepage, style: { color: C.faint } }, t('docs')) : null,
           h('span', { style: { flex: 1 } }),
           h(
             Btn,
@@ -3399,6 +3554,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const fields = Array.isArray(entry.fields) ? entry.fields : [];
       const setV = (key, v) => onChange({ ...value, values: { ...value.values, [key]: v } });
       const missing = missingFields(entry, value.values);
+      const channel = isChannelEntry(entry);
       const sErr = value.serverName && !SERVER_RE.test(value.serverName) ? t('serverNameInvalid') : '';
       return h(
         Modal,
@@ -3408,7 +3564,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           width: 560,
           onClose,
           footer: [
-            h('span', { key: 'n', style: { flex: 1, fontSize: TINY, color: C.faint, alignSelf: 'center' } }, t('appsNote')),
+            h('span', { key: 'n', style: { flex: 1, fontSize: TINY, color: C.faint, alignSelf: 'center' } }, channel ? t('channelSaveNote') : t('appsNote')),
             h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
             h(Btn, { key: 's', kind: 'primary', disabled: busy || missing.length > 0 || Boolean(sErr), onClick: onSave, 'data-dsh-bots-app-save': true }, busy ? t('saving') : app ? t('save') : t('add')),
           ],
@@ -3421,9 +3577,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             'div',
             { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 } },
             h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.55 } }, pick(entry.description, lang)),
-            h('div', { style: { display: 'flex', gap: 14, flexWrap: 'wrap' } }, h(ExtLink, { href: entry.homepage }, t('docs')), h(ExtLink, { href: entry.keyUrl }, t('getKey'))),
+            h('div', { style: { display: 'flex', gap: 14, flexWrap: 'wrap' } }, h(ExtLink, { href: entry.homepage }, t('docs')), h(ExtLink, { href: entry.keyUrl }, channel ? t('createChatBot') : t('getKey'))),
           ),
         ),
+        channel ? h('div', { 'data-dsh-bots-channel-how': entry.id, style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6, padding: '9px 11px', borderRadius: 9, background: tint(entry.color || C.label, 8) } }, t('channelHow', { app: pick(entry.name, lang) })) : null,
         fields.length === 0 ? h('div', { style: { fontSize: SMALL, color: C.faint } }, t('noSettings')) : null,
         fields.map((f) => {
           const v = str(value.values[f.key]);
@@ -3452,7 +3609,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           else control = h(Input, { ...common, mono: f.kind === 'path' });
           return h(Field, { key: f.key, label, hint: pick(f.help, lang) || (f.kind === 'path' && !f.multi ? t('pathHint') : '') }, control);
         }),
-        h(
+        channel
+          ? null
+          : h(
           'details',
           { style: { fontSize: SMALL, color: C.muted } },
           h('summary', { style: { cursor: 'pointer', userSelect: 'none' } }, t('advanced')),
@@ -4759,7 +4918,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         installedApps: 'Installed apps ({n})',
         noApps: 'No apps yet. Add one from the gallery below.',
         appGallery: 'App gallery',
-        appGalleryHint: '{n} apps. Apps are MCP servers; their tools appear to this bot only.',
+        appGalleryHint: '{n} apps. Most are MCP servers whose tools appear to this bot only; chat apps (Telegram, Discord) let you message the team from your phone.',
         noTemplates: 'No templates.',
         featured: 'Featured',
         allApps: 'All',
@@ -4946,6 +5105,43 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         suggest_b1: "Introduce yourself: what can you do for me, and what do you need from me?",
         suggest_b2: "Look at what is on your plate and suggest the first thing to do today.",
         suggest_b3: "Show me which of your skills and apps are ready, and which still need setup.",
+        // chat channels
+        chatChannel: 'chat app',
+        createChatBot: 'Create a bot',
+        channelHow: 'Add it to your dispatcher. Once it connects, pair yourself with the one-time code shown here; then message the bot in {app} to hand out work, and the replies come back to the chat.',
+        channelSaveNote: 'It connects as soon as you save.',
+        channelConnected: 'Connected as {handle}',
+        channelConnecting: 'Connecting to {app}…',
+        channelError: 'Not connected',
+        channelOff: 'Off. Turn it on to connect.',
+        channelMissing: 'Paste the bot token to connect to {app}.',
+        channelHint_token: '{app} rejected the bot token. Copy it again and save.',
+        channelHint_intent: 'Turn on Message Content Intent: Developer Portal → your app → Bot → Privileged Gateway Intents. Then reconnect.',
+        channelHint_conflict: 'Another program is using this bot token. Stop it, or create a separate bot for the team.',
+        channelHint_duplicate: 'This token is already connected on another bot; one token can run in one place.',
+        reconnect: 'Reconnect',
+        pairedPeople: 'Paired people ({n})',
+        nobodyPaired: 'Nobody yet. Until someone is paired, the bot answers no one in {app}.',
+        pairedFirst: 'gets scheduled reports',
+        pairedSince: 'since {when}',
+        unpaired: '{name} removed.',
+        pairStepTelegram: 'From your own Telegram account, send this code to {handle}, or open the link and press Start. It works once.',
+        pairStepDiscord: 'From your own Discord account, send this code to {handle} in a direct message. It works once.',
+        pairStep: 'From your own {app} account, send this code to {handle}. It works once.',
+        copy: 'Copy',
+        copied: 'Copied.',
+        openIn: 'Open in {app}',
+        codeExpires: 'expires {when}',
+        newCode: 'New code',
+        pairSomeone: 'Pair yourself',
+        pairAnother: 'Pair another person',
+        pairWhenConnected: 'Pairing starts once it is connected.',
+        inviteDiscord: 'Invite the bot to a server you are in (needed before you can DM it)',
+        channelSchedules: 'Scheduled reports also go to {name} in {app}',
+        channelIgnored: 'Ignored {n} messages from people who are not paired (last: {name}).',
+        channelPrivate: 'Only paired people reach the team. Anyone else is ignored (at most a one-line "this bot is private" a day). In a group the bot only answers when @mentioned or replied to.',
+        viaChannel: '{app} · {who}',
+        sentToChannel: 'Also sent to {app}',
       },
       zh: {
         lang: 'zh',
@@ -5204,7 +5400,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         installedApps: '已安装的应用（{n}）',
         noApps: '还没有应用。从下方的应用库添加一个。',
         appGallery: '应用库',
-        appGalleryHint: '共 {n} 个应用。应用就是 MCP 服务器，它们的工具只对这个 Bot 可见。',
+        appGalleryHint: '共 {n} 个应用。大多是 MCP 服务器，工具只对这个 Bot 可见；聊天应用（Telegram、Discord）让你用手机给团队发消息。',
         noTemplates: '没有模板。',
         featured: '推荐',
         allApps: '全部',
@@ -5390,6 +5586,43 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         suggest_b1: "介绍一下你自己：你能帮我做什么？需要我提供什么？",
         suggest_b2: "看看你手上有什么事，建议今天先做哪一件。",
         suggest_b3: "告诉我你的技能和应用哪些已经可用，哪些还需要配置。",
+        // chat channels
+        chatChannel: '聊天应用',
+        createChatBot: '创建 Bot',
+        channelHow: '把它加到调度者身上。连上以后，用这里显示的一次性配对码把你自己配对上；之后在 {app} 里给 Bot 发消息就能派活，回复会回到聊天里。',
+        channelSaveNote: '保存后立即连接。',
+        channelConnected: '已连接：{handle}',
+        channelConnecting: '正在连接 {app}…',
+        channelError: '未连接',
+        channelOff: '已关闭。打开后才会连接。',
+        channelMissing: '粘贴 Bot Token 后即可连接 {app}。',
+        channelHint_token: '{app} 拒绝了这个 Bot Token。请重新复制并保存。',
+        channelHint_intent: '请打开 Message Content Intent：开发者后台 → 你的应用 → Bot → Privileged Gateway Intents，然后重新连接。',
+        channelHint_conflict: '另一个程序正在使用这个 Bot Token。请停掉它，或给团队单独建一个 Bot。',
+        channelHint_duplicate: '这个 Token 已经在另一个 Bot 上连接了；一个 Token 只能在一处运行。',
+        reconnect: '重新连接',
+        pairedPeople: '已配对的人（{n}）',
+        nobodyPaired: '还没有人。配对之前，Bot 在 {app} 里不回复任何人。',
+        pairedFirst: '接收定时汇报',
+        pairedSince: '配对于 {when}',
+        unpaired: '已移除 {name}。',
+        pairStepTelegram: '用你自己的 Telegram 账号把这个配对码发给 {handle}，或打开链接后点 Start。只能用一次。',
+        pairStepDiscord: '用你自己的 Discord 账号私信 {handle}，发送这个配对码。只能用一次。',
+        pairStep: '用你自己的 {app} 账号把这个配对码发给 {handle}。只能用一次。',
+        copy: '复制',
+        copied: '已复制。',
+        openIn: '在 {app} 中打开',
+        codeExpires: '{when}过期',
+        newCode: '换一个',
+        pairSomeone: '配对我自己',
+        pairAnother: '再配对一个人',
+        pairWhenConnected: '连接成功后才能配对。',
+        inviteDiscord: '把 Bot 邀请进你所在的服务器（私信它之前必须先这样做）',
+        channelSchedules: '定时汇报也发给 {app} 里的 {name}',
+        channelIgnored: '忽略了 {n} 条未配对的人发来的消息（最近：{name}）。',
+        channelPrivate: '只有配对过的人能找到团队，其他人一律忽略（每天最多回一句“这是私人 Bot”）。在群里，只有 @ 它或回复它时才会回答。',
+        viaChannel: '{app} · {who}',
+        sentToChannel: '也已发到 {app}',
       },
     };
 

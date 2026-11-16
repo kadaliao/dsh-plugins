@@ -16,7 +16,7 @@ export function rosterLine(bot, selfId) {
  * bot's conversation only.
  * @param {object} bot
  * @param {object[]} roster - every bot, the bot itself included.
- * @param {{skillsInline?: boolean, apps?: string[]}} [extra]
+ * @param {{skillsInline?: boolean, apps?: string[], skillNames?: object, channels?: string[]}} [extra] - `channels`: chat apps the team is reachable from ('Telegram').
  */
 export function personaText(bot, roster, extra = {}) {
   const lines = [];
@@ -61,6 +61,14 @@ export function personaText(bot, roster, extra = {}) {
     for (const s of inline) lines.push('', `### ${s.name}`, s.description, '', s.content.trim());
   }
   if (extra.apps?.length) lines.push('', '## Your apps', `Tools from these connected apps are yours: ${extra.apps.join(', ')} (named \`mcp__<app>__<tool>\`).`);
+  if (extra.channels?.length) {
+    const first = extra.channels[0];
+    lines.push(
+      '',
+      '## Chat apps',
+      `The user can also reach the team from ${extra.channels.join(' and ')}. A message that starts with "[${first} · Name]" was sent from that chat app by someone the user paired (usually the user). Treat it like any request from the user: your reply is sent back to that chat as plain text, so keep it short, skip tables, and say plainly what you did or who is on it.`,
+    );
+  }
   return lines.join('\n');
 }
 

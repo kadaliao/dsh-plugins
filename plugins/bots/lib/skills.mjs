@@ -14,7 +14,7 @@ import { dirname, join, normalize } from 'node:path';
 
 /** Skill collections worth browsing, shown as one-click sources. */
 export const SKILL_SOURCES = [
-  { id: 'anthropics', repo: 'anthropics/skills', path: 'skills', name: { en: 'Anthropic skills', zh: 'Anthropic 官方技能' }, description: { en: 'Documents, design, web apps, MCP building, brand and comms.', zh: '文档、设计、网页应用、MCP 开发、品牌与内部沟通。' } },
+  { id: 'anthropics', repo: 'anthropics/skills', path: 'skills', logo: 'anthropic', name: { en: 'Anthropic skills', zh: 'Anthropic 官方技能' }, description: { en: 'Documents, design, web apps, MCP building, brand and comms.', zh: '文档、设计、网页应用、MCP 开发、品牌与内部沟通。' } },
 ];
 
 /** Split YAML-ish front matter: `name`, `description` (folded or quoted). */

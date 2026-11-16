@@ -134,3 +134,79 @@ research 调研与内容, computer, data, life, custom). Removed what DSH alread
 excel, sequential-thinking, chrome-devtools). New: stripe, hubspot, feishu (飞书), supabase.
 | GET | `apps/external` | – | `{ items: {from, name, serverName, template, config /* values masked */}[] }` MCP servers found in Codex / Claude Code / Claude Desktop / Cursor / Windsurf / Gemini / opencode configs |
 | POST | `apps/import` | `{ botId, names: ['<from>/<name>'] }` | `{ ok, bot, added }` |
+
+## Chat channels (Telegram, Discord)
+
+People message the team from a chat app; replies go back to the chat. A channel is an ordinary app on a
+bot whose catalog entry has `kind: 'channel'`; it is **not** an MCP server (`mcpConfigFor` returns `null`,
+no MCP client starts for it, and editing it never restarts the bot's MCP clients).
+
+```ts
+AppEntry += { kind?: 'channel', channel?: 'telegram' | 'discord' }   // channel entries have no transport/command
+// Catalog: telegram (#229ED9, keyUrl https://t.me/BotFather), discord (#5865F2, keyUrl https://discord.com/developers/applications),
+// category 'work', one required secret field `token`.
+App.values.token   // in `state` and every route that returns a bot, a stored token reads as '••••••••' (SECRET_MASK);
+                   // POST save with the mask keeps the stored token, any other value replaces it.
+
+state.bots[].channels: { [appId]: ChannelView }
+ChannelView = {
+  kind: 'telegram' | 'discord',
+  state: 'connecting' | 'connected' | 'error' | 'off' /* app disabled */ | 'missing' /* no token */,
+  detail?: string,              // connector's words (never the token); with error/connecting
+  hint?: 'token' | 'intent' | 'conflict' | 'duplicate',   // the panel words these itself
+  fatal?: true,                 // will not retry until the token changes or `channels/reconnect`
+  account: { username, name } | null,     // the chat bot it is connected as
+  paired: { id, name, at, direct: boolean }[],   // paired[0] gets scheduled reports
+  code: { code: string, expiresAt: number } | null,   // one-time pairing code, 10 minutes
+  link: string | null,          // Telegram deep link t.me/<bot>?start=<code>
+  invite: string | null,        // Discord: OAuth2 invite URL for the bot
+  scheduleReplies: boolean,     // scheduled runs report to paired[0] (default true)
+  ignored: { count, lastName?, lastAt? },   // messages from unpaired people since the Host started
+}
+
+Message += { via?: 'telegram' | 'discord', who?: string }
+  // kind 'user' + via: typed in that chat app by `who` (text is the message without the source line);
+  // kind 'reply' + via: this reply was also sent to that chat.
+```
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| POST | `channels/code` | `{ botId, appId }` | `{ ok, code, expiresAt }` a new pairing code (the old one stops working) |
+| POST | `channels/unpair` | `{ botId, appId, userId }` | `{ ok }` |
+| POST | `channels/options` | `{ botId, appId, scheduleReplies: boolean }` | `{ ok, scheduleReplies }` |
+| POST | `channels/reconnect` | `{ botId, appId }` | `{ ok }` drop and reconnect (after fixing a setting in the chat app's console) |
+
+Behaviour (lib/channels.mjs):
+- A connector runs per enabled channel app with a token; it is started, restarted (token change) and stopped
+  (disabled, removed, bot deleted, plugin disposed) from the roster. One token runs in one place; a second app
+  with the same token shows `hint: 'duplicate'`.
+- Only paired people are heard. Pairing: a private chat, the current code (`CODE` or Telegram `/start CODE`);
+  5 wrong codes per person or 20 per code lock pairing until a new code. Strangers get at most one
+  "this bot is private" line per private chat per day; groups stay silent. In groups the bot only hears
+  messages that mention it or reply to it.
+- A paired person's message becomes a user prompt (`source.kind: 'user'`) in the owning bot's conversation, or
+  in `@handle`'s when it starts with a roster handle, as two text blocks: `[Telegram · Name]` (plus the group
+  name in a group) and the text. A typing indicator runs while the bot works (every 5 s).
+- Replies: a conversation whose latest user message came from a chat sends its user-facing replies
+  (`kind: 'reply'` in the timeline) to that chat — including the dispatcher's report after teammates answer
+  by DM. A user message from anywhere else (the panel) brings replies back to the panel. A scheduled run of
+  the owning bot reports to `paired[0]` privately when `scheduleReplies`. Telegram gets plain text
+  (Markdown markers removed), Discord the Markdown; both are split at the app's limit (4096 / 2000).
+- A message id at or below the highest one handled in that chat is ignored (kept in `channels.json`), so a
+  chat app handing a message out again after a restart never runs a task twice.
+
+Connector contract (`lib/channels/<kind>.mjs`, transport only — Feishu or Slack inbound would be more of these):
+```js
+export const kind = 'telegram';      // 'discord'
+export const TEXT_LIMIT = 4096;      // discord: 2000
+export function createConnector({ token, onMessage, onStatus?, fetchImpl?, WebSocketImpl?, apiBase?, log? }) → {
+  start(): Promise<{ id, username, name }>,   // resolves once authenticated; rejects on a bad token
+  stop(): Promise<void>,                      // idempotent; nothing reconnects afterwards
+  send(chatId, text, { replyTo }?): Promise<void>,   // splits at TEXT_LIMIT
+  typing(chatId): Promise<void>,
+}
+// onMessage({ chatId, messageId, userId, userName, text, isDirect, mentioned, chatTitle? })
+// onStatus({ state: 'connecting'|'connected'|'error'|'stopped', detail?, fatal? }) — never the token
+```
+Telegram reads `BOTS_TELEGRAM_API` (default https://api.telegram.org) so a local stand-in of the Bot API can be
+used for testing.

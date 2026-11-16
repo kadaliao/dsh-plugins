@@ -80,7 +80,7 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
 | Category | Apps (🔑 = needs a key) |
 | --- | --- |
 | Sales & payments | Stripe 🔑, HubSpot CRM 🔑 |
-| Team & office | Feishu / Lark 🔑, Notion 🔑, Slack 🔑, Memory |
+| Team & office | Telegram 🔑 and Discord 🔑 (chat apps, below), Feishu / Lark 🔑, Notion 🔑, Slack 🔑, Memory |
 | Build & ship | GitHub 🔑, Git, Supabase 🔑, Sentry 🔑, Context7 Docs |
 | Research & content | Exa, Tavily 🔑, Brave 🔑, Firecrawl 🔑 |
 | Computer & browser | Open Computer Use (operate macOS apps), Playwright |
@@ -90,6 +90,60 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
 
 - **Schedules** are ordinary Harness scheduled tasks, also on the Automation page.
 - **AI avatars**: with the [Images plugin](../images), draw a bot's avatar from its persona.
+- **Logos**: each app in the gallery shows its vendor's own logo (the App Store icon where there is an app,
+  otherwise the logo from the vendor's site or repository). The logos are their owners' trademarks and
+  only identify each service.
+
+## Message your team from Telegram or Discord
+
+Add **Telegram** or **Discord** to a bot (normally the dispatcher) in its **Apps** tab, and you can hand out
+work from your phone: what you send the chat bot goes to the team as if you typed it in the panel, and
+the replies come back to the chat, including the dispatcher's report once its teammates have answered.
+
+> **You, in Telegram**: Get the release organised for next week.
+>
+> **Atlas**: On it: Forge takes the three P1 bugs, Echo drafts the launch post.
+>
+> **Atlas** (later): Bugs fixed and merged; the launch draft is ready for your review.
+
+### Telegram
+
+1. In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, pick a name and a username
+   ending in `bot`. Make a new bot just for this team.
+2. In Bots, open the dispatcher → **Apps** → **Telegram** → paste the token BotFather gave you → **Add**.
+   It connects at once and shows **Connected as @yourbot**.
+3. Pair yourself: the panel shows a one-time code (it works once, for 10 minutes). Click **Open in
+   Telegram** and press **Start**, or send the code to your bot. The bot answers "Paired".
+4. Message the bot. Start a message with `@handle` to reach another bot directly (`@forge fix the login bug`).
+   In a group, add the bot and @mention it (or reply to it); it ignores the rest of the conversation.
+
+### Discord
+
+1. In the [Developer Portal](https://discord.com/developers/applications): **New Application** → **Bot** →
+   **Reset Token** and copy it. On the same page turn on **Message Content Intent** (without it the bot
+   cannot read messages, and the panel says so).
+2. Add **Discord** to the dispatcher with that token. Once connected, use **Invite the bot to a server**
+   (any server you are in, a private one is fine): Discord only lets you DM a bot you share a server with.
+3. DM the bot the pairing code, then DM it your requests, or @mention it in a channel.
+
+### What else to know
+
+- **Who can talk to it**: only people you paired. Anyone else is ignored; in a private chat they get at
+  most one "this bot is private" line a day. Pairing happens only in a private chat, with the current
+  code, and a few wrong guesses lock a person out until the next code. You can pair more people (each
+  needs a new code) and remove anyone from the panel; the panel also counts ignored messages.
+- **Treat a pairing like your own login**: a paired person can ask the bots for anything you could,
+  including whatever their abilities and apps allow on this Mac. Pair only yourself or people you trust,
+  and turn off risky abilities on the bot that owns the channel if others are paired.
+- **Where replies go**: to the chat your latest request came from. Write in the panel and the conversation
+  is back in the panel. Telegram gets plain text (Markdown markers removed); Discord keeps its Markdown.
+- **Scheduled reports**: a scheduled task of the bot that owns the channel reports to the first paired
+  person (switch it off in the panel), so "every weekday at nine Atlas briefs you" lands on your phone.
+- **One token, one place**: a chat bot token can be connected on one bot of one Harness at a time. If
+  another program uses the same Telegram token, the panel says so.
+- The token is stored with the bot like other app keys, never shown back in the panel, and kept out of
+  logs and error messages. Harness must be running for the bot to answer; Telegram holds messages for up
+  to 24 hours, and a message is never run twice after a restart.
 
 ## How it works
 
@@ -102,6 +156,9 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
   most 16 messages in 10 minutes, so conversations end.
 - Every conversation gets `bot_list`, `bot_create`, `bot_update`, `bot_delete`, `bot_send_message`
   and `bot_schedule` to manage bots.
+- A chat app is not an MCP server: the Host keeps one connection per Telegram or Discord app (long polling
+  for Telegram, the gateway for Discord), starts and stops it as you add, change, switch off or remove the
+  app, and hands paired people's messages to the bot as user prompts headed `[Telegram · Name]`.
 
 ## Open Computer Use
 
@@ -111,10 +168,13 @@ permission and restart it.
 
 ## What it stores and sends
 
-- `~/.dsh/cache/bots/`: `bots.json` (bots, including keys entered for apps), `messages.jsonl`
-  (timeline), `avatars/`, `skills/` (skills imported from GitHub).
+- `~/.dsh/cache/bots/`: `bots.json` (bots, including keys and chat bot tokens entered for apps),
+  `messages.jsonl` (timeline), `channels.json` (paired people per chat app, and the last message handled
+  per chat), `avatars/`, `skills/` (skills imported from GitHub).
 - Nothing leaves your machine except through the bots' own conversations (your configured model), the
-  apps you connect, the image model when you generate an avatar, and GitHub when you import skills.
+  apps you connect, the image model when you generate an avatar, GitHub when you import skills, and the
+  Telegram or Discord API when you connect a chat app (the bots' replies to paired people, typing
+  indicators, and the one-line note to strangers).
 
 ## Install
 

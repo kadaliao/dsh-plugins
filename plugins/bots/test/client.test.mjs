@@ -1023,3 +1023,156 @@ test('the user bubble links its URLs and a pasted link previews above the compos
   tree = panel({});
   assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-composer-preview']).length, 1);
 });
+
+// --- chat channels ---------------------------------------------------------------------------
+
+const TG_ENTRY = {
+  id: 'telegram', kind: 'channel', channel: 'telegram', name: { en: 'Telegram', zh: 'Telegram' }, description: { en: 'Message your bot team from Telegram.', zh: '在 Telegram 里给 Bot 团队发消息。' },
+  category: 'computer', icon: 'TG', color: '#229ED9', serverName: 'telegram', homepage: 'https://core.telegram.org/bots', keyUrl: 'https://t.me/BotFather', featured: true,
+  fields: [{ key: 'token', kind: 'secret', required: true, label: { en: 'Bot token', zh: 'Bot Token' }, help: { en: 'Message @BotFather, send /newbot.', zh: '找 @BotFather，发送 /newbot。' } }],
+};
+const DC_ENTRY = { ...TG_ENTRY, id: 'discord', channel: 'discord', name: { en: 'Discord', zh: 'Discord' }, icon: 'DC', color: '#5865F2', serverName: 'discord', keyUrl: 'https://discord.com/developers/applications', featured: false };
+
+/** Run `fn` with the shared fixtures changed, then put them back. */
+async function withFixtures(change, fn) {
+  const saved = { templates: CATALOG.templates.slice(), apps: BOTS.map((b) => b.apps), channels: BOTS.map((b) => b.channels), messages: MESSAGES.slice() };
+  change();
+  try {
+    await fn();
+  } finally {
+    CATALOG.templates.splice(0, CATALOG.templates.length, ...saved.templates);
+    BOTS.forEach((b, i) => {
+      b.apps = saved.apps[i];
+      if (saved.channels[i] === undefined) delete b.channels;
+      else b.channels = saved.channels[i];
+    });
+    MESSAGES.splice(0, MESSAGES.length, ...saved.messages);
+  }
+}
+
+test('channels: the gallery offers Telegram as a chat app; its form has the token and no server name', async () => {
+  await withFixtures(() => CATALOG.templates.push(TG_ENTRY), async () => {
+    const v = await openTab('apps', 'bot-b');
+    const [card] = findAll(v.tree, (n) => n.props['data-dsh-bots-template'] === 'telegram');
+    assert.ok(card, 'a Telegram card');
+    const cardText = collect(card).join(' ');
+    assert.match(cardText, /chat app/);
+    assert.match(cardText, /Create a bot/);
+    assert.ok(findAll(card, (n) => n.type === 'a' && n.props.href === 'https://t.me/BotFather').length === 1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-add-app'] === 'telegram')[0].props.onClick();
+    await v.rerender(1);
+    assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-app-form'] === 'telegram').length === 1);
+    assert.ok(findAll(v.tree, (n) => n.props['data-dsh-bots-channel-how'] === 'telegram').length === 1);
+    const text = collect(v.tree).join(' ');
+    assert.doesNotMatch(text, /Server name/);
+    assert.match(text, /It connects as soon as you save/);
+    assert.match(text, /BotFather, send \/newbot/);
+    const [token] = findAll(v.tree, (n) => n.props['data-dsh-bots-app-field'] === 'token');
+    assert.equal(token.props.type, 'password');
+    token.props.onChange({ target: { value: ' 123456:AAtoken ' } });
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-app-save'])[0].props.onClick();
+    await flush();
+    const added = v.posts.find((p) => p.path.endsWith('/save')).body.bot.apps.at(-1);
+    assert.equal(added.template, 'telegram');
+    assert.equal(added.serverName, 'telegram');
+    assert.deepEqual(added.values, { token: '123456:AAtoken' });
+    v.hooks.runCleanups();
+  });
+});
+
+test('channels: an installed chat app shows its connection, the pairing code and paired people', async () => {
+  const view = {
+    kind: 'telegram', state: 'connected', account: { username: 'acme_team_bot', name: 'Acme' },
+    paired: [{ id: '42', name: 'Kada', at: Date.now() - 86_400_000, direct: true }],
+    code: { code: 'ABC234', expiresAt: Date.now() + 9 * 60_000 }, link: 'https://t.me/acme_team_bot?start=ABC234',
+    scheduleReplies: true, ignored: { count: 2, lastName: 'Mallory' },
+  };
+  await withFixtures(() => {
+    CATALOG.templates.push(TG_ENTRY, DC_ENTRY);
+    BOTS[0].apps = [{ id: 'tg1', template: 'telegram', name: 'Telegram', serverName: 'telegram', enabled: true, values: { token: '••••••••' }, config: {} }];
+    BOTS[0].channels = { tg1: view };
+  }, async () => {
+    const v = await openTab('apps', 'bot-a');
+    const [panel] = findAll(v.tree, (n) => n.props['data-dsh-bots-channel'] === 'tg1');
+    assert.ok(panel, 'the channel panel');
+    const text = collect(panel).join(' ');
+    assert.match(text, /Connected as @acme_team_bot/);
+    assert.match(text, /Paired people \(1\)/);
+    assert.match(text, /Kada/);
+    assert.match(text, /gets scheduled reports/);
+    assert.match(text, /expires in 9 min/);
+    assert.match(text, /Ignored 2 messages from people who are not paired \(last: Mallory\)/);
+    assert.match(text, /Only paired people reach the team/);
+    assert.equal(findAll(panel, (n) => n.props['data-dsh-bots-pair-code'])[0].props['data-dsh-bots-pair-code'], 'ABC234');
+    assert.equal(findAll(panel, (n) => n.props['data-dsh-bots-pair-link'])[0].props.href, 'https://t.me/acme_team_bot?start=ABC234');
+    const row = findAll(v.tree, (n) => n.props['data-dsh-bots-app'] === 'tg1')[0];
+    assert.match(collect(row).join(' '), /chat app/);
+    assert.doesNotMatch(collect(row).join(' '), /mcp__telegram__/);
+
+    findAll(panel, (n) => n.props['data-dsh-bots-new-code'] === 'tg1')[0].props.onClick();
+    await flush();
+    findAll(panel, (n) => n.props['data-dsh-bots-unpair'] === '42')[0].props.onClick();
+    await flush();
+    findAll(panel, (n) => n.props['data-dsh-bots-channel-schedules'] === 'tg1')[0].props.onClick({});
+    await flush();
+    const bodies = Object.fromEntries(v.posts.filter((p) => p.path.includes('/channels/')).map((p) => [p.path.split('/__dsh_bots/')[1], p.body]));
+    assert.deepEqual(bodies['channels/code'], { botId: 'bot-a', appId: 'tg1' });
+    assert.deepEqual(bodies['channels/unpair'], { botId: 'bot-a', appId: 'tg1', userId: '42' });
+    assert.deepEqual(bodies['channels/options'], { botId: 'bot-a', appId: 'tg1', scheduleReplies: false });
+    v.hooks.runCleanups();
+  });
+});
+
+test('channels: a Discord error reads as what to do; nobody paired offers to pair once connected', async () => {
+  await withFixtures(() => {
+    CATALOG.templates.push(TG_ENTRY, DC_ENTRY);
+    BOTS[0].apps = [
+      { id: 'dc1', template: 'discord', name: 'Discord', serverName: 'discord', enabled: true, values: { token: '••••••••' }, config: {} },
+      { id: 'tg1', template: 'telegram', name: 'Telegram', serverName: 'telegram', enabled: true, values: { token: '••••••••' }, config: {} },
+    ];
+    BOTS[0].channels = {
+      dc1: { kind: 'discord', state: 'error', hint: 'intent', detail: 'Discord refused the Message Content intent (close 4014).', fatal: true, account: null, paired: [], code: null, link: null, invite: null, scheduleReplies: true, ignored: { count: 0 } },
+      tg1: { kind: 'telegram', state: 'connected', account: { username: 'acme_team_bot' }, paired: [], code: null, link: null, scheduleReplies: true, ignored: { count: 0 } },
+    };
+  }, async () => {
+    const v = await openTab('apps', 'bot-a');
+    const [dc] = findAll(v.tree, (n) => n.props['data-dsh-bots-channel'] === 'dc1');
+    const dcText = collect(dc).join(' ');
+    assert.match(dcText, /Turn on Message Content Intent/);
+    assert.match(dcText, /close 4014/);
+    findAll(dc, (n) => n.props['data-dsh-bots-channel-reconnect'] === 'dc1')[0].props.onClick();
+    await flush();
+    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/channels/reconnect')).body, { botId: 'bot-a', appId: 'dc1' });
+    const [tg] = findAll(v.tree, (n) => n.props['data-dsh-bots-channel'] === 'tg1');
+    assert.match(collect(tg).join(' '), /Nobody yet/);
+    const [pair] = findAll(tg, (n) => n.props['data-dsh-bots-new-code'] === 'tg1');
+    assert.match(collect(pair).join(' '), /Pair yourself/);
+    assert.equal(pair.props.disabled, false);
+    v.hooks.runCleanups();
+  });
+});
+
+test('channels: messages from and to a chat app are marked in the thread and the activity view', async () => {
+  await withFixtures(() => {
+    MESSAGES.push(
+      { id: 'm4', from: 'user', to: 'bot-a', text: 'From my phone', at: Date.now() - 5_000, kind: 'user', via: 'telegram', who: 'Kada' },
+      { id: 'm5', from: 'bot-a', to: 'user', text: 'On it.', at: Date.now() - 1_000, kind: 'reply', via: 'telegram' },
+    );
+  }, async () => {
+    const v = await openTab('chat', 'bot-a');
+    const marks = findAll(v.tree, (n) => n.props['data-dsh-bots-via'] === 'telegram').map((n) => collect(n).join(''));
+    assert.deepEqual(marks, ['Telegram · Kada', '→ Telegram']);
+    v.hooks.runCleanups();
+  });
+  const { exports, seen } = await (async () => {
+    const loaded = await loadClient();
+    const c = fakeContext();
+    loaded.exports.apply(c.ctx);
+    return { ...loaded, seen: c.seen };
+  })();
+  void exports;
+  const en = seen.locale.dict.en;
+  const zh = seen.locale.dict.zh;
+  for (const hint of ['token', 'intent', 'conflict', 'duplicate']) assert.ok(en[`channelHint_${hint}`] && zh[`channelHint_${hint}`], hint);
+});

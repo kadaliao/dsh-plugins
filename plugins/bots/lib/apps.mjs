@@ -1,6 +1,8 @@
 /**
  * The app catalog: MCP servers a bot can connect, each described well enough
- * that the panel shows a form (keys, paths) instead of a command line.
+ * that the panel shows a form (keys, paths) instead of a command line, and
+ * chat channels (`kind: 'channel'`: Telegram, Discord) people message the team
+ * from, which lib/channels.mjs runs instead of an MCP client.
  *
  * Every entry is checked against its registry (npm / PyPI) or vendor docs;
  * the command runs through `npx` / `uvx`, so nothing is installed up front.
@@ -13,7 +15,7 @@ import { join } from 'node:path';
 
 /**
  * @typedef {{key: string, label: {en: string, zh: string}, kind: 'secret'|'text'|'path', env?: string, header?: string, prefix?: string, arg?: boolean, required?: boolean, placeholder?: string, help?: {en: string, zh: string}, default?: string}} AppField
- * @typedef {{id: string, name: {en: string, zh: string}, description: {en: string, zh: string}, category: string, icon: string, color: string, transport: 'stdio'|'streamable-http', serverName: string, command?: string, args?: string[], url?: string, fields?: AppField[], runtime?: 'node'|'uv'|'binary', homepage: string, keyUrl?: string, region?: 'cn'|'global', featured?: boolean, tags?: string[]}} AppEntry
+ * @typedef {{id: string, kind?: 'channel', channel?: string, name: {en: string, zh: string}, description: {en: string, zh: string}, category: string, icon: string, color: string, transport?: 'stdio'|'streamable-http', serverName: string, command?: string, args?: string[], url?: string, fields?: AppField[], runtime?: 'node'|'uv'|'binary', homepage: string, keyUrl?: string, region?: 'cn'|'global', featured?: boolean, tags?: string[]}} AppEntry
  */
 
 export const CATEGORIES = [
@@ -307,6 +309,65 @@ export function catalog(ocuPath = '') {
       fields: [key('SLACK_BOT_TOKEN', L('Bot token', 'Bot 令牌'), null, { placeholder: 'xoxb-…' }), { key: 'SLACK_TEAM_ID', env: 'SLACK_TEAM_ID', kind: 'text', required: true, label: L('Team ID', 'Team ID'), placeholder: 'T01234567' }],
     },
     {
+      id: 'telegram',
+      kind: 'channel',
+      channel: 'telegram',
+      name: L('Telegram', 'Telegram'),
+      description: L(
+        'Message your bot team from Telegram: hand out work from your phone and get the reports back in the chat. Only people you pair can talk to it.',
+        '在 Telegram 里给 Bot 团队发消息：用手机派活，汇报直接回到聊天里。只有你配对过的人能和它说话。',
+      ),
+      category: 'work',
+      icon: 'TG',
+      color: '#229ED9',
+      serverName: 'telegram',
+      homepage: 'https://core.telegram.org/bots/features#botfather',
+      keyUrl: 'https://t.me/BotFather',
+      featured: true,
+      fields: [
+        {
+          key: 'token',
+          kind: 'secret',
+          required: true,
+          label: L('Bot token', 'Bot Token'),
+          placeholder: '123456789:AA…',
+          help: L(
+            'In Telegram, message @BotFather, send /newbot, choose a name and a username ending in "bot", then paste the token it gives you. Use a bot made for this team only.',
+            '在 Telegram 里找 @BotFather，发送 /newbot，起一个名字和以 bot 结尾的用户名，再把它给你的 Token 粘贴到这里。请用专门给这个团队新建的 Bot。',
+          ),
+        },
+      ],
+    },
+    {
+      id: 'discord',
+      kind: 'channel',
+      channel: 'discord',
+      name: L('Discord', 'Discord'),
+      description: L(
+        'Message your bot team from Discord: DM the bot, or @mention it in a server channel. Only people you pair can talk to it.',
+        '在 Discord 里给 Bot 团队发消息：私信它，或在服务器频道里 @ 它。只有你配对过的人能和它说话。',
+      ),
+      category: 'work',
+      icon: 'DC',
+      color: '#5865F2',
+      serverName: 'discord',
+      homepage: 'https://discord.com/developers/docs/quick-start/getting-started',
+      keyUrl: 'https://discord.com/developers/applications',
+      featured: true,
+      fields: [
+        {
+          key: 'token',
+          kind: 'secret',
+          required: true,
+          label: L('Bot token', 'Bot Token'),
+          help: L(
+            'Developer Portal → New Application → Bot → Reset Token, and copy it. On the same page turn on Message Content Intent (without it the bot cannot read messages). Then invite the bot to a server you are in (the invite link appears here once it connects, or OAuth2 → URL Generator with the "bot" scope), so you can DM it.',
+            '开发者后台 → New Application → Bot → Reset Token，复制 Token。在同一页打开 Message Content Intent（不开就读不到消息）。再把 Bot 邀请进一个你所在的服务器（连上后这里会显示邀请链接，或在 OAuth2 → URL Generator 勾选 bot），这样才能私信它。',
+          ),
+        },
+      ],
+    },
+    {
       id: 'stripe',
       name: L('Stripe', 'Stripe 收款'),
       description: L('Customers, payment links, invoices, subscriptions, refunds and balance (official remote server).', '客户、收款链接、发票、订阅、退款与余额（官方远程服务）。'),
@@ -407,13 +468,16 @@ export function catalog(ocuPath = '') {
 /**
  * The mcp-client row of one app: the template's command, with the app's field
  * values placed as environment variables, headers, query params or arguments.
- * Custom apps (and old rows) use their own `config` as written.
+ * Custom apps (and old rows) use their own `config` as written. A chat
+ * channel app is not an MCP server: null.
  * @param {object} app - `{template, serverName, values?, config?}`
  * @param {AppEntry[]} entries
  * @param {{bot?: string}} [ctx]
  */
 export function mcpConfigFor(app, entries, ctx = {}) {
   const t = entries.find((e) => e.id === app.template);
+  // A chat channel (Telegram, Discord) is no MCP server: lib/channels.mjs runs it.
+  if (t?.kind === 'channel') return null;
   const values = app.values && typeof app.values === 'object' ? app.values : {};
   const reconnect = { maxAttempts: 3 };
   const fill = (v) => String(v ?? '').replaceAll('{bot}', ctx.bot ?? 'bot');

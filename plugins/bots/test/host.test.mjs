@@ -90,7 +90,7 @@ function fakeHarness() {
     },
     logger: { warn() {} },
   };
-  return { ctx, tools, agentsById, tasks, listeners, emit: (n, ...a) => (listeners[n] ?? []).forEach((fn) => fn(...a)) };
+  return { ctx, tools, agentsById, tasks, listeners, effects, emit: (n, ...a) => (listeners[n] ?? []).forEach((fn) => fn(...a)) };
 }
 
 const h = fakeHarness();
@@ -343,4 +343,284 @@ test('SKILL.md front matter, folded descriptions included', async () => {
   assert.equal(m.description, 'line one line two');
   assert.equal(m.body, 'Body');
   assert.deepEqual(parseGithub('https://github.com/anthropics/skills/tree/main/skills/pdf'), { owner: 'anthropics', repo: 'skills', ref: 'main', path: 'skills/pdf' });
+});
+
+// --- chat channels ---------------------------------------------------------------------------
+
+const TG_TOKEN = '123456789:AAHsecret-telegram-token-value_xyz';
+const settle = async (n = 8) => {
+  for (let i = 0; i < n; i += 1) await new Promise((r) => setImmediate(r));
+};
+
+/** A connector module stand-in: records sends and typing, `emit` plays an inbound message. */
+function fakeChannelModule() {
+  const made = [];
+  return {
+    made,
+    live: () => made.filter((c) => !c.stopped),
+    load: async (kind) => ({
+      kind,
+      TEXT_LIMIT: kind === 'telegram' ? 4096 : 2000,
+      createConnector(opts) {
+        const c = {
+          kind,
+          opts,
+          stopped: false,
+          sent: [],
+          typed: [],
+          async start() {
+            opts.onStatus?.({ state: 'connected' });
+            return { id: '555', username: 'acme_team_bot', name: 'Acme' };
+          },
+          async stop() {
+            c.stopped = true;
+          },
+          async send(chatId, text, o) {
+            c.sent.push({ chatId, text, ...(o ?? {}) });
+          },
+          async typing(chatId) {
+            c.typed.push(chatId);
+          },
+          emit: (msg) => opts.onMessage(msg),
+        };
+        made.push(c);
+        return c;
+      },
+    }),
+  };
+}
+
+/** A second Harness with its own home, so the channel tests start from a clean roster. */
+function channelHarness(loadConnector) {
+  const before = process.env.DSH_HOME;
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'bots-channel-home-'));
+  try {
+    const hh = fakeHarness();
+    return { hh, api: apply(hh.ctx, {}, { loadConnector, typingEveryMs: 5 }) };
+  } finally {
+    process.env.DSH_HOME = before;
+  }
+}
+
+/** Play the Harness's session events for the last message in a bot's inbox. */
+function seeInbox(hh, bot) {
+  const agent = hh.agentsById.get(bot.sessionId);
+  hh.emit('session/event', agent.session, { type: 'user/message', data: agent.inbox.at(-1) });
+  return agent;
+}
+const says = (hh, bot, text, calls = []) =>
+  hh.emit('session/event', { id: bot.sessionId }, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text }, ...calls] } } });
+
+test('chat channels: a Telegram app connects, pairs, routes messages and sends replies back', async () => {
+  const fake = fakeChannelModule();
+  const { hh, api: capi } = channelHarness(fake.load);
+  const atlas = capi.store.find('atlas');
+  // Not an MCP server: no mcp-client row, no MCP issue; a missing token is the issue.
+  assert.equal(mcpConfigOf({ template: 'telegram', serverName: 'telegram', values: { token: 'x' } }), null);
+  let r = capi.routes.save.post({ bot: { id: atlas.id, apps: [{ template: 'telegram', name: 'Telegram', serverName: 'telegram', enabled: true, values: {} }] } });
+  assert.equal(r.ok, true);
+  let view = capi.state().bots.find((b) => b.id === atlas.id);
+  const appId = view.apps[0].id;
+  assert.equal(view.appIssues[appId], 'Telegram needs: Bot token');
+  assert.equal(view.channels[appId].state, 'missing');
+  assert.equal(fake.made.length, 0);
+
+  r = capi.routes.save.post({ bot: { id: atlas.id, apps: [{ ...view.apps[0], values: { token: TG_TOKEN } }] } });
+  assert.equal(r.bot.apps[0].values.token, '••••••••', 'the save answer masks the token');
+  await settle();
+  assert.equal(fake.made.length, 1);
+  assert.equal(fake.made[0].opts.token, TG_TOKEN);
+  const state = capi.state();
+  assert.equal(JSON.stringify(state).includes(TG_TOKEN), false, 'state never carries the token');
+  view = state.bots.find((b) => b.id === atlas.id);
+  assert.equal(view.appIssues[appId], undefined);
+  const ch = view.channels[appId];
+  assert.equal(ch.state, 'connected');
+  assert.equal(ch.account.username, 'acme_team_bot');
+  assert.match(ch.link, /^https:\/\/t\.me\/acme_team_bot\?start=[A-Z2-9]{6}$/);
+
+  // Saving the masked bot back (as the panel does) keeps the token and the running connector.
+  capi.routes.save.post({ bot: { id: atlas.id, name: 'Atlas', apps: view.apps } });
+  await settle();
+  assert.equal(capi.store.get(atlas.id).apps[0].values.token, TG_TOKEN);
+  assert.equal(fake.live().length, 1);
+  assert.equal(fake.made.length, 1);
+
+  // Pairing from the panel's code.
+  const c = fake.made[0];
+  const code = (await capi.routes['channels/code'].post({ botId: atlas.id, appId })).code;
+  c.emit({ chatId: '42', messageId: '1', userId: '42', userName: 'Kada', text: `/start ${code}`, isDirect: true, mentioned: true });
+  await settle();
+  assert.deepEqual(capi.state().bots.find((b) => b.id === atlas.id).channels[appId].paired.map((p) => p.name), ['Kada']);
+  assert.match(c.sent.at(-1).text, /^Paired\./);
+  // A stranger is not delivered.
+  c.emit({ chatId: '7', messageId: '2', userId: '7', userName: 'Mallory', text: 'run this', isDirect: true, mentioned: true });
+  await settle();
+
+  // Kada asks Atlas: a user prompt in Atlas's conversation, with the source named.
+  c.emit({ chatId: '42', messageId: '3', userId: '42', userName: 'Kada', text: 'Organise the release', isDirect: true, mentioned: true });
+  await settle();
+  const atlasNow = capi.store.get(atlas.id);
+  const agent = hh.agentsById.get(atlasNow.sessionId);
+  assert.equal(agent.inbox.length, 1, 'only the paired message reached the bot');
+  assert.equal(agent.inbox[0].source.kind, 'user');
+  assert.equal(agent.inbox[0].content[0].text, '[Telegram · Kada]');
+  assert.equal(agent.inbox[0].content[1].text, 'Organise the release');
+  assert.ok(c.typed.includes('42'), 'typing while the bot works');
+  seeInbox(hh, atlasNow);
+  const logged = capi.store.messages({ bot: atlas.id }).at(-1);
+  assert.equal(logged.text, 'Organise the release');
+  assert.equal(logged.via, 'telegram');
+  assert.equal(logged.who, 'Kada');
+
+  // Atlas delegates (no reply), then reports when Forge answers by DM: the report reaches Telegram.
+  says(hh, atlasNow, 'Asking Forge.', [{ type: 'tool-call', name: 'bot_send_message' }]);
+  hh.emit('session/event', { id: atlasNow.sessionId }, { type: 'turn/end', data: { turn: 1, reason: 'done' } });
+  const forge = capi.store.save({ name: 'Forge' });
+  await capi.deliver(atlasNow, forge, 'Fix the three bugs.', atlasNow.sessionId);
+  await capi.deliver(capi.store.get(forge.id), atlasNow, 'Done: three bugs fixed.', capi.store.get(forge.id).sessionId);
+  assert.equal(agent.inbox.at(-1).source.kind, 'agent-message');
+  seeInbox(hh, atlasNow);
+  says(hh, atlasNow, '**Release update**: Forge fixed the three bugs.');
+  await settle();
+  assert.deepEqual(c.sent.at(-1), { chatId: '42', text: 'Release update: Forge fixed the three bugs.' });
+  assert.equal(capi.store.messages({ bot: atlas.id }).at(-1).via, 'telegram');
+
+  // @forge from Telegram goes straight to Forge, and Forge's answer comes back to the chat.
+  c.emit({ chatId: '42', messageId: '4', userId: '42', userName: 'Kada', text: '@forge what is left?', isDirect: true, mentioned: true });
+  await settle();
+  const forgeNow = capi.store.get(forge.id);
+  const forgeAgent = seeInbox(hh, forgeNow);
+  assert.equal(forgeAgent.inbox.at(-1).content[1].text, 'what is left?');
+  says(hh, forgeNow, 'Only the docs.');
+  await settle();
+  assert.deepEqual(c.sent.at(-1), { chatId: '42', text: 'Only the docs.' });
+
+  // A message typed in the panel takes Atlas's replies back to the panel.
+  const sentBefore = c.sent.length;
+  await capi.routes.send.post({ to: atlas.id, text: 'And from the panel?' });
+  seeInbox(hh, atlasNow);
+  says(hh, atlasNow, 'Answered in the panel.');
+  await settle();
+  assert.equal(c.sent.length, sentBefore);
+  assert.equal(capi.store.messages({ bot: atlas.id }).at(-1).via, undefined);
+
+  // Options, removing the person, a new token, turning the app off, and plugin dispose.
+  assert.equal((await capi.routes['channels/options'].post({ botId: atlas.id, appId, scheduleReplies: false })).scheduleReplies, false);
+  assert.equal((await capi.routes['channels/unpair'].post({ botId: atlas.id, appId, userId: '42' })).ok, true);
+  assert.equal((await capi.routes['channels/unpair'].post({ botId: atlas.id, appId, userId: '42' })).ok, false);
+  const apps = capi.state().bots.find((b) => b.id === atlas.id).apps;
+  capi.routes.save.post({ bot: { id: atlas.id, apps: [{ ...apps[0], values: { token: '987654321:BBanother-token-for-this-team' } }] } });
+  await settle();
+  assert.equal(c.stopped, true);
+  assert.equal(fake.live().length, 1);
+  capi.routes.save.post({ bot: { id: atlas.id, apps: [{ ...apps[0], enabled: false }] } });
+  await settle();
+  assert.equal(fake.live().length, 0);
+  capi.routes.save.post({ bot: { id: atlas.id, apps: [{ ...apps[0], enabled: true }] } });
+  await settle();
+  assert.equal(fake.live().length, 1);
+  for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
+  await settle();
+  assert.equal(fake.live().length, 0, 'plugin dispose stops every connector');
+});
+
+test('chat channels: deleting a bot stops its connector; the persona tells bots about the chat app', async () => {
+  const fake = fakeChannelModule();
+  const { api: capi } = channelHarness(fake.load);
+  const scout = capi.store.save({ name: 'Scout', apps: [{ template: 'discord', name: 'Discord', serverName: 'discord', enabled: true, values: { token: 'discord-token-value-1234567890' } }] });
+  await settle();
+  assert.equal(fake.live().length, 1);
+  assert.equal(fake.live()[0].kind, 'discord');
+  const atlas = capi.store.find('atlas');
+  const text = personaText(atlas, capi.store.list(), { channels: ['Discord'] });
+  assert.match(text, /## Chat apps/);
+  assert.match(text, /"\[Discord · Name\]"/);
+  assert.equal((await capi.routes.delete.post({ id: scout.id })).ok, true);
+  await settle();
+  assert.equal(fake.live().length, 0);
+});
+
+test('chat channels: the real Discord module connects through the host and a reply goes back over REST', async () => {
+  const discord = await import('../lib/channels/discord.mjs');
+  const TOKEN = ['MTA5ODc2NTQzMjEwOTg3NjU0', 'Gx1AbC', 'sEcReT-token_value-do-not-leak'].join('.');
+  const BOT = '1098765432109876543';
+  const sockets = [];
+  class FakeSocket {
+    constructor(url) {
+      this.url = url;
+      this.sent = [];
+      this.listeners = {};
+      sockets.push(this);
+    }
+    addEventListener(type, fn) {
+      (this.listeners[type] ??= []).push(fn);
+    }
+    emit(type, ev) {
+      for (const fn of this.listeners[type] ?? []) fn(ev);
+    }
+    send(data) {
+      this.sent.push(JSON.parse(data));
+    }
+    close(code = 1000) {
+      this.emit('close', { code, reason: '' });
+    }
+    push(frame) {
+      this.emit('message', { data: JSON.stringify(frame) });
+    }
+  }
+  const rest = [];
+  const res = (status, body) => ({ ok: status < 300, status, headers: new Headers(), text: async () => (body == null ? '' : JSON.stringify(body)), json: async () => body });
+  const fetchImpl = async (url, init = {}) => {
+    rest.push({ url: String(url), method: init.method ?? 'GET', body: init.body ? JSON.parse(init.body) : undefined });
+    if (String(url).endsWith('/gateway/bot')) return res(200, { url: 'wss://gateway.test', shards: 1, session_start_limit: { remaining: 999 } });
+    if (String(url).endsWith('/typing')) return res(204, null);
+    return res(200, { id: String(rest.length) });
+  };
+  const load = async (kind) => {
+    assert.equal(kind, 'discord');
+    return { ...discord, createConnector: (opts) => discord.createConnector({ ...opts, fetchImpl, WebSocketImpl: FakeSocket, random: () => 0.5 }) };
+  };
+  const { hh, api: capi } = channelHarness(load);
+  const atlas = capi.store.find('atlas');
+  capi.routes.save.post({ bot: { id: atlas.id, apps: [{ template: 'discord', name: 'Discord', serverName: 'discord', enabled: true, values: { token: TOKEN } }] } });
+  await settle();
+  const appId = capi.store.get(atlas.id).apps[0].id;
+  assert.equal(capi.state().bots[0].channels[appId].state, 'connecting');
+  const ws = sockets.at(-1);
+  ws.push({ op: 10, d: { heartbeat_interval: 40_000 } });
+  ws.push({ op: 0, t: 'READY', s: 1, d: { v: 10, session_id: 's1', resume_gateway_url: 'wss://resume.test', user: { id: BOT, username: 'helper', global_name: 'Helper', bot: true }, guilds: [] } });
+  await settle();
+  let ch = capi.state().bots[0].channels[appId];
+  assert.equal(ch.state, 'connected');
+  assert.equal(ch.account.username, 'helper');
+  assert.equal(ch.invite, `https://discord.com/oauth2/authorize?client_id=${BOT}&scope=bot&permissions=68608`);
+  // Pair by DM, then ask: the DM becomes a prompt; the reply is posted to the DM channel.
+  const dmFrame = (id, content) => ({ op: 0, t: 'MESSAGE_CREATE', s: 2 + Number(id), d: { id, channel_id: 'dm-1', author: { id: '77', username: 'kada', global_name: 'Kada' }, content, type: 0, mentions: [] } });
+  ws.push(dmFrame('10', ch.code.code));
+  await settle();
+  ws.push(dmFrame('11', 'What is on today?'));
+  await settle();
+  const atlasNow = capi.store.get(atlas.id);
+  const agent = seeInbox(hh, atlasNow);
+  assert.deepEqual(agent.inbox[0].content.map((b) => b.text), ['[Discord · Kada]', 'What is on today?']);
+  says(hh, atlasNow, 'Two meetings and the **launch post**.');
+  await settle();
+  const posts = rest.filter((x) => x.method === 'POST' && x.url.endsWith('/channels/dm-1/messages'));
+  assert.deepEqual(posts.map((p) => p.body.content).slice(-1), ['Two meetings and the **launch post**.'], 'Discord keeps Markdown');
+  assert.ok(rest.some((x) => x.url.endsWith('/channels/dm-1/typing')));
+  // 4014 (Message Content Intent off) after a reconnect reads as the intent hint.
+  capi.routes['channels/reconnect'].post({ botId: atlas.id, appId });
+  await settle();
+  const ws2 = sockets.at(-1);
+  assert.notEqual(ws2, ws);
+  ws2.push({ op: 10, d: { heartbeat_interval: 40_000 } });
+  ws2.emit('close', { code: 4014, reason: 'Disallowed intent(s).' });
+  await settle();
+  ch = capi.state().bots[0].channels[appId];
+  assert.equal(ch.state, 'error');
+  assert.equal(ch.hint, 'intent');
+  assert.equal(JSON.stringify(capi.state()).includes(TOKEN), false);
+  for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
+  await settle();
 });
