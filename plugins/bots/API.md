@@ -117,7 +117,9 @@ After hiring, the client should offer to send `kickoff` to the lead (POST send {
 
 | GET | `skills/library` | – | `{ skills: {name, description, source}[] /* installed Harness skills, ~90 here */, sources: SKILL_SOURCES }` |
 | POST | `skills/github` | `{ repo }` (owner/repo[/path] or github URL) | `{ ok, owner, repo, ref, skills: {name, description, path, files}[] }` |
-| POST | `skills/import` | `{ botId, items: [{repo, path} | {url}] }` | `{ ok, bot, added: string[], failed }` |
+| POST | `skills/import` | `{ botId, items: [{repo, ref?, path} | {url} | {local}] }` | `{ ok, bot, added: string[], updated: string[] /* same name, same origin: replaced in place */, skipped: {name, reason: 'exists'\|'full'}[], failed }` |
+| GET | `skills/local` | – | `{ places: {path, label}[] /* skill folders of other agents found on this machine */ }` |
+| POST | `skills/local` | `{ path }` (a skill folder or a folder of them; `~` allowed) | `{ ok, root, skills: {name, description, path, files}[], truncated }`; a `{local: path}` import links the folder (`linked: true`, `dir` = the folder), nothing is copied |
 | POST | `skills/write` | `{ botId, text }` | `{ ok, sessionId }` — asks the bot to write the skill itself (via skill-creator) and save it |
 Adding Harness skills: POST save with skills + `{name, source:'dsh', enabled:true}`.
 `catalog.skillSources = [{id:'anthropics', repo:'anthropics/skills', path:'skills', name, description}]`.

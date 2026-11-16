@@ -207,6 +207,11 @@ const TEAMS = [
 ];
 const LIBRARY = { skills: [{ name: 'deep-research', description: 'Research a topic.', source: 'user' }, { name: 'xlsx', description: 'Spreadsheets.', source: 'bundled' }, { name: 'weekly', description: 'Already there', source: 'user' }], sources: [] };
 const GITHUB = { ok: true, owner: 'anthropics', repo: 'skills', ref: 'main', skills: [{ name: 'mcp-builder', description: 'Build MCP servers.', path: 'skills/mcp-builder', files: 9 }, { name: 'pdf', description: 'PDFs.', path: 'skills/pdf', files: 12 }] };
+const LOCAL = { ok: true, root: '/home/me/skills', truncated: false, skills: [
+  { name: 'fresh', description: 'A new one.', path: '/home/me/skills/fresh', files: 3 },
+  { name: 'notes', description: 'Imported before.', path: '/home/me/skills/notes', files: 2 },
+  { name: 'report', description: 'Clashes with a hand-written one.', path: '/home/me/skills/report', files: 1 },
+] };
 const EXTERNAL = { items: [
   { from: 'Codex', name: 'mcp-logseq', serverName: 'mcp-logseq', template: 'mcp-stdio', config: { command: 'uvx', args: ['mcp-logseq'], env: { LOGSEQ_API_TOKEN: 'lsq…' } } },
   { from: 'Codex', name: 'files', serverName: 'files', template: 'mcp-stdio', config: { command: 'npx', args: ['x'], env: {} } },
@@ -231,7 +236,8 @@ function mockFetch(posts = []) {
       if (path.endsWith('/open')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-a' }) };
       if (path.endsWith('/teams/hire')) return { ok: true, json: async () => ({ ok: true, team: body.id, bots: [BOTS[0], BOTS[1]], leadId: 'bot-a', kickoff: 'Hi team, introduce yourselves.', skipped: [{ bot: 'atlas', kind: 'skill', name: 'morning' }] }) };
       if (path.endsWith('/skills/github')) return { ok: true, json: async () => GITHUB };
-      if (path.endsWith('/skills/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.items.map((i) => i.path.split('/').pop()), failed: [] }) };
+      if (path.endsWith('/skills/local')) return { ok: true, json: async () => LOCAL };
+      if (path.endsWith('/skills/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.items.map((i) => (i.path ?? i.local).split('/').pop()), updated: [], skipped: [], failed: [] }) };
       if (path.endsWith('/skills/write')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-b' }) };
       if (path.endsWith('/apps/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.names }) };
       if (path.endsWith('/save')) return { ok: true, json: async () => ({ ok: true, bot: { ...BOTS[0], ...body.bot, id: body.bot.id ?? 'bot-new' } }) };
@@ -242,6 +248,7 @@ function mockFetch(posts = []) {
     if (path.startsWith('/__dsh_bots/messages')) return { ok: true, json: async () => ({ items: MESSAGES }) };
     if (path.startsWith('/__dsh_bots/schedules')) return { ok: true, json: async () => ({ items: TASKS }) };
     if (path.startsWith('/__dsh_bots/teams')) return { ok: true, json: async () => TEAMS };
+    if (path.startsWith('/__dsh_bots/skills/local')) return { ok: true, json: async () => ({ places: [{ path: '/home/me/.claude/skills', label: '~/.claude/skills' }] }) };
     if (path.startsWith('/__dsh_bots/skills/library')) return { ok: true, json: async () => LIBRARY };
     if (path.startsWith('/__dsh_bots/apps/external')) return { ok: true, json: async () => EXTERNAL };
     return { ok: false, status: 404, json: async () => null };
@@ -839,7 +846,69 @@ test('skills: the Harness picker adds dsh skills by name; the GitHub picker impo
   await v.rerender(1);
   findAll(v.tree, (n) => n.props['data-dsh-bots-github-import'])[0].props.onClick();
   await flush();
-  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/skills/import')).body, { botId: 'bot-b', items: [{ repo: 'anthropics/skills', path: 'skills/mcp-builder' }] });
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/skills/import')).body, { botId: 'bot-b', items: [{ repo: 'anthropics/skills', ref: 'main', path: 'skills/mcp-builder' }] });
+  v.hooks.runCleanups();
+});
+
+test('skills: the Harness list scrolls by itself and its rows never shrink', async () => {
+  const v = await openTab('skills', 'bot-a');
+  findAll(v.tree, (n) => n.props['data-dsh-bots-add-harness'])[0].props.onClick();
+  await v.rerender(3);
+  const list = findAll(v.tree, (n) => n.props['data-dsh-bots-harness-list'])[0];
+  assert.match(list.props.className, /dshb-scroll/);
+  assert.notEqual(list.props.style.overflow, 'hidden');
+  assert.match(source, /function PickRow[\s\S]{0,400}flex: 'none'/);
+  v.hooks.runCleanups();
+});
+
+test('skills: the local picker scans a folder, marks conflicts and links by path', async () => {
+  const saved = STATE.bots;
+  STATE.bots = BOTS.map((b) => (b.id === 'bot-b' ? { ...b, skills: [
+    { id: 'k1', name: 'notes', source: 'import', description: '', content: '', enabled: true, origin: '/home/me/skills/notes' },
+    { id: 'k2', name: 'Report', source: 'own', description: '', content: '# r', enabled: true },
+  ] } : b));
+  try {
+    const v = await openTab('skills', 'bot-b');
+    findAll(v.tree, (n) => n.props['data-dsh-bots-add-local'])[0].props.onClick();
+    await v.rerender(3);
+    // A known place scans in one click.
+    findAll(v.tree, (n) => n.props['data-dsh-bots-local-place'] === '/home/me/.claude/skills')[0].props.onClick();
+    await v.rerender(3);
+    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/skills/local')).body, { path: '/home/me/.claude/skills' });
+    const row = (path) => findAll(v.tree, (n) => n.props['data-dsh-bots-local-skill'] === path)[0];
+    const box = (path) => findAll(row(path), (n) => n.type === 'input')[0];
+    assert.equal(row('/home/me/skills/fresh').props['data-state'], 'new');
+    assert.equal(row('/home/me/skills/notes').props['data-state'], 'linked'); // already linked: read live, nothing to add again
+    assert.equal(row('/home/me/skills/report').props['data-state'], 'taken'); // same name (any case), another source
+    assert.equal(box('/home/me/skills/report').props.disabled, true);
+    assert.equal(box('/home/me/skills/notes').props.disabled, true);
+    // A linked skill shows its folder and has no editor: it is edited where it lives.
+    const card = findAll(v.tree, (n) => n.props['data-dsh-bots-skill'] === 'k1')[0];
+    assert.equal(findAll(card, (n) => n.props['data-dsh-bots-skill-origin'] === '/home/me/skills/notes').length, 1);
+    assert.equal(findAll(card, (n) => n.props.title === 'Edit').length, 0);
+    box('/home/me/skills/fresh').props.onChange();
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-local-import'])[0].props.onClick();
+    await flush();
+    assert.deepEqual(v.posts.find((p) => p.path.endsWith('/skills/import')).body, { botId: 'bot-b', items: [{ local: '/home/me/skills/fresh' }] });
+    v.hooks.runCleanups();
+  } finally {
+    STATE.bots = saved;
+  }
+});
+
+test('skills: a hand-written skill cannot take a name the bot already has', async () => {
+  const v = await openTab('skills', 'bot-a');
+  findAll(v.tree, (n) => n.props['data-dsh-bots-add-skill'])[0].props.onClick();
+  await v.rerender(1);
+  const editor = () => findAll(v.tree, (n) => n.props['data-dsh-bots-skill-editor'])[0];
+  findAll(editor(), (n) => n.type === 'input')[0].props.onChange({ target: { value: 'Weekly' } });
+  await v.rerender(1);
+  const before = v.posts.length;
+  findAll(editor(), (n) => typeof n.props.onClick === 'function' && collect(n).join(' ').includes('Save'))[0].props.onClick();
+  await flush();
+  assert.equal(v.posts.filter((p) => p.path.endsWith('/save')).length, 0);
+  assert.equal(v.posts.length, before);
   v.hooks.runCleanups();
 });
 

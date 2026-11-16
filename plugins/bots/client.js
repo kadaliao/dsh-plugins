@@ -500,6 +500,7 @@ window.__ModuleLoader__.load({
       eyeOff: (s = 14) => svg(s, ['M3 3l18 18', 'M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1', 'M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2']),
       team: (s = 14) => svg(s, ['M9 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z', 'M2.5 20a6.5 6.5 0 0 1 13 0', 'M16 4.3a3.5 3.5 0 0 1 0 6.4', 'M18 14.2a6.5 6.5 0 0 1 3.5 5.8']),
       layers: (s = 14) => svg(s, ['M12 3l9 5-9 5-9-5 9-5z', 'M3 13l9 5 9-5']),
+      folder: (s = 14) => svg(s, ['M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z']),
       github: (s = 14) => svg(s, ['M9 19c-4 1.5-4-2-6-2.5', 'M15 21v-3.5a3 3 0 0 0-.8-2.3c2.8-.3 5.8-1.4 5.8-6.2a4.8 4.8 0 0 0-1.3-3.3 4.5 4.5 0 0 0-.1-3.3s-1-.3-3.4 1.3a11.6 11.6 0 0 0-6 0C6.8 2.1 5.8 2.4 5.8 2.4a4.5 4.5 0 0 0-.1 3.3A4.8 4.8 0 0 0 4.4 9c0 4.8 3 5.9 5.8 6.2a3 3 0 0 0-.8 2.3V21']),
       wand: (s = 14) => svg(s, ['M4 20l11-11', 'M13 7l4 4', 'M18 3v4', 'M16 5h4', 'M8 3v2', 'M7 4h2']),
       chevron: (s = 12) => svg(s, ['M6 9l6 6 6-6']),
@@ -2310,10 +2311,46 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     }
 
     const skillSource = (s) => (s?.source === 'dsh' || s?.source === 'import' ? s.source : 'own');
+    /** A skill linked to a folder on this machine (its origin is a path, not a URL): read live, never copied. */
+    const isLocalSkill = (s) => s?.source === 'import' && typeof s.origin === 'string' && s.origin !== '' && !/^https?:\/\//i.test(s.origin);
     const SOURCE_COLOR = { dsh: '#2563eb', import: '#475569', own: '#16a34a' };
-    function SourceBadge({ t, source }) {
-      return h(Badge, { color: SOURCE_COLOR[source] ?? C.muted, 'data-dsh-bots-skill-source': source }, source === 'dsh' ? Icon.layers(10) : source === 'import' ? Icon.github(10) : Icon.edit(10), t(`src_${source}`));
+    function SourceBadge({ t, source, local }) {
+      return h(
+        Badge,
+        { color: SOURCE_COLOR[source] ?? C.muted, 'data-dsh-bots-skill-source': source },
+        source === 'dsh' ? Icon.layers(10) : source === 'import' ? (local ? Icon.folder(10) : Icon.github(10)) : Icon.edit(10),
+        t(local ? 'src_local' : `src_${source}`),
+      );
     }
+    /** The bot's skills by lower-cased name: what an import could collide with. */
+    const skillsByName = (bot) => new Map((bot.skills ?? []).map((s) => [str(s.name).toLowerCase(), s]));
+    /**
+     * What importing a skill named like `existing` from `origin` would do:
+     * 'new' adds it, 'update' refreshes the copy made from the same place, 'taken' is refused.
+     */
+    const importStateOf = (existing, origin) => (!existing ? 'new' : existing.source === 'import' && existing.origin && existing.origin === origin ? 'update' : 'taken');
+    /** One line for what an import did: added, updated, skipped. */
+    function importSummary(t, r) {
+      const n = (k) => (Array.isArray(r?.[k]) ? r[k].length : 0);
+      return [n('added') ? t('importedN', { n: n('added') }) : '', n('updated') ? t('updatedN', { n: n('updated') }) : '', n('skipped') ? t('skippedN', { n: n('skipped') }) : ''].filter(Boolean).join(' ');
+    }
+    /** Run an import and report it; resolves to the rows that failed, or null when nothing came back. */
+    function runImport(t, toast, botId, items) {
+      return postJson('skills/import', { botId, items }).then((r) => {
+        const bad = Array.isArray(r?.failed) ? r.failed : [];
+        const text = importSummary(t, r);
+        if (r?.ok && text) {
+          toast(text);
+          void refreshState();
+        } else if (!bad.length) toast(r?.reason || t('importFailed'), 'error');
+        return { failed: bad, done: Boolean(r?.ok && text) };
+      });
+    }
+    /** The label and tick of a picker row, by what importing it would do. */
+    const importRowProps = (t, state, files) => ({
+      disabled: state === 'taken',
+      meta: state === 'taken' ? t('nameTaken') : state === 'update' ? t('reimport') : t('nFiles', { n: files ?? 0 }),
+    });
     /** A search box with a magnifier. */
     const SearchBox = ({ value, onChange, placeholder, style, ...rest }) =>
       h(
@@ -2328,7 +2365,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         'label',
         {
           ...rest,
-          style: { display: 'flex', gap: 10, alignItems: 'flex-start', padding: '9px 12px', borderTop: `1px solid ${C.border1}`, cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.55 : 1, background: checked ? tint(C.label, 7) : 'transparent' },
+          style: { display: 'flex', flex: 'none', gap: 10, alignItems: 'flex-start', padding: '9px 12px', borderTop: `1px solid ${C.border1}`, cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.55 : 1, background: checked ? tint(C.label, 7) : 'transparent' },
         },
         h('input', { type: 'checkbox', checked: Boolean(checked) || Boolean(disabled), disabled, onChange: () => onToggle(), style: { marginTop: 3, accentColor: 'var(--dsw-alias-brand-primary)' } }),
         h(
@@ -2373,7 +2410,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         h(SearchBox, { value: q, onChange: setQ, placeholder: t('searchSkills', { n: (all ?? []).length }), autoFocus: true, 'data-dsh-bots-harness-search': true }),
         h(
           'div',
-          { 'data-dsh-bots-harness-list': true, style: { display: 'flex', flexDirection: 'column', border: `1px solid ${C.border1}`, borderRadius: 12, overflow: 'hidden', marginTop: -4, borderTop: 'none' } },
+          // The list scrolls by itself, so the search box stays in view however many skills there are.
+          { 'data-dsh-bots-harness-list': true, className: 'dshb-scroll', style: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 120, border: `1px solid ${C.border1}`, borderRadius: 12, marginTop: -4, borderTop: 'none' } },
           all === null
             ? h('div', { style: { padding: 18, fontSize: SMALL, color: C.faint, textAlign: 'center', borderTop: `1px solid ${C.border1}` } }, t('loading'))
             : shown.length === 0
@@ -2405,7 +2443,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const [sel, setSel] = useState([]);
       const [importing, setImporting] = useState(false);
       const [failed, setFailed] = useState([]);
-      const have = new Set((bot.skills ?? []).map((s) => s.name));
+      const mine = skillsByName(bot);
+      const stateOf = (s) => importStateOf(mine.get(str(s.name).toLowerCase()), listing ? `https://github.com/${listing.owner}/${listing.repo}/tree/${listing.ref}/${s.path}` : '');
       const browse = (spec) => {
         const value = str(spec).trim();
         if (!value) return;
@@ -2426,15 +2465,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const doImport = () => {
         if (!listing || sel.length === 0) return;
         setImporting(true);
-        postJson('skills/import', { botId: bot.id, items: sel.map((path) => ({ repo: `${listing.owner}/${listing.repo}`, path })) })
+        runImport(t, toast, bot.id, sel.map((path) => ({ repo: `${listing.owner}/${listing.repo}`, ref: listing.ref, path })))
           .then((r) => {
-            const bad = Array.isArray(r?.failed) ? r.failed : [];
-            setFailed(bad);
-            if (r?.ok && Array.isArray(r.added) && r.added.length) {
-              toast(t('importedN', { n: r.added.length }));
-              void refreshState();
-              if (bad.length === 0) onImported();
-            } else if (!bad.length) toast(r?.reason || t('importFailed'), 'error');
+            setFailed(r.failed);
+            if (r.done && r.failed.length === 0) onImported();
           })
           .finally(() => setImporting(false));
       };
@@ -2515,7 +2549,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 h('span', { style: { color: C.faint } }, t('foundSkills', { n: skills.length })),
                 h('span', { style: { flex: 1 } }),
                 skills.length
-                  ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY }, onClick: () => setSel(sel.length ? [] : skills.filter((s) => !have.has(s.name)).map((s) => s.path)) }, sel.length ? t('selectNone') : t('selectAll'))
+                  ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY }, onClick: () => setSel(sel.length ? [] : skills.filter((s) => stateOf(s) === 'new').map((s) => s.path)) }, sel.length ? t('selectNone') : t('selectAll'))
                   : null,
               ),
               h(
@@ -2527,10 +2561,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                     key: s.path,
                     'data-dsh-bots-github-skill': s.path,
                     checked: sel.includes(s.path),
-                    disabled: have.has(s.name),
                     onToggle: () => setSel((x) => (x.includes(s.path) ? x.filter((p) => p !== s.path) : [...x, s.path])),
                     title: s.name,
-                    meta: have.has(s.name) ? t('added') : t('nFiles', { n: s.files ?? 0 }),
+                    ...importRowProps(t, stateOf(s), s.files),
                     description: s.description,
                     note: bad ? h('span', { style: { color: C.error } }, bad.reason) : null,
                   });
@@ -2539,6 +2572,170 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             )
           : loading
             ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted, padding: 8 } }, h('span', { className: 'dshb-spinner' }), t('readingRepo'))
+            : null,
+      );
+    }
+
+    /** Import skill folders from this machine: one skill folder, or a folder that holds several. */
+    function LocalPicker({ t, bot, catalog, env, onClose, onImported, toast }) {
+      const places = useLoaded('localPlaces', 'skills/local')?.places;
+      const [path, setPath] = useState('');
+      const [listing, setListing] = useState(null); // {root, skills, truncated}
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState('');
+      const [sel, setSel] = useState([]);
+      const [importing, setImporting] = useState(false);
+      const [failed, setFailed] = useState([]);
+      const mine = skillsByName(bot);
+      const inHarness = new Set((Array.isArray(catalog?.skills) ? catalog.skills : []).map((s) => s.name));
+      // A folder already linked has nothing to import again: the bot reads it live.
+      const stateOf = (s) => (importStateOf(mine.get(str(s.name).toLowerCase()), s.path) === 'new' ? 'new' : mine.get(str(s.name).toLowerCase()).origin === s.path ? 'linked' : 'taken');
+      const scan = (spec) => {
+        const value = str(spec).trim();
+        if (!value) return;
+        setLoading(true);
+        setError('');
+        setSel([]);
+        setFailed([]);
+        postJson('skills/local', { path: value })
+          .then((r) => {
+            if (r?.ok && Array.isArray(r.skills)) {
+              setListing(r);
+              // One skill and nothing in its way: ready to import.
+              if (r.skills.length === 1 && !mine.has(str(r.skills[0].name).toLowerCase())) setSel([r.skills[0].path]);
+            } else {
+              setListing(null);
+              setError(r?.reason || t('localFailed'));
+            }
+          })
+          .finally(() => setLoading(false));
+      };
+      const canPick = typeof env?.pickDirectory === 'function' && env.canPickDirectory?.() !== false;
+      const choose = () => {
+        setError('');
+        Promise.resolve()
+          .then(() => env.pickDirectory())
+          .then(
+            (p) => {
+              if (typeof p !== 'string' || p === '') return;
+              setPath(p);
+              scan(p);
+            },
+            () => setError(t('pickFailed')),
+          );
+      };
+      const doImport = () => {
+        if (!listing || sel.length === 0) return;
+        setImporting(true);
+        runImport(t, toast, bot.id, sel.map((p) => ({ local: p })))
+          .then((r) => {
+            setFailed(r.failed);
+            if (r.done && r.failed.length === 0) onImported();
+          })
+          .finally(() => setImporting(false));
+      };
+      const skills = listing?.skills ?? [];
+      return h(
+        Modal,
+        {
+          title: t('localPickerTitle'),
+          closeLabel: t('close'),
+          width: 700,
+          onClose,
+          footer: [
+            importing ? h('span', { key: 'p', style: { flex: 1, alignSelf: 'center', display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted } }, h('span', { className: 'dshb-spinner' }), t('importing')) : h('span', { key: 'p', style: { flex: 1, alignSelf: 'center', fontSize: TINY, color: C.faint } }, t('localNote')),
+            h(Btn, { key: 'c', onClick: onClose }, t('cancel')),
+            h(Btn, { key: 'i', kind: 'primary', icon: Icon.folder(12), disabled: sel.length === 0 || importing, onClick: doImport, 'data-dsh-bots-local-import': true }, t('addN', { n: sel.length })),
+          ],
+        },
+        h('div', { style: { fontSize: SMALL, color: C.muted, lineHeight: 1.6 } }, t('localHint')),
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8 } },
+          h(Input, {
+            value: path,
+            mono: true,
+            autoFocus: true,
+            placeholder: '~/skills/my-skill',
+            'data-dsh-bots-local-path': true,
+            onChange: (e) => setPath(e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) {
+                e.preventDefault();
+                scan(path);
+              }
+            },
+          }),
+          canPick ? h(Btn, { icon: Icon.folder(13), disabled: loading, onClick: choose, 'data-dsh-bots-local-pick': true }, t('chooseFolder')) : null,
+          h(Btn, { disabled: !path.trim() || loading, onClick: () => scan(path), 'data-dsh-bots-local-scan': true }, loading ? t('loading') : t('scan')),
+        ),
+        Array.isArray(places) && places.length
+          ? h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: TINY, color: C.faint, marginTop: -6 } },
+              t('localPlaces'),
+              places.map((pl) =>
+                h(
+                  'button',
+                  {
+                    key: pl.path,
+                    type: 'button',
+                    className: 'dshb-chip dshb-mono',
+                    'data-dsh-bots-local-place': pl.path,
+                    title: pl.path,
+                    onClick: () => {
+                      setPath(pl.label || pl.path);
+                      scan(pl.path);
+                    },
+                  },
+                  pl.label || pl.path,
+                ),
+              ),
+            )
+          : null,
+        error ? h('div', { 'data-dsh-bots-local-error': true, style: { fontSize: SMALL, color: C.error } }, error) : null,
+        listing
+          ? h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: SMALL, minWidth: 0 } },
+                Icon.folder(13),
+                h('span', { className: 'dshb-mono', style: { fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }, title: listing.root }, h('bdi', null, listing.root)),
+                h('span', { style: { color: C.faint, flex: 'none' } }, t('foundSkills', { n: skills.length })),
+                h('span', { style: { flex: 1 } }),
+                skills.length > 1
+                  ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, flex: 'none' }, onClick: () => setSel(sel.length ? [] : skills.filter((s) => stateOf(s) === 'new').map((s) => s.path)) }, sel.length ? t('selectNone') : t('selectAll'))
+                  : null,
+              ),
+              skills.length === 0
+                ? h('div', { style: { padding: 18, fontSize: SMALL, color: C.faint, textAlign: 'center', border: `1px dashed ${C.border1}`, borderRadius: 12 } }, t('localNone'))
+                : h(
+                    'div',
+                    { 'data-dsh-bots-local-list': true, style: { display: 'flex', flexDirection: 'column', border: `1px solid ${C.border1}`, borderRadius: 12, overflow: 'hidden', borderTop: 'none' } },
+                    skills.map((s) => {
+                      const bad = failed.find((f) => f.spec?.local === s.path);
+                      const state = stateOf(s);
+                      const rel = s.path === listing.root ? '' : str(s.path).slice(listing.root.length + 1);
+                      return h(PickRow, {
+                        key: s.path,
+                        'data-dsh-bots-local-skill': s.path,
+                        'data-state': state,
+                        checked: sel.includes(s.path),
+                        onToggle: () => setSel((x) => (x.includes(s.path) ? x.filter((p) => p !== s.path) : [...x, s.path])),
+                        title: s.name,
+                        disabled: state !== 'new',
+                        meta: state === 'linked' ? t('linked') : state === 'taken' ? t('nameTaken') : t('nFiles', { n: s.files ?? 0 }),
+                        description: s.description,
+                        note: bad ? h('span', { style: { color: C.error } }, bad.reason) : state === 'new' && inHarness.has(s.name) ? t('alsoInHarness') : rel && rel !== s.name ? h('span', { className: 'dshb-mono' }, rel) : null,
+                      });
+                    }),
+                  ),
+              listing.truncated ? h('div', { style: { fontSize: TINY, color: C.faint } }, t('localTruncated')) : null,
+            )
+          : loading
+            ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: SMALL, color: C.muted, padding: 8 } }, h('span', { className: 'dshb-spinner' }), t('readingFolder'))
             : null,
       );
     }
@@ -2573,13 +2770,13 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       );
     }
 
-    function SkillsTab({ t, bot, toast, catalog, setTab }) {
+    function SkillsTab({ t, bot, toast, catalog, setTab, env }) {
       const lang = langOf(t);
       const skills = Array.isArray(bot.skills) ? bot.skills : [];
       const [editing, setEditing] = useState(null); // {id?, name, description, content, enabled}
       const [confirm, setConfirm] = useState(null);
       const [busy, setBusy] = useState(false);
-      const [picker, setPicker] = useState(null); // 'harness' | 'github' | 'write'
+      const [picker, setPicker] = useState(null); // 'harness' | 'github' | 'local' | 'write'
       const commit = (next, okText) => {
         setBusy(true);
         return saveField(t, toast, bot, { skills: next }, okText).finally(() => setBusy(false));
@@ -2588,17 +2785,22 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         const s = editing;
         if (!s || !s.name.trim()) return;
         const prev = skills.find((x) => x.id === s.id);
+        // Two skills of one name would be told apart by nothing: refuse instead of doubling.
+        if (skills.some((x) => x !== prev && str(x.name).toLowerCase() === s.name.trim().toLowerCase())) {
+          toast(t('skillNameTaken', { name: s.name.trim() }), 'error');
+          return;
+        }
         const item = { ...(prev ?? {}), id: s.id || rid('skill'), name: s.name.trim(), source: prev ? skillSource(prev) : 'own', description: s.description.trim(), content: s.content, enabled: s.enabled !== false };
         const next = s.id ? skills.map((x) => (x.id === s.id ? item : x)) : [...skills, item];
         void commit(next, t('skillSaved')).then((ok) => ok && setEditing(null));
       };
       const addHarness = (list) => {
-        const have = new Set(skills.map((x) => x.name));
-        const add = list.filter((x) => !have.has(x.name)).map((x) => ({ name: x.name, source: 'dsh', enabled: true, description: str(x.description) }));
+        const have = new Set(skills.map((x) => str(x.name).toLowerCase()));
+        const add = list.filter((x) => !have.has(str(x.name).toLowerCase())).map((x) => ({ name: x.name, source: 'dsh', enabled: true, description: str(x.description) }));
         void commit([...skills, ...add], t('addedN', { n: add.length })).then((ok) => ok && setPicker(null));
       };
-      const counts = { dsh: 0, import: 0, own: 0 };
-      for (const s of skills) counts[skillSource(s)] += 1;
+      const counts = { dsh: 0, import: 0, local: 0, own: 0 };
+      for (const s of skills) counts[isLocalSkill(s) ? 'local' : skillSource(s)] += 1;
       return h(
         'div',
         { className: 'dshb-scroll', style: { flex: 1, padding: '20px 24px 28px' } },
@@ -2610,6 +2812,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             { 'data-dsh-bots-skill-actions': true, style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
             h(Btn, { kind: 'primary', icon: Icon.layers(13), onClick: () => setPicker('harness'), 'data-dsh-bots-add-harness': true }, t('addFromHarness')),
             h(Btn, { icon: Icon.github(13), onClick: () => setPicker('github'), 'data-dsh-bots-add-github': true }, t('importGithub')),
+            h(Btn, { icon: Icon.folder(13), onClick: () => setPicker('local'), 'data-dsh-bots-add-local': true }, t('importLocal')),
             h(Btn, { icon: Icon.wand(13), onClick: () => setPicker('write'), 'data-dsh-bots-add-write': true }, t('letBotWrite')),
             h('span', { style: { flex: 1 } }),
             editing ? null : h('button', { type: 'button', className: 'dshb-link', style: { fontSize: SMALL, color: C.muted }, onClick: () => setEditing({ name: '', description: '', content: '', enabled: true }), 'data-dsh-bots-add-skill': true }, t('writeByHand')),
@@ -2636,7 +2839,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         'div',
                         { style: { display: 'flex', alignItems: 'center', gap: 8 } },
                         h('span', { className: 'dshb-mono', style: { fontWeight: 650, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: s.name }, s.name),
-                        h(SourceBadge, { t, source: src }),
+                        h(SourceBadge, { t, source: src, local: isLocalSkill(s) }),
                         h(Switch, { on: s.enabled !== false, disabled: busy, title: s.enabled !== false ? t('disable') : t('enable'), onChange: (on) => void commit(skills.map((x) => (x === s ? { ...x, enabled: on } : x))) }),
                       ),
                       h('div', { className: 'dshb-clamp2', style: { fontSize: SMALL, color: C.muted, minHeight: 37, lineHeight: 1.5 }, title: s.description }, s.description || h('i', { style: { color: C.faint } }, t('noDescription'))),
@@ -2646,9 +2849,11 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         src === 'dsh'
                           ? h('span', { style: { fontSize: TINY, color: C.faint, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t('harnessManaged'))
                           : src === 'import'
-                            ? h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden' } }, s.origin ? h(ExtLink, { href: s.origin, title: s.origin }, str(s.origin).replace(/^https:\/\/github\.com\//, '').split('/').slice(0, 2).join('/')) : null)
+                            ? isLocalSkill(s)
+                              ? h('span', { className: 'dshb-mono', 'data-dsh-bots-skill-origin': s.origin, 'data-missing': s.missing ? true : undefined, style: { fontSize: TINY, color: s.missing ? C.error : C.faint, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: s.missing ? `${t('folderMissing')} ${s.origin}` : `${t('linkedHint')} ${s.origin}` }, s.missing ? t('folderMissing') : str(s.origin).split(/[\\/]/).filter(Boolean).slice(-2).join('/'))
+                              : h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden' } }, s.origin ? h(ExtLink, { href: s.origin, title: s.origin }, str(s.origin).replace(/^https:\/\/github\.com\//, '').split('/').slice(0, 2).join('/')) : null)
                             : h('span', { style: { fontSize: TINY, color: C.faint, flex: 1 } }, t('chars', { n: str(s.content).length })),
-                        src === 'dsh' ? null : h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.edit(12), title: t('edit'), onClick: () => setEditing({ ...s, description: str(s.description), content: str(s.content) }) }),
+                        src === 'dsh' || isLocalSkill(s) ? null : h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.edit(12), title: t('edit'), onClick: () => setEditing({ ...s, description: str(s.description), content: str(s.content) }) }),
                         h(Btn, { size: 'sm', kind: 'ghost', icon: Icon.trash(12), title: t('remove'), className: 'dshb-btn dshb-btn-sm dshb-btn-icon dshb-btn-ghost dshb-btn-danger', onClick: () => setConfirm(s) }),
                       ),
                     );
@@ -2658,6 +2863,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         ),
         picker === 'harness' ? h(HarnessPicker, { t, bot, busy, onClose: () => setPicker(null), onAdd: addHarness }) : null,
         picker === 'github' ? h(GithubPicker, { t, lang, bot, catalog, toast, onClose: () => setPicker(null), onImported: () => setPicker(null) }) : null,
+        picker === 'local' ? h(LocalPicker, { t, bot, catalog, env, toast, onClose: () => setPicker(null), onImported: () => setPicker(null) }) : null,
         picker === 'write'
           ? h(WriteSkillModal, {
               t,
@@ -3688,7 +3894,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const counts = { skills: (bot.skills ?? []).length, apps: (bot.apps ?? []).length };
       let body;
       if (tab === 'profile') body = h(ProfileTab, { key: bot.id, t, bot, toast, catalog });
-      else if (tab === 'skills') body = h(SkillsTab, { key: bot.id, t, bot, toast, catalog, setTab });
+      else if (tab === 'skills') body = h(SkillsTab, { key: bot.id, t, bot, toast, catalog, setTab, env });
       else if (tab === 'schedules') body = h(SchedulesTab, { key: bot.id, t, bot, toast, catalog });
       else if (tab === 'apps') body = h(AppsTab, { key: bot.id, t, bot, toast, catalog });
       else body = h(ChatTab, { key: bot.id, t, bot, env, toast });
@@ -5064,6 +5270,28 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         importN: "Import {n}",
         importing: "Importing…",
         importedN: "Imported {n} skills.",
+        updatedN: "Updated {n}.",
+        skippedN: "Skipped {n}: a skill of that name is already here.",
+        nameTaken: "Name already used",
+        reimport: "Imported · import again to update",
+        skillNameTaken: "This bot already has a skill named “{name}”.",
+        importLocal: "Add from a folder",
+        localPickerTitle: "Add skills from a local folder",
+        localHint: "Pick a skill folder (one with a SKILL.md), or a folder that holds several.",
+        localNote: "Linked, never copied: edit the folder and the bot uses the new version.",
+        linked: "Linked",
+        linkedHint: "Read from this folder each time; edit it there.",
+        folderMissing: "Folder not found",
+        localFailed: "Could not read that folder.",
+        localNone: "No SKILL.md in this folder or the folders below it.",
+        localTruncated: "The folder is large; only part of it was searched. Pick a folder closer to the skills.",
+        localPlaces: "Found on this machine:",
+        chooseFolder: "Choose folder…",
+        pickFailed: "The folder dialog is unavailable here; type or paste the path instead.",
+        scan: "Scan",
+        readingFolder: "Reading the folder…",
+        alsoInHarness: "A skill of this name is also installed in the Harness (see “Add from Harness”).",
+        src_local: "Local",
         importFailed: "Import failed.",
         browse: "Browse",
         foundSkills: "{n} skills",
@@ -5083,8 +5311,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         letBotWrite: "Let the bot write it",
         writeByHand: "Write by hand",
         skillsHint2: "Instructions {name} loads when a task needs them.",
-        skillMix: "{dsh} Harness · {import} GitHub · {own} own",
-        noSkillsBody2: "Add skills already installed in your Harness, import a folder from GitHub, or describe one and let the bot write it.",
+        skillMix: "{dsh} Harness · {import} GitHub · {local} local · {own} own",
+        noSkillsBody2: "Add skills already installed in your Harness, import a folder from GitHub or from this machine, or describe one and let the bot write it.",
         harnessManaged: "Provided by the Harness, kept up to date",
         src_dsh: "Harness",
         src_import: "GitHub",
@@ -5545,6 +5773,28 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         importN: "导入 {n} 个",
         importing: "导入中…",
         importedN: "已导入 {n} 个技能。",
+        updatedN: "已更新 {n} 个。",
+        skippedN: "跳过 {n} 个：已有同名技能。",
+        nameTaken: "已有同名技能",
+        reimport: "已导入 · 再次导入可更新",
+        skillNameTaken: "这个 Bot 已经有名为“{name}”的技能。",
+        importLocal: "从本地文件夹添加",
+        localPickerTitle: "从本地文件夹添加技能",
+        localHint: "选一个技能文件夹（里面有 SKILL.md），或者一个装着多个技能的文件夹。",
+        localNote: "只引用、不复制：改了原文件夹，Bot 就用新的。",
+        linked: "已引用",
+        linkedHint: "每次都从这个文件夹读取，要改就改那里。",
+        folderMissing: "文件夹找不到了",
+        localFailed: "读取这个文件夹失败。",
+        localNone: "这个文件夹和它的子文件夹里都没有 SKILL.md。",
+        localTruncated: "文件夹太大，只搜索了一部分。请选离技能更近的文件夹。",
+        localPlaces: "本机已有：",
+        chooseFolder: "选择文件夹…",
+        pickFailed: "这里打不开文件夹选择框，请直接输入或粘贴路径。",
+        scan: "扫描",
+        readingFolder: "正在读取文件夹…",
+        alsoInHarness: "Harness 里也安装了同名技能（见“从 Harness 添加”）。",
+        src_local: "本地",
         importFailed: "导入失败。",
         browse: "浏览",
         foundSkills: "{n} 个技能",
@@ -5564,8 +5814,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         letBotWrite: "让 Bot 自己写",
         writeByHand: "手写",
         skillsHint2: "{name} 在任务需要时加载的说明。",
-        skillMix: "Harness {dsh} · GitHub {import} · 自写 {own}",
-        noSkillsBody2: "添加 Harness 里已安装的技能、从 GitHub 导入，或者描述一下让 Bot 自己写。",
+        skillMix: "Harness {dsh} · GitHub {import} · 本地 {local} · 自写 {own}",
+        noSkillsBody2: "添加 Harness 里已安装的技能、从 GitHub 或本地文件夹导入，或者描述一下让 Bot 自己写。",
         harnessManaged: "由 Harness 提供，自动保持最新",
         src_dsh: "Harness",
         src_import: "GitHub",
@@ -5677,7 +5927,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             return false;
           }
         };
+        // The Host's own folder dialog: the desktop shell's when there is one, else the workspace service's.
+        const directoryPicker = () => {
+          const desktop = globalThis.__DSH_DIRECTORY_PICKER__;
+          if (typeof desktop?.pick === 'function') return () => desktop.pick();
+          const ws = service('uiWorkspace');
+          return typeof ws?.pickDirectory === 'function' ? () => ws.pickDirectory() : null;
+        };
         const env = {
+          // Asked at use: the workspace service may come up after this client does.
+          canPickDirectory: () => directoryPicker() !== null,
+          pickDirectory: () => (directoryPicker() ?? (() => null))(),
           canOpen: () => typeof service('uiWorkspace')?.openSession === 'function',
           canPanel: () => typeof service('layout')?.selectPanel === 'function',
           /** Ensure the bot's home conversation, then show it; false on failure. */

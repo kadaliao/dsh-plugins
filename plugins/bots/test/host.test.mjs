@@ -624,3 +624,79 @@ test('chat channels: the real Discord module connects through the host and a rep
   for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
   await settle();
 });
+
+test('local skills: a folder is scanned and linked once, read live, and name clashes are skipped', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync } = await import('node:fs');
+  const { listLocalSkills, resolveLocalPath, mergeImported } = await import('../lib/skills.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'local-skills-'));
+  const mk = (rel, text) => (mkdirSync(join(root, rel, '..'), { recursive: true }), writeFileSync(join(root, rel), text));
+  mk('alpha/SKILL.md', '---\nname: alpha\ndescription: First.\n---\n# Alpha v1');
+  mk('alpha/scripts/run.py', 'print(1)');
+  mk('alpha/.git/config', 'x');
+  mk('alpha/node_modules/dep/index.js', 'x');
+  mk('group/beta/skill.md', '# Beta without front matter');
+  mk('group/beta/nested/SKILL.md', '---\nname: inner\n---\nnot a skill of its own');
+  mk('.hidden/gamma/SKILL.md', '---\nname: gamma\n---\n');
+  mk('node_modules/pkg/SKILL.md', '---\nname: pkg\n---\n');
+  mk('notes/readme.md', 'no skill here');
+  symlinkSync(root, join(root, 'group', 'loop'));
+
+  const listing = listLocalSkills(root);
+  assert.deepEqual(listing.skills.map((s) => s.name), ['alpha', 'beta']);
+  assert.equal(listing.skills[0].files, 2); // SKILL.md + scripts/run.py; .git and node_modules left out
+  assert.equal(listLocalSkills(join(root, 'alpha', 'SKILL.md')).skills[0].path, join(root, 'alpha'));
+  assert.equal(resolveLocalPath('~/x/', '/home/me'), '/home/me/x');
+  assert.throws(() => listLocalSkills(join(root, 'nope')), /no such folder/);
+  assert.equal((await api.routes['skills/local'].post({ path: join(root, 'nope') })).ok, false);
+  assert.deepEqual((await api.routes['skills/local'].post({ path: root })).skills.map((s) => s.name), ['alpha', 'beta']);
+
+  const bot = api.store.save({ name: 'Local', handle: 'local-skills', skills: [{ name: 'Beta', source: 'own', content: '# mine' }] });
+  const post = (items) => api.routes['skills/import'].post({ botId: bot.id, items });
+  let r = await post([{ local: join(root, 'alpha') }, { local: join(root, 'group', 'beta') }, { local: join(root, 'notes') }]);
+  assert.deepEqual([r.added, r.updated, r.skipped], [['alpha'], [], [{ name: 'beta', reason: 'exists' }]]);
+  assert.match(r.failed[0].reason, /no SKILL\.md/);
+  const first = api.store.get(bot.id).skills.find((s) => s.name === 'alpha');
+  // Linked, not copied: the skill points at the folder itself.
+  assert.deepEqual([first.origin, first.dir, first.linked, first.content], [join(root, 'alpha'), join(root, 'alpha'), true, '# Alpha v1']);
+
+  // Again from the same folder: still one skill, same id, its on/off kept, the folder untouched.
+  api.store.save({ id: bot.id, skills: api.store.get(bot.id).skills.map((s) => (s.name === 'alpha' ? { ...s, enabled: false } : s)) });
+  r = await post([{ local: join(root, 'alpha') }, { local: join(root, 'alpha') }]);
+  assert.deepEqual([r.added, r.updated, r.skipped.length], [[], ['alpha'], 1]);
+  const again = api.store.get(bot.id).skills.filter((s) => s.name === 'alpha');
+  assert.deepEqual([again.length, again[0].id, again[0].enabled], [1, first.id, false]);
+  assert.ok(existsSync(join(root, 'alpha', 'scripts', 'run.py')));
+  assert.equal(api.store.get(bot.id).skills.length, 2);
+
+  // An edit in the folder reaches the bot: the panel shows it, and the conversation re-installs the skill.
+  api.store.save({ id: bot.id, skills: api.store.get(bot.id).skills.map((s) => ({ ...s, enabled: true })) });
+  const registered = [];
+  const agent = { session: { id: 'sess-local' }, ctx: { get: (name) => (name === 'skills' ? { register: (sk) => (registered.push(sk), () => {}) } : name === 'systemPrompt' ? { section: () => () => {} } : name === 'tools' ? { restrict: () => () => {} } : undefined) } };
+  api.store.save({ id: bot.id, sessionId: 'sess-local' });
+  api.reconcile(agent);
+  const reg = () => registered.filter((x) => x.name === 'local-skills-alpha').at(-1);
+  assert.equal(reg().content, '# Alpha v1');
+  assert.deepEqual(reg().resourceBase, { kind: 'directory', path: join(root, 'alpha') });
+  mk('alpha/SKILL.md', '---\nname: alpha\ndescription: Second.\n---\n# Alpha v2, longer');
+  api.reconcile(agent);
+  assert.deepEqual([reg().content, reg().description], ['# Alpha v2, longer', 'Second.']);
+  assert.equal(api.state().bots.find((b) => b.id === bot.id).skills.find((s) => s.name === 'alpha').description, 'Second.');
+  // The folder gone: flagged in the panel, and the bot keeps what was read when it was linked.
+  const { rmSync } = await import('node:fs');
+  rmSync(join(root, 'alpha'), { recursive: true });
+  assert.equal(api.state().bots.find((b) => b.id === bot.id).skills.find((s) => s.name === 'alpha').missing, true);
+  api.reconcile(agent);
+  assert.equal(reg().content, '# Alpha v1');
+
+  // A same-named skill from somewhere else never replaces what is there.
+  const m = mergeImported([{ id: 'a', name: 'pdf', source: 'dsh' }], [{ id: 'b', name: 'PDF', source: 'import', origin: '/x/pdf', dir: '/tmp/b' }]);
+  assert.deepEqual([m.skills.length, m.added, m.skipped], [1, [], [{ name: 'PDF', reason: 'exists' }]]);
+
+  // The store itself drops certain repeats: a Harness skill linked twice, one import made twice.
+  const twice = api.store.save({ id: bot.id, skills: [
+    { name: 'xlsx', source: 'dsh' }, { name: 'xlsx', source: 'dsh' },
+    { name: 'pdf', source: 'import', origin: 'https://github.com/a/b/tree/main/pdf' }, { name: 'pdf', source: 'import', origin: 'https://github.com/a/b/tree/main/pdf' },
+    { name: 'draft', source: 'own', content: '1' }, { name: 'draft', source: 'own', content: '2' },
+  ] });
+  assert.deepEqual(twice.skills.map((s) => s.name), ['xlsx', 'pdf', 'draft', 'draft']);
+});

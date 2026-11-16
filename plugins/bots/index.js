@@ -22,14 +22,14 @@
 
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 import { createStore, initialsOf, slugify, SKILL_RE, PALETTE } from './lib/store.mjs';
 import { catalog as appCatalog, CATEGORIES, mcpConfigFor } from './lib/apps.mjs';
 import { ABILITIES } from './lib/abilities.mjs';
-import { SKILL_SOURCES, importGithubSkill, importUrlSkill, listGithubSkills, parseGithub } from './lib/skills.mjs';
+import { SKILL_SOURCES, importGithubSkill, importUrlSkill, linkLocalSkill, listGithubSkills, listLocalSkills, mergeImported, parseGithub, readLinkedSkill, resolveLocalPath } from './lib/skills.mjs';
 import { TEAMS, teamTiming, teamView } from './lib/teams.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
@@ -215,7 +215,8 @@ export function apply(ctx, config, deps = {}) {
 
   const isChannel = (app) => Boolean(channelEntry(app, templates()));
   // Chat channels run outside the Agent; changing one does not restart the bot's MCP clients.
-  const signatureOf = (bot) => JSON.stringify({ s: bot.skills, a: bot.apps.filter((a) => !isChannel(a)), t: bot.tools, h: bot.handle });
+  // A linked local skill counts by what its SKILL.md is now, so an edit there re-installs it.
+  const signatureOf = (bot) => JSON.stringify({ s: bot.skills, l: bot.skills.filter((s) => s.linked && s.enabled).map((s) => readLinkedSkill(s.dir)?.stamp ?? ''), a: bot.apps.filter((a) => !isChannel(a)), t: bot.tools, h: bot.handle });
   /** The chat apps the team can be reached from ('Telegram'), for the persona. */
   const channelNames = (bots) => {
     const tpl = templates();
@@ -250,7 +251,11 @@ export function apply(ctx, config, deps = {}) {
     const local = enabledSkills.filter((s) => s.source !== 'dsh');
     if (local.length > 0) {
       if (skills && typeof skills.register === 'function') {
-        for (const s of local) {
+        for (const stored of local) {
+          // A linked folder speaks for itself; what was stored when it was linked stands in if it is gone.
+          const live = stored.linked ? readLinkedSkill(stored.dir) : null;
+          if (stored.linked && !live) ctx.logger?.warn?.(`bots: skill folder ${stored.dir} of @${bot.handle} is gone; using what was read when it was linked`);
+          const s = live ? { ...stored, description: live.description || stored.description, content: live.content } : stored;
           let n = slugify(s.name, 'skill');
           if (!SKILL_RE.test(n)) n = `skill-${s.id.slice(-5)}`;
           n = `${bot.handle}-${n}`.slice(0, 64).replace(/-+$/, '');
@@ -969,7 +974,13 @@ export function apply(ctx, config, deps = {}) {
           appIssues[app.id] = error?.message ?? String(error);
         }
       }
-      const skills = b.skills.map((s) => (s.source === 'dsh' && !s.description && dshSkillInfo.get(s.name) ? { ...s, description: dshSkillInfo.get(s.name) } : s));
+      const skills = b.skills.map((s) => {
+        if (s.source === 'dsh' && !s.description && dshSkillInfo.get(s.name)) return { ...s, description: dshSkillInfo.get(s.name) };
+        if (!s.linked) return s;
+        // A linked folder is shown as it is now, or flagged when it is gone.
+        const live = readLinkedSkill(s.dir);
+        return live ? { ...s, description: live.description || s.description, content: live.content } : { ...s, missing: true };
+      });
       return { ...publicBot(b), skills, status: botStatus(b), appIssues, channels: channels.view(b) };
     });
     const sessionMap = {};
@@ -980,17 +991,38 @@ export function apply(ctx, config, deps = {}) {
   let ocuInstalling = false;
   // --- skills from elsewhere -------------------------------------------------------
   const skillDir = join(dir, 'skills');
-  /** Import one skill (GitHub folder or URL) as a bot skill object, files kept under the cache. */
+  /** Import one skill (local folder, GitHub folder or URL) as a bot skill object, files kept under the cache. */
   async function importSkill(spec) {
     const signal = AbortSignal.timeout(120_000);
     const id = `skill-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    if (typeof spec.local === 'string' && spec.local.trim() !== '') return { id, source: 'import', enabled: true, ...linkLocalSkill(spec.local) };
     const gh = spec.repo ? { ...parseGithub(spec.repo), ...(spec.path !== undefined ? { path: spec.path } : {}), ...(spec.ref ? { ref: spec.ref } : {}) } : parseGithub(spec.url ?? '');
     if (gh) {
       const got = await importGithubSkill(gh, skillDir, id, { signal });
       return { id, source: 'import', enabled: true, ...got };
     }
     if (/^https?:\/\//.test(String(spec.url ?? ''))) return { id, source: 'import', enabled: true, ...(await importUrlSkill(spec.url, { signal })) };
-    throw new Error('give a GitHub repository or folder (owner/repo/path) or a SKILL.md URL');
+    throw new Error('give a local folder, a GitHub repository or folder (owner/repo/path) or a SKILL.md URL');
+  }
+  /** Remove copied skill folders nothing points at any more (only ever inside the bots cache). */
+  function dropSkillDirs(skills) {
+    const used = new Set(store.list().flatMap((b) => b.skills.map((s) => s.dir).filter(Boolean)));
+    for (const s of skills) {
+      if (typeof s.dir === 'string' && s.dir.startsWith(skillDir + sep) && !used.has(s.dir)) rmSync(s.dir, { recursive: true, force: true });
+    }
+  }
+  /** Folders on this machine where other agents keep skills, as one-click starting points. */
+  function localSkillPlaces() {
+    const home = homedir();
+    return [join(home, '.claude', 'skills'), join(home, '.codex', 'skills'), join(home, '.agents', 'skills')]
+      .filter((p) => {
+        try {
+          return statSync(p).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .map((p) => ({ path: p, label: `~${p.slice(home.length)}` }));
   }
 
   // --- teams -------------------------------------------------------------------------
@@ -1108,8 +1140,30 @@ export function apply(ctx, config, deps = {}) {
             failed.push({ spec, reason: error?.message ?? String(error) });
           }
         }
-        const saved = store.save({ id: bot.id, skills: [...store.get(bot.id).skills, ...added] });
-        return { ok: added.length > 0 || failed.length === 0, bot: publicBot(saved), added: added.map((x) => x.name), failed, ...(failed.length && !added.length ? { reason: failed[0].reason } : {}) };
+        // No doubles: a name the bot already has is updated (same origin) or skipped, never added again.
+        const merged = mergeImported(store.get(bot.id).skills, added);
+        const changed = merged.added.length + merged.updated.length > 0;
+        const saved = changed ? store.save({ id: bot.id, skills: merged.skills }) : store.get(bot.id);
+        dropSkillDirs(merged.dropped);
+        return {
+          ok: changed || failed.length === 0,
+          bot: publicBot(saved),
+          added: merged.added,
+          updated: merged.updated,
+          skipped: merged.skipped,
+          failed,
+          ...(failed.length && !changed ? { reason: failed[0].reason } : {}),
+        };
+      },
+    },
+    'skills/local': {
+      get: () => ({ places: localSkillPlaces() }),
+      post: (body) => {
+        try {
+          return { ok: true, ...listLocalSkills(String(body.path ?? '')) };
+        } catch (error) {
+          return { ok: false, reason: error?.message ?? String(error), path: resolveLocalPath(String(body.path ?? '')) };
+        }
       },
     },
     'skills/write': {

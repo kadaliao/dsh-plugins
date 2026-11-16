@@ -102,7 +102,8 @@ function normalizeAvatar(a, seed = 0) {
  * One skill of a bot:
  * - `own`: written for this bot (content kept here);
  * - `dsh`: an installed Harness skill, by name (content read live from DSH);
- * - `import`: copied from GitHub or a URL; `dir` holds its files on disk.
+ * - `import`: copied from GitHub or a URL (`dir` holds the copy), or `linked` to a local
+ *   folder (`dir` is that folder, read live).
  */
 function normalizeSkill(s) {
   const name = str(s?.name, 80).trim();
@@ -116,8 +117,25 @@ function normalizeSkill(s) {
     content: source === 'dsh' ? '' : str(s?.content, 200_000),
     enabled: bool(s?.enabled, true),
     ...(source === 'import' && typeof s?.dir === 'string' ? { dir: s.dir } : {}),
+    ...(source === 'import' && typeof s?.dir === 'string' && s?.linked === true ? { linked: true } : {}),
     ...(typeof s?.origin === 'string' && s.origin ? { origin: str(s.origin, 500) } : {}),
   };
+}
+
+/**
+ * Drop the repeats of a skill that is there twice for certain: a Harness skill linked
+ * twice by name, or the same import (name and origin) made twice. The first one stays.
+ * Same-named skills that differ are kept; the import route and the editor refuse those.
+ */
+function dedupeSkills(list) {
+  const seen = new Set();
+  return list.filter((s) => {
+    if (s.source === 'own' || (s.source === 'import' && !s.origin)) return true;
+    const key = `${s.source}\n${s.name.toLowerCase()}\n${s.source === 'import' ? s.origin : ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 const kv = (o) => {
@@ -158,7 +176,7 @@ export function normalizeBot(input, prev, seed = 0) {
   const b = { ...(prev ?? {}), ...(input ?? {}) };
   const now = Date.now();
   const name = str(b.name, 60).trim() || prev?.name || 'New bot';
-  const skills = (Array.isArray(b.skills) ? b.skills : []).map(normalizeSkill).filter(Boolean).slice(0, 50);
+  const skills = dedupeSkills((Array.isArray(b.skills) ? b.skills : []).map(normalizeSkill).filter(Boolean)).slice(0, 50);
   const apps = (Array.isArray(b.apps) ? b.apps : []).map(normalizeApp).filter(Boolean).slice(0, 20);
   const deny = Array.isArray(b.tools?.deny) ? [...new Set(b.tools.deny.map(String).filter(Boolean))].slice(0, 200) : [];
   const model = b.model && typeof b.model === 'object' && str(b.model.provider) && str(b.model.model) ? { provider: str(b.model.provider, 200), model: str(b.model.model, 200) } : null;

@@ -68,6 +68,10 @@ A bot is an ordinary Harness conversation, so everything Harness can do, a bot c
     `~/.dsh/skills`, …); referenced, not copied, so they stay up to date;
   - **Import from GitHub**: browse Anthropic's skills in one click, or paste any `owner/repo/path`; the
     whole skill folder comes along, scripts included;
+  - **Add from a folder**: pick a skill folder on this machine (or a folder holding several, e.g.
+    `~/.claude/skills`); linked, not copied, so editing the folder is enough;
+  - a skill name is used once per bot: adding one that is already there is skipped, and importing again
+    from the same GitHub folder updates it in place;
   - **Let the bot write it**: describe what you need in a sentence; the bot writes it with skill-creator
     and saves it to itself;
   - writing one by hand is still possible, as the last resort.

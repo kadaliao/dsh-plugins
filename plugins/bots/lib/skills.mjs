@@ -2,15 +2,18 @@
  * Where a bot's skills come from, besides writing one by hand:
  * - the skills already installed in DeepSeek Harness (~/.agents/skills, ~/.dsh/skills, bundled);
  * - a GitHub folder or repository that holds SKILL.md files (anthropics/skills and the like);
- * - a raw SKILL.md URL.
- * An import copies the whole skill folder under the bots cache, so scripts and
- * references the skill mentions keep working.
+ * - a raw SKILL.md URL;
+ * - a folder on this machine (a skill folder, or a folder of them).
+ * A GitHub import copies the whole skill folder under the bots cache, so scripts and
+ * references the skill mentions keep working. A local folder is linked, never copied:
+ * the bot reads it where it is, so editing it there is enough.
  *
  * @module @kadaliao/dsh-bots/lib/skills
  */
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, normalize } from 'node:path';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join, normalize, resolve } from 'node:path';
 
 /** Skill collections worth browsing, shown as one-click sources. */
 export const SKILL_SOURCES = [
@@ -143,4 +146,194 @@ export async function importUrlSkill(url, { fetchImpl = fetch, signal } = {}) {
   const meta = parseSkillMd(text);
   const fallback = url.split('/').filter(Boolean).slice(-2, -1)[0] ?? 'skill';
   return { name: meta.name || fallback, description: meta.description, content: meta.body.trim(), origin: url };
+}
+
+// --- a folder on this machine ----------------------------------------------------------
+
+/** Folders never walked into: dependencies, and anything hidden. */
+const skipDir = (name) => name.startsWith('.') || name === 'node_modules';
+/** How deep below the chosen folder skills are looked for, and how many folders are read. */
+const LOCAL_DEPTH = 4;
+const LOCAL_DIRS = 3000;
+const LOCAL_SKILLS = 200;
+
+/** What a user types or pastes as a folder: `~`, quotes and a trailing SKILL.md are accepted. */
+export function resolveLocalPath(input, home = homedir()) {
+  let p = String(input ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').replace(/^file:\/\//, '');
+  if (p === '') return '';
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) p = join(home, p.slice(1));
+  p = resolve(p);
+  if (/^SKILL\.md$/i.test(basename(p))) p = dirname(p);
+  return p;
+}
+
+const statOf = (p) => {
+  try {
+    return statSync(p);
+  } catch {
+    return null;
+  }
+};
+const entriesOf = (dir) => {
+  try {
+    return readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+};
+/** The SKILL.md of a folder, whatever its letter case; '' when there is none. */
+const skillFileOf = (dir, names = entriesOf(dir)) => {
+  const name = names.find((n) => /^SKILL\.md$/i.test(n));
+  return name && statOf(join(dir, name))?.isFile() ? join(dir, name) : '';
+};
+
+/** Every file of one skill folder (links followed once, hidden entries and dependencies left out). */
+function localFiles(root) {
+  const files = [];
+  const seen = new Set();
+  let bytes = 0;
+  const walk = (dir, rel) => {
+    let real;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
+    for (const name of entriesOf(dir)) {
+      if (skipDir(name)) continue;
+      const st = statOf(join(dir, name));
+      if (!st) continue;
+      if (st.isDirectory()) walk(join(dir, name), rel ? `${rel}/${name}` : name);
+      else if (st.isFile()) {
+        files.push({ rel: rel ? `${rel}/${name}` : name, path: join(dir, name), size: st.size });
+        bytes += st.size;
+      }
+      if (files.length > MAX_FILES) return;
+    }
+  };
+  walk(root, '');
+  return { files, bytes };
+}
+
+/**
+ * The skills inside a local folder: the folder itself when it holds a SKILL.md,
+ * else every folder below it (a few levels) that does.
+ * @returns {{root: string, skills: {name, description, path, files: number}[], truncated: boolean}}
+ */
+export function listLocalSkills(input, { home } = {}) {
+  const root = resolveLocalPath(input, home);
+  if (root === '') throw new Error('give a folder');
+  const st = statOf(root);
+  if (!st) throw new Error(`no such folder: ${root}`);
+  if (!st.isDirectory()) throw new Error(`not a folder: ${root}`);
+  const found = [];
+  const seen = new Set();
+  let read = 0;
+  let truncated = false;
+  const walk = (dir, depth) => {
+    if (found.length >= LOCAL_SKILLS || read >= LOCAL_DIRS) {
+      truncated = true;
+      return;
+    }
+    let real;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (seen.has(real)) return;
+    seen.add(real);
+    read += 1;
+    const names = entriesOf(dir);
+    const file = skillFileOf(dir, names);
+    if (file) {
+      found.push({ dir, file });
+      return;
+    }
+    if (depth >= LOCAL_DEPTH) return;
+    for (const name of names) if (!skipDir(name) && statOf(join(dir, name))?.isDirectory()) walk(join(dir, name), depth + 1);
+  };
+  walk(root, 0);
+  const skills = found.map(({ dir, file }) => {
+    let meta = { name: '', description: '' };
+    try {
+      meta = parseSkillMd(readFileSync(file, 'utf8'));
+    } catch {
+      // Listed by its folder name.
+    }
+    return { name: meta.name || basename(dir), description: meta.description.slice(0, 600), path: dir, files: localFiles(dir).files.length };
+  });
+  return { root, skills: skills.sort((a, b) => a.name.localeCompare(b.name)), truncated };
+}
+
+/** What a linked skill folder says right now; null when the folder or its SKILL.md is gone. */
+export function readLinkedSkill(dir) {
+  const file = skillFileOf(dir);
+  if (!file) return null;
+  try {
+    const meta = parseSkillMd(readFileSync(file, 'utf8'));
+    return { name: meta.name || basename(dir), description: meta.description, content: meta.body.trim(), stamp: `${statSync(file).mtimeMs}:${statSync(file).size}` };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Link one local skill folder: nothing is copied, the bot reads the folder itself,
+ * so an edit there reaches the bot. `content` is what it said when linked, kept as a fallback.
+ * @returns {{name, description, content, dir, origin, linked: true}}
+ */
+export function linkLocalSkill(input, { home } = {}) {
+  const src = resolveLocalPath(input, home);
+  if (src === '' || !statOf(src)?.isDirectory()) throw new Error(`no such folder: ${src || input}`);
+  const now = readLinkedSkill(src);
+  if (!now) throw new Error(`no SKILL.md in ${src}`);
+  return { name: now.name, description: now.description, content: now.content, dir: src, origin: src, linked: true };
+}
+
+/** Whether a skill's origin is a folder on this machine (not a URL). */
+export const isLocalOrigin = (origin) => typeof origin === 'string' && origin !== '' && !/^https?:\/\//i.test(origin);
+
+/**
+ * Merge freshly imported skills into a bot's list without doubling any:
+ * - a new name is added;
+ * - the same name from the same origin replaces the old entry in place (an update: id and on/off kept);
+ * - the same name from anywhere else is left alone and reported (`exists`), as is one past the limit (`full`).
+ * Names compare case-insensitively.
+ * @returns {{skills: object[], added: string[], updated: string[], skipped: {name, reason}[], dropped: object[]}}
+ *   `dropped` are skill objects whose copied folder is no longer used.
+ */
+export function mergeImported(current, incoming, { limit = 50 } = {}) {
+  const skills = [...current];
+  const added = [];
+  const updated = [];
+  const skipped = [];
+  const dropped = [];
+  const key = (s) => String(s.name).trim().toLowerCase();
+  for (const item of incoming) {
+    const at = skills.findIndex((s) => key(s) === key(item));
+    if (at < 0) {
+      if (skills.length >= limit) {
+        skipped.push({ name: item.name, reason: 'full' });
+        dropped.push(item);
+        continue;
+      }
+      skills.push(item);
+      added.push(item.name);
+      continue;
+    }
+    const old = skills[at];
+    const fresh = added.includes(old.name) || updated.includes(old.name);
+    if (!fresh && old.source === 'import' && old.origin && old.origin === item.origin) {
+      skills[at] = { ...item, id: old.id, enabled: old.enabled };
+      updated.push(item.name);
+      if (old.dir && old.dir !== item.dir) dropped.push(old);
+    } else {
+      skipped.push({ name: item.name, reason: 'exists' });
+      dropped.push(item);
+    }
+  }
+  return { skills, added, updated, skipped, dropped };
 }
