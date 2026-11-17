@@ -7292,7 +7292,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         setStall: 'Minutes before a quiet task counts as stuck',
         setStallHint: 'A working task quiet this long is asked for a report; still quiet after that, it is marked stuck.',
         setArchive: 'Hours before a finished task’s conversation is archived',
-        setArchiveHint: 'Until then, a new message in its chat picks the task up again.',
+        setArchiveHint: 'Until then, a new message in its chat thread picks the task up again.',
         // Usage, memory, topics, settings, model sources
         settings: 'Settings',
         usage: 'Usage',
@@ -8095,7 +8095,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         setStall: '多少分钟没动静算卡住',
         setStallHint: '进行中的任务这么久没动静，先请它汇报；之后仍没动静就标为卡住。',
         setArchive: '任务完成多少小时后归档会话',
-        setArchiveHint: '在此之前，它所在聊天里的新消息会让这个任务继续。',
+        setArchiveHint: '在此之前，它所在话题或回复串里的新消息会让这个任务继续。',
         // 用量、记忆、话题、设置、模型来源
         settings: '设置',
         usage: '用量',

@@ -203,8 +203,10 @@ Behaviour (lib/channels.mjs):
   messages that mention it or reply to it.
 - A paired person's message becomes a user prompt (`source.kind: 'user'`) in the owning bot's conversation, or
   in `@handle`'s when it starts with a roster handle, as two text blocks: `[Telegram · Name]` (plus the group
-  name in a group) and the text. A typing indicator runs while the bot works (every 5 s).
-- Replies: a conversation whose latest user message came from a chat sends its user-facing replies
+  name in a group) and the text. A typing indicator runs while the bot works (every 5 s). Since 0.8 the header
+  names the Thread and a follow-up may go to a task instead: see "Thread keys" under v0.8.
+- Replies (0.7; since 0.8 they follow each turn's Threads, see "Thread keys" under v0.8): a conversation whose
+  latest user message came from a chat sends its user-facing replies
   (`kind: 'reply'` in the timeline) to that chat — including the dispatcher's report after teammates answer
   by DM. A user message from anywhere else (the panel) brings replies back to the panel. A scheduled run of
   the owning bot reports to `paired[0]` privately when `scheduleReplies`. Telegram gets plain text
@@ -307,3 +309,244 @@ TaskView = { id, bot, trigger: 'user'|'chat'|'schedule'|'dm', via?, from?, sched
 |---|---|---|---|
 | GET | `settings` | – | `{ settings }` |
 | POST | `settings` | `{ patch: {topics?: {idleHours, maxContextK}, memory?: {auto, model, dream, dreamTime}} }` | `{ ok, settings }` |
+
+## v0.8 — tasks, the router, chat threads
+
+A **task** is work one bot hands another, done in a Harness Session of its own (`ticket-<id>`). The code calls it a
+*ticket*, and so do the route paths (`tickets/…`), the types below and the tool `bot_ticket`; the panel says task. A
+**run** is what 0.7 called a task: everything one Session does from one request until it is idle again. The usage
+files and `TaskView` keep the name `task` for runs.
+
+### Settings
+```ts
+settings += {
+  dispatcher: 'router' | 'hands-on',   // default 'router'; anything else reads as 'router'
+  tickets: {
+    maxWorking: number,                // 4; 1–32. Task Sessions working at once; a message to a started task may take one more
+    stallMinutes: number,              // 20; 1–1440. Quiet minutes before the status check, and again before the stall
+    archiveHours: number,              // 24; 0–720. Hours after a task ended before its Session is archived (0: next upkeep)
+  },
+  routerNotice: null | 'pending' | 'dismissed',  // set once on the first start of 0.8: 'pending' when bots existed before
+}
+```
+`POST settings` takes `dispatcher` and `tickets` in `patch`; a patch with `dispatcher` also sets `routerNotice:
+'dismissed'`. Router mode is in effect when `dispatcher === 'router'` and the roster has at least two bots.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| POST | `router-notice/dismiss` | `{}` | `{ ok: true, routerNoticePending: false }` |
+
+### Bots and catalog
+`Bot.tools = { deny: string[], routerAllow?: string[] }` — `routerAllow`: tools a router dispatcher keeps although
+Router mode denies them. A save whose `tools` leaves `routerAllow` out keeps the stored list.
+
+`catalog.routerDeny: string[]` — what Router mode denies the dispatcher's home by default: the `code` ability (`bash`,
+`job_list`, `job_output`, `job_kill`, `load_workspace_dependencies`), `write`, `edit`, the `delegate` ability, the
+`images` ability and the `office` ability. A router home also gets a `tools.guard` that refuses `bash` running `sleep`
+or with a timeout over 30 s, and `job_output` waits over 5 s (or without `timeout_ms`). A task Session of the
+dispatcher is an ordinary worker: none of this applies there.
+
+### State
+```ts
+state += {
+  dispatcher: 'router' | 'hands-on',
+  routerActive: boolean,               // router mode in effect now
+  routerNoticePending: boolean,
+  attention: TicketRow[],              // tasks that need a person (stage question, failed or stalled), newest change first, ≤ 50
+  ticketMap: { [sessionId]: ticketId },// unarchived task Sessions
+}
+state.sessionMap                       // also maps each unarchived task Session to its bot
+state.bots[].tickets = { working, question, stalled, queued }   // counts of unarchived tasks
+```
+
+### Task data
+`tickets.json` under the cache, written whole through a temp file (mode 0600):
+```ts
+{ version: 1, tickets: Ticket[], threads: Thread[] }
+
+Ticket = {
+  id: string,                          // 't' + 8 lowercase letters and digits
+  title: string,                       // ≤ 120 characters; from the first line of `text` when not given
+  text: string,                        // what was asked, ≤ 50 000 characters
+  botId: string,                       // the bot doing it
+  sessionId: string | null,            // 'ticket-<id>' once started
+  requester: { kind: 'session' | 'user', sessionId?, botId?, ticketId? },  // ticketId: asked from that task (a sub-task)
+  parentId?: string,
+  origin: { threadKey?, via?, who? },  // via: 'telegram' | 'discord' | 'feishu' | 'slack' | 'schedule'
+  threads: string[],                   // Thread keys it is subscribed to (its origin's, when it has one)
+  reports: { at, status: 'progress' | 'done' | 'blocked' | 'question', text }[],  // newest 200, each ≤ 20 000 characters
+  createdAt, updatedAt, startedAt?,
+  lastEventAt?,                        // latest event in its Session
+  lastHumanAt?, lastRequesterAt?,      // latest message from a person / from the requester
+  nudgedAt?, stalledAt?, remindedAt?,  // watchdog
+  retries: number,                     // "continue"s sent after temporary errors in a row
+  error?: string,
+  ended?: { at, by: 'worker' | 'requester' | 'user' | 'system', outcome: 'done' | 'stopped' | 'failed' },
+  archivedAt?,
+}
+
+Thread = { key, kind, appKey, chatId, rootId?, label?, tickets: string[] /* subscribed task ids */, lastAt }
+```
+Only bots open tasks (`bot_send_message`), so `requester.kind` is `'session'`. The newest 500 archived tasks are kept;
+Threads no task is subscribed to are dropped.
+
+Stage (`stageOf`, first match wins; "answered" means `lastHumanAt` or `lastRequesterAt` is later than that report):
+
+| Stage | When | Panel |
+|---|---|---|
+| `failed` | `ended.outcome === 'failed'`, or open with an unanswered `blocked` report last | Failed |
+| `question` | open with an unanswered `question` report last | Needs your answer |
+| `stalled` | open and `stalledAt` set | Stuck |
+| `queued` | open and never started (`startedAt` unset) | Queued |
+| `working` | open otherwise | Working |
+| `done` | `ended.outcome === 'done'` (a `done` report, or closed) | Done |
+| `stopped` | `ended.outcome === 'stopped'` | Stopped |
+
+```ts
+TicketRow = { id, title, botId, stage, requester: { kind: 'bot', botId } | { kind: 'user' }, via?, createdAt, updatedAt,
+  lastReport?: { status, preview /* ≤ 200 characters */ } }
+TicketView = TicketRow & {
+  text, parentId?, children: string[], requesterSessionId: string | null, origin: { threadKey?, via?, who? },
+  startedAt?, ended?, error?, archivedAt?, nudgedAt?, stalledAt?, retries? /* when not 0 */,
+  reports: { at, status, text }[],
+  threads: { key, kind, label }[],
+  runs: { id, trigger, title, start, end, status, tokens, calls, cost }[],   // oldest first
+  usage: { tokens, calls, cost },      // all calls made for the task, its memory summary included
+  sessionId: string | null,
+  running: boolean,                    // its Session is in a turn now
+}
+```
+
+### Routes
+| Method | Path | Body / query | Answer |
+|---|---|---|---|
+| GET | `tickets` | `?bot=<id>&stage=<stage>[,<stage>…]&archived=0\|1&limit=50&offset=0` (limit 1–200) | `{ items: TicketRow[], next_offset: number \| null }`, latest change first |
+| GET | `tickets/<id>` | – | `TicketView` |
+| POST | `tickets/<id>/stop` | `{}` | `{ ok, …TicketView }` ends it as stopped by the user and cancels its running turn |
+| POST | `tickets/<id>/close` | `{}` | `{ ok, …TicketView }` ends it as done |
+| POST | `tickets/<id>/retry` | `{}` | `{ ok, …TicketView }` opens it again and hands the assignment over afresh (also one the user stopped) |
+| POST | `tickets/<id>/message` | `{ text }` | `{ ok, …TicketView }` the user's message into its Session; an ended task opens again; a queued one gets it added to its assignment |
+| GET | `threads/<key>` | key URI-encoded | `{ key, label, kind, tickets: TicketRow[], recent: { at, from, to, who?, text }[] }` (the last 10 timeline messages of that Thread, text ≤ 300 characters) |
+
+An unknown id answers `{ ok: false, reason: 'no such task' }`; an archived task cannot be retried or messaged. A
+task's requester hears of a stop or close by the user through an injected note that does not wake it.
+
+### Thread keys
+`kind:appKey:chatId[:rootId]`, with `appKey` = `<botId>/<appId>` of the chat app; inside a part `%` and `:` are written
+`%25` and `%3A`. A panel conversation is `panel:<sessionId>`. The root is the connector's `threadId`: Slack
+`thread_ts` (a top-level channel message: its own `ts`), Discord the thread channel or the root of the reply chain,
+Feishu the root message of the reply chain or topic, Telegram the forum topic (`message_thread_id`). Without one, a
+Slack, Discord or Feishu group message is its own root (the bot answers under it); private chats and Telegram groups
+without topics are the whole chat. Connectors report `threadId` on messages; `send` takes `{ threadId, replyTo }` and
+`typing` takes `{ threadId }`.
+
+A chat message reaches a bot as two text blocks, `[Telegram · Name] (thread <key>)` and the text; every block but the
+last of a message the plugin delivers ends with a line break.
+
+Inbound routing (`lib/threads.mjs` `routeInbound`):
+1. A leading `@handle` of another bot goes to that bot's home; the channel owner's own handle goes to its home.
+2. Tasks subscribed to the message's Thread that are not archived and not stopped take it, steered into each task
+   Session as a person's message (an ended task opens again), and the owner's home gets a `[follow_up]` note injected
+   without waking it. On a whole-chat Thread (no `rootId`) only tasks whose latest report is an unanswered
+   `question` take it.
+3. Otherwise the owner's home (the router).
+
+Plain replies (`createOrigins`): each turn of a home collects the Threads of its inputs (user messages, and the
+origin Threads of the tasks a report, a `[Failed]` or `[Stalled]` note, or a `[Reminder]` is about). One chat Thread
+and nothing else: the reply goes there. Only the panel, or nothing: it stays in the panel. Anything more, the panel
+and one chat included: it stays in the panel (timeline entry `notSent: true`), and the bot sends each answer with
+`bot_reply`. A task Session's text reaches no chat.
+
+Deliveries the plugin makes with a key get the message id `bots:<key>`; one already pending or in the Session's
+stored log is not delivered again. Router homes, task Sessions and relayed reports use `agent.steer` (messages that
+arrive during a turn are taken together at its next step), notes that should not wake use `agent.inject`, and other
+homes take user messages and 0.7 DMs with `followup` as before; a Harness without `steer` or `inject` gets `followup`.
+
+### Watchdog and restarts
+The 5-minute upkeep (`lib/watchdog.mjs`):
+- a `working` task whose Session is idle, with no shell jobs, sub-agents or working/queued sub-tasks, and no event,
+  report or message for `stallMinutes`: one status check (`nudgedAt`); still nothing `stallMinutes` after it:
+  `stalledAt`, a `[Stalled]` note to the requester, and its slot is freed;
+- `agent/error` in a task Session: HTTP 408, 429 or 5xx, or a refused, reset or timed-out connection (not quota or
+  billing errors), gets a "continue" after 15, 30 and 60 s (`retries`); then, or for any other error, the task ends as
+  `failed` and the requester gets a `[Failed]` note. A completed turn resets `retries`;
+- a requester Session that is idle, whose unarchived tasks have all settled (`done`, `failed`, `stopped`,
+  `stalled`) and that said nothing since: one `[Reminder]` (`remindedAt`), at least a minute after the last one settled;
+- tasks ended `archiveHours` ago: their Session is archived and `archivedAt` set.
+
+At start, working tasks take their slots again. 3 s after the plugin starts, one whose Session was mid-turn, or holds
+input it never took, gets a `[Recovery]` note, one whose Session had to be made anew gets the note and its
+assignment, and queued tasks start while slots are free.
+
+### Timeline
+```ts
+Message += { thread?: string, ticket?: string, status?: 'done' | 'blocked' | 'question' | 'stalled' | 'failed',
+  notSent?: true, choices?: string[] }
+```
+| kind | Fields | Entry |
+|---|---|---|
+| `dm` | `ticket` | a bot opened the task for `to`, or added a message to it (`from: 'user'`: the user, from the panel) |
+| `dm` | `ticket`, `status: 'done' \| 'blocked' \| 'question'` | the task's report to its requester (`to`: the requesting bot); `progress` reports are not logged |
+| `dm` | `ticket`, `status: 'stalled' \| 'failed'` | the watchdog marked the task stalled, or it failed after an error |
+| `user` | `thread`, `via?`, `who?` | a message into a bot's home (`thread`: the chat Thread, or `panel:<sessionId>`) |
+| `user` | `via`, `who`, `thread`, `ticket` | a chat follow-up that went straight to the task |
+| `reply` | `thread`, `via?` | a bot's reply; `via` when it went to a chat (`bot_reply` too) |
+| `reply` | `notSent: true`, `choices` | plain text of a turn with several chats: sent to none; `choices` are its chat Thread keys |
+
+Entries written before 0.8 have none of these fields.
+
+### Usage and memory
+- `usage.jsonl` rows: `tk?` (the task; `t` stays the time). `tasks.jsonl` rows (runs): `t?` (the task).
+- `TaskView += { ticket? }`.
+- `Report += { tickets: ({ id, bot, title, runs } & Totals)[] }`: the window's calls by task, most tokens first, ≤ 60;
+  `runs` counts the task's runs that ended in the window or are running.
+- A task's runs are summarized into its bot's memory once, when the task ends: `Journal += { ticket? }`, with
+  `trigger: 'ticket'`. A task Session is no topic: it never rotates, and its calls do not count toward the home's
+  context.
+
+### Tools
+Every conversation gets `bot_reply`, `bot_recall` and `bot_ticket` besides the 0.7 tools.
+
+`bot_send_message { to?, text, ticket?, status?, title?, thread? }`:
+
+| Called from | Arguments | Does | Result |
+|---|---|---|---|
+| a task Session | no `to` (or the requesting bot, or `ticket` = its own id), `text`, `status` (required) | a report: `progress` is only recorded; `done`, `blocked`, `question` reach the requester at once; `done` ends the task | `{ ok, text, ticket: TicketRow, to, from }` |
+| a task Session | `to`, `text`, `title?` | opens a sub-task (requester: this task) | `{ ok, text, ticket, stage, to, from }` |
+| a bot's home, `dispatcher: 'router'` | `to`, `text`, `title?`, `thread?` | opens a task; starts at once when a slot is free, else queued | `{ ok, text, ticket, stage, to, from }` |
+| the requester's Session, the requesting bot's current home, or the router home | `ticket`, `text`, `to?` (must be the task's bot) | adds a message to the task; an ended task opens again, except one the user stopped | `{ ok, text, ticket, to, from }` |
+| a bot's home in hands-on mode, or any other conversation | `to`, `text` | 0.7: into the other bot's home | `{ ok, text, to, from }` |
+
+`title` defaults to the first line of `text`. `thread` names, when a turn has several chats, the Thread (one of the
+turn's) a new task is for; left out then, the task belongs to none. A sub-task takes no Thread. `status` is refused
+outside a report. New tasks and added messages count toward the 16 messages per pair of bots in 10 minutes. `to` and
+`from` are bot faces (`{ id, name, handle, avatar, role }`).
+
+`bot_reply { text, ticket?, thread? }` — one of `ticket` (the chat that task came from) or `thread` (a key, or
+`thread/<key>`) is required. It resolves this turn's Threads first, then a stored Thread whose chat app is connected
+and has someone paired. Only from a bot's home: refused in a task Session and in conversations of no bot. Result
+`{ ok, text, thread, via? }`; a panel Thread only logs the reply.
+
+`bot_recall { ref, offset? }`:
+
+| ref | Result |
+|---|---|
+| `tickets` | `{ ref, items: Card[], total, next_offset? }`, open tasks first, then failed, then ended, archived last; newest first within each |
+| `ticket/<id>` | `{ ref, card: Card, text /* ≤ 200 characters of the assignment */, chars?, more: string[] }` |
+| `ticket/<id>/text`, `ticket/<id>/reports`, `ticket/<id>/transcript` | `{ ref, text, offset, chars, next_offset? }`: the assignment, every report (newest first), the task Session's conversation |
+| `thread/<key>` | `{ ref, thread: { key, kind, label, last_at }, items: Card[], total, next_offset?, recent?: { at, who, text }[] }` |
+| `bot/<handle>` | `{ ref, bot: { handle, name, bio, dispatcher? }, items: Card[], total, next_offset? }` |
+
+`task/…`, `tasks`, a bare task id and `@handle` work too. Lists come 20 to a page, text 4000 characters to a page;
+pass `next_offset` as `offset`. `Card = { id, title, bot, stage, requester, parent?, children?, origin?: { thread?,
+label?, via?, who? }, threads?, last_report?: { status, at, preview }, error?, archived?, updated_at }` (list items
+leave out `children`, `threads` and `error`). From a task Session only that task, its parent, its sub-tasks and its
+Threads can be read. `recent` comes from the timeline, whose entries carry a Thread from 0.8 on.
+
+`bot_ticket { id, action: 'stop' | 'close' | 'retry' | 'status' }` — on a task this conversation asked for (the router
+home and conversations of no bot: any task; a task Session: only its sub-tasks). `stop` cancels its running turn;
+`close` ends it as done; `retry` opens it again with the assignment (a bot cannot retry one the user stopped);
+`status` asks an idle working task for a report. Result `{ ok, text, ticket: TicketRow }`.
+
+`memory_search { query }` also matches tasks: every word in the title, else in one of its reports (most recently
+changed first, ≤ 10). From a task Session only its task, parent and sub-tasks. Result `+= { tickets: string[] }`.
