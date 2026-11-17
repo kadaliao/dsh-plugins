@@ -469,8 +469,8 @@ test('a panel topic is the panel key plus the id of its first message', () => {
   assert.ok(isTopicThread('slack:b/a:C1'));
   assert.ok(!isTopicThread('panel:s1'));
   assert.ok(!sameThread('panel:s1', 'panel:s1:p1'));
-  assert.equal(threadLabel('panel:s1:p1'), 'Panel · topic p1');
-  assert.equal(threadLabel({ threadKey: 'panel:s1:p1', threadTitle: '帮我查一下北京工作居住证' }), 'Panel · topic "帮我查一下北京工作居住证"');
+  assert.equal(threadLabel('panel:s1:p1'), 'Panel · thread p1');
+  assert.equal(threadLabel({ threadKey: 'panel:s1:p1', threadTitle: '帮我查一下北京工作居住证' }), 'Panel · thread "帮我查一下北京工作居住证"');
 });
 
 test('one panel topic is a thread to answer in; two topics, or a topic and a chat, are a choice', () => {

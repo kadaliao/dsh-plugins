@@ -32,15 +32,23 @@ test('a router dispatcher understands, hands out and reports', () => {
   const text = personaText(atlas, roster, { dispatcher: 'router', channels: ['Slack'] });
   assert.doesNotMatch(text, /Do small or general tasks yourself/);
   assert.match(text, /You do three things: understand what the person wants, hand the work out, and keep track of it\./);
-  assert.match(text, /never do the work in this conversation, not even a quick lookup/);
-  assert.match(text, /or your own, @atlas, when no teammate fits/);
+  // Bots 0.10: the work is the teammates', never the dispatcher's own task; its helpers are teammates, not sub-agents.
+  assert.match(text, /you never do it, not even a quick lookup/);
+  assert.match(text, /never your own, @atlas: you do no work yourself, not even in a task\)\. When no role fits exactly, pick the closest teammate/);
+  assert.doesNotMatch(text, /a quick fact/);
+  assert.match(text, /research splits by angle/);
+  assert.match(text, /as the dispatcher you have no Harness sub-agents \(`subagent`, `wait_agent`, workflows\)\. When a skill says to start sub-agents or parallel researchers, hand those parts to teammates with `bot_send_message` instead\./);
+  assert.match(text, /Tasks, ticket ids, topics and threads are how Bots works inside/);
   assert.match(text, /never drop a request because another came after it/);
   assert.match(text, /The bot doing a task answers the person itself/);
   assert.match(text, /`report_to: "me"`/);
   assert.match(text, /"\[Shown\]" note/);
   assert.match(text, /Every delegation with `bot_send_message` opens a task \(ticket\) for that bot and returns at once/);
   assert.match(text, /arrive by themselves\. Never wait, sleep or poll for them: end your turn/);
-  assert.match(text, /more than one topic or chat, answer each with `bot_reply`/);
+  assert.match(text, /more than one chat \(the panel and a chat app, or two chat threads\), answer each with `bot_reply`/);
+  // Bots 0.10: a thread sees the conversation up to the message it answers.
+  assert.match(text, /starts with "\[Thread\]" is a thread/);
+  assert.doesNotMatch(text, /\(thread p…\)/);
   assert.match(text, /`bot_recall`/);
   assert.match(text, /100 words at most/);
   assert.match(text, /pass `ticket` \(its id\) instead of `to`/);
@@ -80,10 +88,10 @@ test('a ticket session frames the conversation as one task', () => {
   assert.match(sub, /asked by task t9z9z9z9z \(@atlas\)/);
 });
 
-test('0.9: a task from a topic or chat answers the person there itself, unless its requester asked for the reports', () => {
+test('0.9/0.10: a task from the panel or a chat answers the person there itself, unless its requester asked for the reports', () => {
   const fromTopic = { ...ticket, origin: { threadKey: 'panel:s1:p1234abcd', who: 'the user' } };
   const text = personaText(coder, roster, { ticket: fromTopic, dispatcher: 'router' });
-  assert.match(text, /Your `done`, `question` and `blocked` reports are shown to the person as they are, in the panel, in the topic the request came from/);
+  assert.match(text, /Your `done`, `question` and `blocked` reports are shown to the person as they are, in the panel, where the request came from/);
   assert.match(text, /Put everything the person needs in the report/);
   assert.doesNotMatch(text, /Put everything the requester needs/);
   const fromChat = personaText(coder, roster, { ticket: { ...ticket, origin: { threadKey: 'slack:b/a:C1:1.2', via: 'slack', who: 'Kada' } }, channels: ['Slack'] });
@@ -194,3 +202,14 @@ test('a router command without a timeout counts as 120 s: waits the shell text h
   assert.equal(noWaitReason({ name: 'pwsh', arguments: { command: 'Get-ChildItem', timeoutMs: 10_000 } }), undefined);
   assert.equal(noWaitReason({ name: 'pwsh', arguments: { command: 'npm run build', run_in_background: true } }), undefined);
 });
+
+test('0.10: only a team\'s dispatcher is told its helpers are teammates (no sub-agents); the other bots and a bot alone are not', () => {
+  const forge = roster.find((b) => b.handle !== 'atlas');
+  const worker = personaText(forge, roster, { dispatcher: 'router', tickets: true, ticket: { id: 't1', title: 'Look it up', requester: { kind: 'user' }, origin: { threadKey: 'panel:s1' } } });
+  assert.doesNotMatch(worker, /Your helpers are your teammates/);
+  assert.match(worker, /start with the answer itself, not with its status/);
+  const atlas = roster.find((b) => b.handle === 'atlas');
+  assert.match(personaText(atlas, roster, { dispatcher: 'hands-on' }), /Your helpers are your teammates: .* or do them yourself one after another\./);
+  assert.doesNotMatch(personaText(atlas, [atlas], {}), /Your helpers are your teammates/);
+});
+

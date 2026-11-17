@@ -363,6 +363,8 @@ export function hintOf(detail) {
  *   knownThread?: (threadKey: string) => object|undefined,  // a stored Thread record (bot_reply targets beyond this turn)
  *   ticketThread?: (ticketId: string) => string|undefined,  // the origin Thread key of a ticket
  *   running?: (sessionId: string) => boolean,       // whether that conversation is working
+ *   homeKey?: (sessionId: string) => string|undefined,  // the Thread a Session's input without one belongs to (a discussion's own)
+ *   onSent?: (sent: {tag: any, appKey: string, chatId: string, threadKey?: string, ids: string[]}) => void,  // ids of messages a tagged send made
  *   loadConnector?: (kind: string) => Promise<{createConnector: Function, TEXT_LIMIT?: number}>,
  *   log?: (line: string) => void,
  *   now?: () => number,
@@ -427,7 +429,7 @@ export function createChannels(deps) {
   /** threadKey → what the latest message there told of it (who, the message to answer, the chat's title) */
   const known = new Map();
   /** Per conversation, the Threads of this turn's inputs (lib/threads.mjs). */
-  const origins = createOrigins({ now, running: (sessionId) => running(sessionId), lookup: (ref) => lookupThread(ref) });
+  const origins = createOrigins({ now, running: (sessionId) => running(sessionId), lookup: (ref) => lookupThread(ref), homeKey: (sessionId) => deps.homeKey?.(sessionId) });
   /** Conversations that noted a chat Thread (dropped on unpair). */
   const noted = new Set();
   /** Conversations whose current turn had a person's input (a chat or panel message, a scheduled run). */
@@ -937,7 +939,12 @@ export function createChannels(deps) {
   }
 
   /** Send a reply to a chat Thread, in its thread (topic, reply chain) and parts in order; false when its channel is down. */
-  function sendText(sessionId, target, text) {
+  /**
+   * Send `text` to a chat target in order with the chat's other sends. `tag` (anything) comes back
+   * with the ids of the messages the chat app made (`deps.onSent({tag, appKey, chatId, threadKey,
+   * ids})`), for connectors that tell them: a reply to one of them is a discussion (Bots 0.10).
+   */
+  function sendText(sessionId, target, text, tag) {
     const rec = live.get(target.key ?? target.appKey);
     stopTyping(sessionId, target.threadKey);
     if (!rec?.conn) {
@@ -949,12 +956,21 @@ export function createChannels(deps) {
     const replyTo = target.replyTo ? String(target.replyTo) : '';
     void enqueue(rec, target.chatId, async () => {
       let first = true;
+      const ids = [];
       for (const part of splitText(plain, rec.limit)) {
         if (!rec.conn) break;
         // A chat app that threads replies (Slack) keeps `replyTo` on every part; elsewhere only the first part quotes.
         const opts = { ...(root ? { threadId: root } : {}), ...(replyTo && (first || rec.mod?.THREADS === true) ? { replyTo } : {}) };
-        await rec.conn.send(target.chatId, part, Object.keys(opts).length ? opts : undefined);
+        const sent = await rec.conn.send(target.chatId, part, Object.keys(opts).length ? opts : undefined);
+        for (const id of Array.isArray(sent?.ids) ? sent.ids : []) if (id != null && String(id)) ids.push(String(id));
         first = false;
+      }
+      if (ids.length && tag !== undefined && typeof deps.onSent === 'function') {
+        try {
+          deps.onSent({ tag, appKey: rec.key, chatId: String(target.chatId), threadKey: target.threadKey, ids });
+        } catch {
+          // Only a note for later replies.
+        }
       }
     });
     return true;
@@ -1048,9 +1064,10 @@ export function createChannels(deps) {
      * A plain reply of the conversation `sessionId`: sent to its turn's one chat
      * Thread (`replyPlan` mode `thread`), in that Thread. Returns the target (or
      * null: the panel) at once; sending continues in the background. Words
-     * `replyTo` already sent there this turn are not sent again.
+     * `replyTo` already sent there this turn are not sent again. `tag` comes back
+     * with the ids of what was sent (`deps.onSent`).
      */
-    noteReply(sessionId, text) {
+    noteReply(sessionId, text, tag) {
       if (!String(text ?? '').trim()) return null;
       const plan = origins.replyPlan(sessionId);
       if (plan.mode !== 'thread') return null;
@@ -1058,7 +1075,7 @@ export function createChannels(deps) {
       if (plan.target.kind === 'panel') return targetView(plan.target);
       const target = withKnown(plan.target);
       if (sentThisTurn.get(sessionId)?.has(`${target.threadKey}|${norm(text)}`)) return targetView(target);
-      return sendText(sessionId, target, text) ? targetView(target) : null;
+      return sendText(sessionId, target, text, tag) ? targetView(target) : null;
     },
 
     /**
@@ -1074,10 +1091,10 @@ export function createChannels(deps) {
      * Send `text` from `sessionId` to a chat Thread (`resolveReply`'s answer).
      * Throws when the channel is not connected. Returns the target.
      */
-    replyTo(sessionId, target, text) {
+    replyTo(sessionId, target, text, tag) {
       if (!target || target.kind === 'panel' || !target.chatId) throw new Error('no chat to send to');
       if (!String(text ?? '').trim()) throw new Error('text must not be empty');
-      if (!sendText(sessionId, target, text)) throw new Error(`${CHANNEL_LABELS[target.kind] ?? target.kind} is not connected right now; the reply was not sent`);
+      if (!sendText(sessionId, target, text, tag)) throw new Error(`${CHANNEL_LABELS[target.kind] ?? target.kind} is not connected right now; the reply was not sent`);
       const sent = sentThisTurn.get(sessionId) ?? new Set();
       sent.add(`${target.threadKey}|${norm(text)}`);
       sentThisTurn.set(sessionId, sent);
@@ -1099,7 +1116,7 @@ export function createChannels(deps) {
      * and someone paired (see `lookupThread`). Typing shown there for `typingOf` (a Session) stops.
      * Returns the target, or null when it cannot be reached.
      */
-    post(ref, text, { replyTo = '', typingOf = '' } = {}) {
+    post(ref, text, { replyTo = '', typingOf = '', tag } = {}) {
       if (!String(text ?? '').trim()) return null;
       const found = lookupThread(ref);
       if (!found) return null;
@@ -1107,7 +1124,7 @@ export function createChannels(deps) {
       const p = parseThreadKey(found.threadKey);
       const fromKey = { kind: p.kind, key: p.appKey, appKey: p.appKey, chatId: p.chatId, ...(p.rootId !== undefined ? { rootId: p.rootId } : {}) };
       const target = withKnown({ ...fromKey, ...found, ...(replyTo ? { replyTo: String(replyTo) } : {}) });
-      const sent = sendText(typingOf || '', target, text);
+      const sent = sendText(typingOf || '', target, text, tag);
       if (typingOf) stopTyping(typingOf, target.threadKey);
       return sent ? targetView(target) : null;
     },

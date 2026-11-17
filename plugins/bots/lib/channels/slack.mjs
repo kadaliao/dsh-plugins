@@ -866,12 +866,12 @@ export function createConnector(opts = {}) {
   async function post(channel, md, thread) {
     const where = { channel, ...(thread ? { thread_ts: thread } : {}) };
     try {
-      await api('chat.postMessage', { ...where, text: fallbackText(md), blocks: [{ type: 'markdown', text: defuse(md) }] });
+      return (await api('chat.postMessage', { ...where, text: fallbackText(md), blocks: [{ type: 'markdown', text: defuse(md) }] }))?.ts;
     } catch (e) {
       if (BOT_AUTH_ERRORS.has(e.code)) failBotToken();
       if (!BLOCK_ERRORS.has(e.code)) throw e;
       log(`slack: Slack did not take the Markdown block (${e.code}); sending plain text`);
-      await api('chat.postMessage', { ...where, text: fallbackText(md) });
+      return (await api('chat.postMessage', { ...where, text: fallbackText(md) }))?.ts;
     }
   }
 
@@ -889,7 +889,12 @@ export function createConnector(opts = {}) {
     const replyTo = sendOpts?.replyTo ? String(sendOpts.replyTo) : '';
     const threadId = sendOpts?.threadId ? String(sendOpts.threadId) : '';
     const thread = (replyTo && roots.get(`${channel}|${replyTo}`)) || threadId || replyTo;
-    for (const part of splitMessage(text, PART_LIMIT)) await post(channel, part, thread);
+    const ids = [];
+    for (const part of splitMessage(text, PART_LIMIT)) {
+      const ts = await post(channel, part, thread);
+      if (ts) ids.push(String(ts));
+    }
+    return { ids };
   }
 
   const statusAt = new Map();

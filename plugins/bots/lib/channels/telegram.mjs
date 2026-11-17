@@ -302,6 +302,10 @@ export function createConnector(opts) {
     async send(chatId, text, sendOpts = {}) {
       let first = true;
       let topic = topicOf(sendOpts?.threadId);
+      const ids = [];
+      const keep = (r) => {
+        if (r?.message_id != null) ids.push(String(r.message_id));
+      };
       for (const part of splitText(text, TEXT_LIMIT)) {
         const replyTo = first && sendOpts?.replyTo && /^\d+$/.test(String(sendOpts.replyTo)) ? Number(sendOpts.replyTo) : null;
         const body = {
@@ -310,16 +314,17 @@ export function createConnector(opts) {
           ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         };
         try {
-          await polite('sendMessage', topic ? { ...body, message_thread_id: topic } : body);
+          keep(await polite('sendMessage', topic ? { ...body, message_thread_id: topic } : body));
         } catch (error) {
           // The topic was deleted: the reply still reaches the chat.
           if (!topic || error.code !== 400 || !THREAD_GONE.test(error.description ?? '')) throw error;
           log(`telegram: topic ${topic} is gone; sending to the chat`);
           topic = null;
-          await polite('sendMessage', body);
+          keep(await polite('sendMessage', body));
         }
         first = false;
       }
+      return { ids };
     },
 
     /** "typing…" in the chat (or its topic `threadId`) for about five seconds. */

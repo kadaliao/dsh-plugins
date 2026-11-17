@@ -156,7 +156,7 @@ export function threadLabel(meta) {
   const parts = [cleanName(m.source) || KIND_LABELS[kind] || cleanName(kind) || 'Chat'];
   const chat = cleanName(m.chatTitle) || (kind === PANEL ? '' : cleanName(m.who) || cleanName(m.chatId));
   if (chat) parts.push(chat);
-  if (kind === PANEL && part(m.rootId)) parts.push(cleanName(m.threadTitle) ? `topic "${cleanName(m.threadTitle, 40)}"` : `topic ${part(m.rootId)}`);
+  if (kind === PANEL && part(m.rootId)) parts.push(cleanName(m.threadTitle) ? `thread "${cleanName(m.threadTitle, 40)}"` : `thread ${part(m.rootId)}`);
   else if (kind !== PANEL && part(m.rootId)) parts.push(cleanName(m.threadTitle) || (kind === 'telegram' ? 'topic' : 'thread'));
   return parts.join(' · ');
 }
@@ -313,12 +313,24 @@ function refOf(ref) {
  * by entry: losing one of two threads would turn "choose" into a wrong target.
  *
  * @param {{now?: () => number, ttlMs?: number, running?: (sessionId: string) => boolean,
- *   lookup?: (ref: {thread: string} | {ticket: string}) => object|string|null}} [opts]
+ *   lookup?: (ref: {thread: string} | {ticket: string}) => object|string|null,
+ *   homeKey?: (sessionId: string) => string|null|undefined}} [opts]
  *   `lookup`: for `resolve`, a known thread or a ticket's origin thread outside this turn
- *   (a key, an origin or a Thread record); without it `resolve` only knows this turn's threads
+ *   (a key, an origin or a Thread record); without it `resolve` only knows this turn's threads.
+ *   `homeKey`: the Thread an input without one belongs to (default the panel conversation
+ *   `panel:<sessionId>`; a discussion's Session answers in its own Thread)
  */
 export function createOrigins(opts = {}) {
   const now = opts.now ?? Date.now;
+  // Where a Session's input with no Thread of its own belongs: the panel conversation, or for a
+  // discussion (Bots 0.10) the Thread it answers in.
+  const homeKey = (sid) => {
+    try {
+      return toThreadKey(opts.homeKey?.(sid)) ?? panelThreadKey(sid);
+    } catch {
+      return panelThreadKey(sid);
+    }
+  };
   const ttlMs = opts.ttlMs ?? ORIGIN_TTL_MS;
   /** sessionId → {at, items: Map<threadKey, origin>} */
   const sessions = new Map();
@@ -366,7 +378,7 @@ export function createOrigins(opts = {}) {
       const sid = part(sessionId);
       if (!sid) return null;
       for (const other of [...sessions.keys()]) setOf(other);
-      const key = toThreadKey(input.threadKey) ?? toThreadKey(input.origin) ?? panelThreadKey(sid);
+      const key = toThreadKey(input.threadKey) ?? toThreadKey(input.origin) ?? homeKey(sid);
       const s = sessions.get(sid) ?? { at: now(), items: new Map() };
       const prev = s.items.get(key);
       const next = originOf(key, { ...(prev ?? {}), ...(input.origin ?? {}) });

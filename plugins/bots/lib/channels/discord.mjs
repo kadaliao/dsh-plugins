@@ -643,6 +643,7 @@ export function createConnector(opts = {}) {
     const chain = root || (replyTo && channel === chat ? roots.get(replyTo) || replyTo : '');
     const path = `/channels/${encodeURIComponent(channel)}/messages`;
     const chunks = splitMessage(text);
+    const ids = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const body = { content: chunks[i], allowed_mentions: { parse: [] } };
       const quote = i === 0 && replyTo ? replyTo : root && latest.get(channel)?.root !== root ? root : '';
@@ -651,7 +652,9 @@ export function createConnector(opts = {}) {
       const id = sent?.id ? String(sent.id) : '';
       if (id && chain) remember(roots, id, chain, 2000);
       if (id) noteLatest(channel, id, { mine: true, root: chain });
+      if (id) ids.push(id);
     }
+    return { ids };
   }
 
   /** Show "bot is typing…" for about ten seconds (in the thread channel `threadId`, if it is one). Failures are logged and ignored. */

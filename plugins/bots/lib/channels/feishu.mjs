@@ -1254,9 +1254,11 @@ export function createConnector(opts = {}) {
       const root = sendOpts?.threadId ? String(sendOpts.threadId) : '';
       const gone = new Set();
       let first = true;
+      const ids = [];
       try {
         for (const part of partsOf(text)) {
-          await sendPart(chatId, part, first ? [replyTo, root] : [root], gone);
+          const r = await sendPart(chatId, part, first ? [replyTo, root] : [root], gone);
+          if (r?.data?.message_id) ids.push(String(r.data.message_id));
           first = false;
         }
         if (sendTrouble) {
@@ -1269,6 +1271,7 @@ export function createConnector(opts = {}) {
       } finally {
         void removeMark(chatId);
       }
+      return { ids };
     },
 
     /** Called every ~5 s while a bot works: a "Typing" reaction on the person's message, removed when the work stops. */

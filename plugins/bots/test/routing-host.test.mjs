@@ -704,8 +704,8 @@ test('bot_recall: a task conversation reads its task, parent, sub-tasks and Thre
   assert.equal((await read(`ticket/${c.id}`, p.sessionId)).card.parent, p.id);
   await assert.rejects(read(`ticket/${s.id}`, p.sessionId), /outside this task/);
   assert.deepEqual((await read('tickets', p.sessionId)).items.map((x) => x.id).sort(), [p.id, c.id].sort());
-  // Its thread is the panel topic the request came from (0.9).
-  assert.ok(p.origin.threadKey.startsWith(`panel:${sid}:p`));
+  // Its thread is the panel chat the request came from (0.10: the main chat; a thread only for a reply).
+  assert.equal(p.origin.threadKey, `panel:${sid}`);
   assert.equal((await read(`thread/${p.origin.threadKey}`, p.sessionId)).thread.kind, 'panel');
   await assert.rejects(read('thread/panel:session-elsewhere', p.sessionId), /outside this task/);
   // The sub-task reads its parent but not its parent's sibling.

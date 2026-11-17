@@ -394,7 +394,7 @@ test('the client registers its tool views, the panel, the badges and /bots', asy
   assert.equal(icon.component({ size: 20, active: true }).props.width, 20);
   assert.equal(seen.locale.ns, 'bots');
   assert.deepEqual(Object.keys(seen.locale.dict.zh).sort(), Object.keys(seen.locale.dict.en).sort());
-  assert.deepEqual(seen.injected, ['commandUi']);
+  assert.deepEqual(seen.injected, ['layout', 'commandUi']);
   const [decoration] = seen.decorations;
   assert.equal(decoration.name, 'bots');
   assert.equal(decoration.available(), true);
@@ -1796,6 +1796,35 @@ test('the dispatcher: How it works saves the team setting, and a router gets the
   b.hooks.runCleanups();
 });
 
+test('a team: sub-agents are off for the dispatcher, shown as such and not switchable; the other bots keep the switch', async () => {
+  const saved = { abilities: CATALOG.abilities, teamDeny: CATALOG.teamDeny };
+  CATALOG.abilities = [
+    ...saved.abilities,
+    { id: 'delegate', name: { en: 'Sub-agents & workflows', zh: '子代理与工作流' }, description: { en: 'Split big jobs.', zh: '拆给子代理。' }, tools: ['subagent', 'wait_agent'], available: ['subagent', 'wait_agent'] },
+  ];
+  CATALOG.teamDeny = ['subagent', 'wait_agent'];
+  try {
+    const v = await openTab('profile', 'bot-a');
+    const [row] = findAll(v.tree, (n) => n.props['data-dsh-bots-ability'] === 'delegate');
+    assert.equal(row.props['data-on'], false);
+    assert.equal(collect(findAll(row, (n) => n.props['data-dsh-bots-team-off'] === 'delegate')[0]).join(''), 'Off for the dispatcher');
+    assert.equal(findAll(row, (n) => n.props['data-dsh-bots-router-off'] !== undefined).length, 0, 'one reason is enough');
+    const [sw] = findAll(row, (n) => n.props['data-dsh-bots-ability-switch'] === 'delegate');
+    assert.equal(sw.props.disabled, true);
+    v.hooks.runCleanups();
+    const b = await openTab('profile', 'bot-b');
+    const [own] = findAll(b.tree, (n) => n.props['data-dsh-bots-ability'] === 'delegate');
+    assert.equal(own.props['data-on'], true);
+    assert.equal(findAll(own, (n) => n.props['data-dsh-bots-team-off'] !== undefined).length, 0);
+    assert.notEqual(findAll(own, (n) => n.props['data-dsh-bots-ability-switch'] === 'delegate')[0].props.disabled, true);
+    b.hooks.runCleanups();
+  } finally {
+    CATALOG.abilities = saved.abilities;
+    if (saved.teamDeny === undefined) delete CATALOG.teamDeny;
+    else CATALOG.teamDeny = saved.teamDeny;
+  }
+});
+
 test('router mode: abilities a router goes without are marked, and each comes back through routerAllow', async () => {
   const saved = CATALOG.abilities;
   CATALOG.abilities = [
@@ -2393,52 +2422,42 @@ test('questions: a task\'s question puts it under Needs you; several questions a
   });
 });
 
-// --- panel topics (PLAN-0.9 §2.6, §7) ---------------------------------------------------------
+// --- threads (PLAN-0.10 §2.2, §7) --------------------------------------------------------------
 
 const T0 = Date.now() - 20 * MIN;
 const SEARCHING = { kind: 'tool', tool: 'web_search', detail: 'Shanghai hukou 2026', startedAt: Date.now() - 30_000, stepAt: Date.now() - 8_000, steps: 2 };
-/** Ada's chat with topics: a message from before topics, two topics, a worker's answer, a moved message, a general one. */
-const topicItems = () => [
-  { id: 'm-old', from: 'user', to: 'bot-a', text: 'Plan the launch', at: T0 - 5 * MIN, kind: 'user' },
-  { id: 'pbeijing1', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Look up the Beijing work residence permit', at: T0, kind: 'user', topic: 'pbeijing1', thread: 'panel:sess-a:pbeijing1' },
-  { id: 'pshangha1', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'And the Shanghai hukou rules', at: T0 + 10_000, kind: 'user', topic: 'pshangha1', thread: 'panel:sess-a:pshangha1' },
-  { id: 'r1', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'On it: I opened a task for Bob.', at: T0 + 20_000, kind: 'reply', topic: 'pbeijing1', thread: 'panel:sess-a:pbeijing1' },
-  { id: 'r2', from: 'bot-b', to: 'user', chat: 'bot-a', text: 'Beijing permit: three conditions.\nA degree and a contract.\nSocial insurance in Beijing.', at: T0 + 5 * MIN, kind: 'reply', topic: 'pbeijing1', thread: 'panel:sess-a:pbeijing1', ticket: 'tdone0001', status: 'done' },
-  { id: 'pmoved001', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Beijing one: does Haidian differ?', at: T0 + 6 * MIN, kind: 'user', topic: 'pmoved001', movedTo: 'pbeijing1' },
-  { id: 'general', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'Morning, all quiet otherwise.', at: T0 + 7 * MIN, kind: 'reply' },
+const BOB_ANSWER = 'Beijing permit: three conditions.\nA degree and a contract.\nSocial insurance in Beijing.';
+/** The replies in the thread under the Beijing message: yours, then Bob's answer from his task, each with the message it quotes. */
+const beijingReplies = () => [
+  { id: 'pq1haidia', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Does Haidian differ?', at: T0 + 2 * MIN, kind: 'user', topic: 'pbeijing1', thread: 'panel:sess-a:pbeijing1', quote: { id: 'pbeijing1', from: 'user', text: 'Look up the Beijing work residence permit' } },
+  { id: 'r2', from: 'bot-b', to: 'user', chat: 'bot-a', text: BOB_ANSWER, at: T0 + 5 * MIN, kind: 'reply', topic: 'pbeijing1', thread: 'panel:sess-a:pbeijing1', ticket: 'tdone0001', status: 'done', quote: { id: 'pq1haidia', from: 'user', text: 'Does Haidian differ?' } },
 ];
-const topicTickets = () => ({
-  pbeijing1: { key: 'panel:sess-a:pbeijing1', tickets: [ticketRow('tdone0001', 'bot-b', 'done', 'Beijing work residence permit')] },
-  pshangha1: { key: 'panel:sess-a:pshangha1', tickets: [ticketRow('tworking1', 'bot-b', 'working', 'Shanghai hukou rules', { activity: SEARCHING })] },
+/** Ada's chat as the Host lists it: as it was said, the bots' answers and the thread's replies among the rest. */
+const mainItems = () => [
+  { id: 'm-old', from: 'user', to: 'bot-a', text: 'Plan the launch', at: T0 - 5 * MIN, kind: 'user' },
+  { id: 'pbeijing1', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Look up the Beijing work residence permit', at: T0, kind: 'user', thread: 'panel:sess-a' },
+  { id: 'r1', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'On it: I opened a task for Bob.', at: T0 + 20_000, kind: 'reply', thread: 'panel:sess-a' },
+  ...beijingReplies(),
+  { id: 'general', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'Morning, all quiet otherwise.', at: T0 + 7 * MIN, kind: 'reply', thread: 'panel:sess-a' },
+];
+const CHAT_IDS = ['m-old', 'pbeijing1', 'r1', 'pq1haidia', 'r2', 'general'];
+const threadSummaries = () => ({
+  pbeijing1: { key: 'panel:sess-a:pbeijing1', count: 2, lastAt: T0 + 5 * MIN, last: { from: 'bot-b', text: BOB_ANSWER }, unread: 1, running: false, tickets: [ticketRow('tdone0001', 'bot-b', 'done', 'Beijing work residence permit')] },
+  r1: { key: 'panel:sess-a:r1', count: 0, lastAt: 0, last: null, unread: 0, running: true, tickets: [ticketRow('tworking1', 'bot-b', 'working', 'Shanghai hukou rules', { activity: SEARCHING })] },
 });
-/** A browser storage stand-in (or one that throws, like a blocked one). */
-function fakeStorage(initial = {}, { broken = false } = {}) {
-  const data = { ...initial };
-  return {
-    data,
-    getItem(k) {
-      if (broken) throw new Error('blocked');
-      return k in data ? data[k] : null;
-    },
-    setItem(k, v) {
-      if (broken) throw new Error('blocked');
-      data[k] = String(v);
-    },
-  };
-}
 /**
- * Ada's chat with `items` and `topics` served topic-aware (`?topic=` gets the root, its replies and what
- * was moved into it); `send` answers POST /send (default: the Host's copy of the message, queued).
+ * Ada's chat served as the Host of PLAN-0.10 does: `?bot=` the chat as said and the thread summaries,
+ * `&topic=` a thread (its root and replies); POST /send answers with the Host's copy (queued), and
+ * POST /threads/seen marks the thread read. `send` overrides the answer to /send.
  */
-async function topicsChat({ items = topicItems(), topics = topicTickets(), send, storage } = {}) {
+async function threadsChat({ items = mainItems(), replies = { pbeijing1: beijingReplies() }, threads = threadSummaries(), send, services, state } = {}) {
   const { exports, hooks } = await loadClient();
-  if (storage !== undefined) globalThis.window.localStorage = storage;
-  const { ctx, seen } = fakeContext();
+  const { ctx, seen } = fakeContext({ services });
   exports.apply(ctx);
   const posts = mockFetch();
   const base = globalThis.fetch;
   const gets = [];
-  const state = { items, topics };
+  const host = { items, replies, threads, state };
   let n = 0;
   globalThis.fetch = async (url, init) => {
     const path = String(url);
@@ -2446,16 +2465,25 @@ async function topicsChat({ items = topicItems(), topics = topicTickets(), send,
       const body = JSON.parse(init.body);
       posts.push({ path, body });
       n += 1;
-      const target = body.replyTo ? state.items.find((m) => m.id === body.replyTo) : null;
-      const topic = body.replyTo ? (target ? target.movedTo || target.topic || target.id : body.replyTo) : `psent000${n}`;
-      const r = send ? send(body) : { ok: true, sessionId: 'sess-a', message: { id: `psent000${n}`, from: 'user', to: 'bot-a', chat: 'bot-a', kind: 'user', text: body.text, at: Date.now(), topic, ...(body.replyTo ? { replyTo: body.replyTo } : {}), pending: true } };
+      const inThreadOf = (id) => Object.entries(host.replies).find(([, list]) => list.some((m) => m.id === id))?.[0];
+      const topic = body.replyTo ? inThreadOf(body.replyTo) || body.replyTo : '';
+      const message = { id: `psent000${n}`, from: 'user', to: 'bot-a', chat: 'bot-a', kind: 'user', text: body.text, at: Date.now(), ...(topic ? { topic } : {}), ...(body.replyTo && body.replyTo !== topic ? { replyTo: body.replyTo } : {}), pending: true };
+      const r = send ? send(body) : { ok: true, sessionId: 'sess-a', message };
       return { ok: true, json: async () => r };
     }
+    if (init?.method === 'POST' && path.endsWith('/threads/seen')) {
+      const body = JSON.parse(init.body);
+      posts.push({ path, body });
+      if (host.threads[body.root]) host.threads = { ...host.threads, [body.root]: { ...host.threads[body.root], unread: 0 } };
+      return { ok: true, json: async () => ({ ok: true, unread: 0 }) };
+    }
+    if (path.startsWith('/__dsh_bots/state') && host.state) return { ok: true, json: async () => ({ ...STATE, ...host.state }) };
     if (path.startsWith('/__dsh_bots/messages')) {
       gets.push(path);
       const topic = new URL(path, 'http://x').searchParams.get('topic');
-      const list = topic ? state.items.filter((m) => m.id === topic || m.topic === topic || m.movedTo === topic) : state.items;
-      return { ok: true, json: async () => ({ items: list, topics: state.topics }) };
+      const list = topic ? [...host.items.filter((m) => m.id === topic), ...(host.replies[topic] ?? []).map(({ quote, ...m }) => m)] : host.items;
+      const threads = topic ? (host.threads[topic] ? { [topic]: host.threads[topic] } : {}) : host.threads;
+      return { ok: true, json: async () => ({ items: list, threads }) };
     }
     return base(url, init);
   };
@@ -2472,62 +2500,102 @@ async function topicsChat({ items = topicItems(), topics = topicTickets(), send,
     return tree;
   };
   await rerender();
-  return { hooks, posts, gets, state, get tree() { return tree; }, rerender };
+  return { hooks, posts, gets, host, seen, get tree() { return tree; }, rerender };
 }
 const attrs = (tree, attr) => findAll(tree, (n) => n.props[attr] !== undefined).map((n) => n.props[attr]);
 const pane = (tree) => findAll(tree, (n) => n.props['data-dsh-bots-thread-pane'] !== undefined)[0];
+const mainOf = (tree) => findAll(tree, (n) => n.props['data-dsh-bots-thread'] === 'bot-a')[0];
 
-test('topics: the main timeline lists roots with a topic bar (replies, the latest, its tasks); replies stay inside', async () => {
-  const v = await topicsChat();
-  const [main] = findAll(v.tree, (n) => n.props['data-dsh-bots-thread'] === 'bot-a');
-  // Old messages and general ones as before; each root once; the replies of a topic not in the timeline.
-  assert.deepEqual(attrs(main, 'data-dsh-bots-msg-id'), ['m-old', 'pbeijing1', 'pshangha1', 'pmoved001', 'general']);
-  assert.deepEqual(attrs(main, 'data-dsh-bots-topic-bar'), ['pbeijing1', 'pshangha1']);
-  const bar = (id) => findAll(main, (n) => n.props['data-dsh-bots-topic-bar'] === id)[0];
-  // Beijing: two replies (the moved message counts in its topic too), the latest is Bob's, two lines of it, its task done.
-  const beijing = bar('pbeijing1');
-  assert.equal(findAll(beijing, (n) => n.props['data-dsh-bots-topic-count'] !== undefined)[0].props['data-dsh-bots-topic-count'], 3);
-  assert.match(collect(beijing).join(' '), /^3 replies · You .*Beijing one: does Haidian differ\?/);
-  assert.equal(findAll(beijing, (n) => n.props['data-dsh-bots-topic-last'] !== undefined)[0].props['data-dsh-bots-topic-last'], 'pmoved001');
-  const [task] = findAll(beijing, (n) => n.props['data-dsh-bots-topic-task'] === 'tdone0001');
-  assert.match(collect(task).join(' '), /Beijing work residence permit .*Done/);
-  // Shanghai: no reply yet, its task alive with what it does now.
-  const shanghai = bar('pshangha1');
-  assert.match(collect(shanghai).join(' '), /^.*Topic/);
-  assert.equal(findAll(shanghai, (n) => n.props['data-dsh-bots-live'] === 'chip').length, 1);
-  assert.match(collect(findAll(shanghai, (n) => n.props['data-dsh-bots-live'] === 'chip')[0]).join(''), /Shanghai hukou 2026/);
-  // The worker's answer and Ada's in-topic reply are not in the main timeline.
-  assert.doesNotMatch(collect(main).join(' '), /three conditions|opened a task for Bob/);
-  // A task in the bar opens the task, not the topic.
-  task.props.onClick({ stopPropagation() {} });
+test('threads: the chat lists a reply where it was said, quoting what it answers unless that is just above; a message with a thread gets a link', async () => {
+  // Bob's answer later in the thread, after the chat moved on: it quotes again.
+  const late = { id: 'r3', from: 'bot-b', to: 'user', chat: 'bot-a', text: 'Chaoyang is the same.', at: T0 + 9 * MIN, kind: 'reply', topic: 'pbeijing1', thread: 'panel:sess-a:pbeijing1', quote: { id: 'pq1haidia', from: 'user', text: 'Does Haidian differ?' } };
+  const v = await threadsChat({ items: [...mainItems(), late] });
+  const main = mainOf(v.tree);
+  assert.deepEqual(attrs(main, 'data-dsh-bots-msg-id'), [...CHAT_IDS, 'r3']);
+  // Your reply quotes the Beijing message; Bob's answer right under it goes without; his later one quotes you.
+  assert.deepEqual(attrs(main, 'data-dsh-bots-quoted'), ['pbeijing1', 'pq1haidia']);
+  const quoted = (id) => collect(findAll(main, (n) => n.props['data-dsh-bots-quoted'] === id)[0]).join('');
+  assert.equal(quoted('pbeijing1'), 'You: Look up the Beijing work residence permit');
+  assert.equal(quoted('pq1haidia'), 'You: Does Haidian differ?');
+  const [mine] = findAll(main, (n) => n.props['data-dsh-bots-msg-id'] === 'pq1haidia');
+  assert.match(collect(mine).join(' '), /Look up the Beijing work residence permit .*Does Haidian differ\?/);
+  const [bob] = findAll(main, (n) => n.props['data-dsh-bots-msg-id'] === 'r3');
+  assert.match(collect(bob).join(' '), /Bob .*Does Haidian differ\? .*Chaoyang is the same\./);
+  // A link under a message with a thread: how many replies; one with no reply yet whose task works says it is replying.
+  assert.deepEqual(attrs(main, 'data-dsh-bots-thread-bar'), ['pbeijing1', 'r1']);
+  const bar = (id) => collect(findAll(main, (n) => n.props['data-dsh-bots-thread-bar'] === id)[0]).join(' ');
+  assert.equal(bar('pbeijing1'), '3 replies');
+  assert.equal(bar('r1'), 'Thread Replying…');
+  assert.deepEqual(attrs(main, 'data-dsh-bots-thread-running'), ['r1']);
+  // A quote opens its thread.
+  click(v.tree, 'data-dsh-bots-quoted', 'pq1haidia');
   await v.rerender();
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tdone0001').length, 1);
-  assert.equal(pane(v.tree), undefined);
+  assert.equal(pane(v.tree)?.props['data-dsh-bots-thread-pane'], 'pbeijing1');
   v.hooks.runCleanups();
 });
 
-test('topics: a bar opens the topic beside the chat; its composer replies to the root or to the message picked', async () => {
-  const v = await topicsChat();
-  click(v.tree, 'data-dsh-bots-topic-bar', 'pbeijing1');
+test('threads: Reply quotes the message above the composer; what is sent shows at the end of the chat quoting it, and the next message goes to the chat', async () => {
+  const v = await threadsChat();
+  // Every message offers Reply (yours, the bots', a thread's).
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-reply-to'), CHAT_IDS);
+  click(v.tree, 'data-dsh-bots-reply-to', 'general');
+  await v.rerender(1);
+  assert.equal(pane(v.tree), undefined);
+  const quoteBar = () => findAll(v.tree, (n) => n.props['data-dsh-bots-quote'] !== undefined);
+  assert.match(collect(quoteBar()[0]).join(' '), /Replying to Ada .*Morning, all quiet otherwise\./);
+  const box = () => findAll(v.tree, (n) => n.props['data-dsh-bots-composer'])[0];
+  assert.equal(box().props.placeholder, 'Message @ada');
+  box().props.onChange({ target: { value: 'Tell me tomorrow too' } });
+  await v.rerender(1);
+  box().props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} });
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/send')).at(-1).body, { to: 'bot-a', text: 'Tell me tomorrow too', replyTo: 'general' });
+  assert.equal(quoteBar().length, 0);
+  // At the end of the chat, queued, quoting Ada's message.
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-msg-id'), [...CHAT_IDS, 'psent0001']);
+  const [sent] = findAll(mainOf(v.tree), (n) => n.props['data-dsh-bots-msg-id'] === 'psent0001');
+  assert.match(collect(sent).join(' '), /Ada: .*Morning, all quiet otherwise\. .*Tell me tomorrow too .*Queued/);
+  // The next message goes to the chat itself.
+  box().props.onChange({ target: { value: 'Something else' } });
+  await v.rerender(1);
+  box().props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} });
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/send')).at(-1).body, { to: 'bot-a', text: 'Something else' });
+  assert.equal(findAll(findAll(mainOf(v.tree), (n) => n.props['data-dsh-bots-msg-id'] === 'psent0002')[0], (n) => n.props['data-dsh-bots-quoted'] !== undefined).length, 0);
+  // Escape drops a quote.
+  click(v.tree, 'data-dsh-bots-reply-to', 'r1');
+  await v.rerender(1);
+  assert.equal(quoteBar().length, 1);
+  box().props.onKeyDown({ key: 'Escape', stopPropagation() {} });
+  await v.rerender(1);
+  assert.equal(quoteBar().length, 0);
+  v.hooks.runCleanups();
+});
+
+test('threads: a link opens the thread on its own; its composer answers the root or a message picked inside, and both show in the chat too', async () => {
+  const v = await threadsChat();
+  click(v.tree, 'data-dsh-bots-thread-bar', 'pbeijing1');
   await v.rerender();
   const p = pane(v.tree);
-  assert.ok(p, 'the topic pane');
-  assert.ok(v.gets.some((g) => /messages\?limit=500&bot=bot-a&topic=pbeijing1$/.test(g)), 'it polls its topic');
-  // Root, replies and the moved message in order; the moved one says so; the worker's answer in full with its task.
-  assert.deepEqual(attrs(p, 'data-dsh-bots-msg-id'), ['pbeijing1', 'r1', 'r2', 'pmoved001']);
-  assert.deepEqual(attrs(p, 'data-dsh-bots-moved-in'), ['pmoved001']);
-  assert.match(collect(p).join(' '), /three conditions/);
+  assert.ok(p, 'the thread pane');
+  assert.ok(v.gets.some((g) => /messages\?limit=500&bot=bot-a&topic=pbeijing1$/.test(g)), 'it polls its thread');
+  // Root, a divider with the count, the replies in order; Bob's answer in full; the thread's task; no quote of the root.
+  assert.deepEqual(attrs(p, 'data-dsh-bots-msg-id'), ['pbeijing1', 'pq1haidia', 'r2']);
+  assert.deepEqual(attrs(p, 'data-dsh-bots-thread-count'), [2]);
+  assert.match(collect(p).join(' '), /Thread .*Look up the Beijing work residence permit .*2 replies .*Does Haidian differ\? .*three conditions/);
   assert.deepEqual(attrs(p, 'data-dsh-bots-thread-tasks'), [1]);
-  // Send in the topic: replyTo is the root.
+  assert.deepEqual(attrs(p, 'data-dsh-bots-quoted'), []);
   const composer = () => findAll(v.tree, (n) => n.props['data-dsh-bots-thread-composer'] === 'pbeijing1')[0];
-  composer().props.onChange({ target: { value: 'Thanks, and Haidian?' } });
+  assert.equal(composer().props.placeholder, 'Reply in this thread');
+  composer().props.onChange({ target: { value: 'Thanks, and Chaoyang?' } });
   await v.rerender(1);
   composer().props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} });
   await v.rerender();
-  assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/send')).at(-1).body, { to: 'bot-a', text: 'Thanks, and Haidian?', replyTo: 'pbeijing1' });
-  // Pick Bob's answer: the quote shows, and the next message answers it.
+  assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/send')).at(-1).body, { to: 'bot-a', text: 'Thanks, and Chaoyang?', replyTo: 'pbeijing1' });
+  // Reply on Bob's answer quotes it; the message stays in this thread and answers it.
   click(pane(v.tree), 'data-dsh-bots-reply-to', 'r2');
   await v.rerender(1);
+  assert.equal(pane(v.tree).props['data-dsh-bots-thread-pane'], 'pbeijing1');
   assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-thread-quote'] === 'r2')[0]).join(' '), /Replying to Bob .*Beijing permit: three conditions\./);
   composer().props.onChange({ target: { value: 'Which social insurance?' } });
   await v.rerender(1);
@@ -2535,48 +2603,25 @@ test('topics: a bar opens the topic beside the chat; its composer replies to the
   await v.rerender();
   assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/send')).at(-1).body, { to: 'bot-a', text: 'Which social insurance?', replyTo: 'r2' });
   assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-thread-quote'] !== undefined).length, 0);
-  // Close.
+  // In the thread, the one that answers Bob quotes him; in the chat, both quote what they answer.
+  assert.deepEqual(attrs(pane(v.tree), 'data-dsh-bots-quoted'), ['r2']);
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-msg-id'), [...CHAT_IDS, 'psent0001', 'psent0002']);
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-quoted'), ['pbeijing1', 'pbeijing1', 'r2']);
   click(v.tree, 'data-dsh-bots-thread-close', 'pbeijing1');
   await v.rerender();
   assert.equal(pane(v.tree), undefined);
   v.hooks.runCleanups();
 });
 
-test('topics: Reply on a message quotes it above the main composer; it can be dropped, and a reply opens its topic', async () => {
-  const v = await topicsChat();
-  const [main] = findAll(v.tree, (n) => n.props['data-dsh-bots-thread'] === 'bot-a');
-  // Every message in the main timeline offers Reply (yours and the bots').
-  assert.deepEqual(attrs(main, 'data-dsh-bots-reply-to'), ['m-old', 'pbeijing1', 'pshangha1', 'pmoved001', 'general']);
-  click(v.tree, 'data-dsh-bots-reply-to', 'general');
-  await v.rerender(1);
-  assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-quote'] === 'general')[0]).join(' '), /Replying to Ada .*Morning, all quiet otherwise\./);
-  click(v.tree, 'data-dsh-bots-quote-cancel', 'general');
-  await v.rerender(1);
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-quote'] !== undefined).length, 0);
-  // Quote again and send: the message carries replyTo, and its topic opens beside the chat.
-  click(v.tree, 'data-dsh-bots-reply-to', 'general');
-  await v.rerender(1);
-  const box = () => findAll(v.tree, (n) => n.props['data-dsh-bots-composer'])[0];
-  assert.equal(box().props.placeholder, 'Reply in this topic');
-  box().props.onChange({ target: { value: 'Tell me tomorrow too' } });
-  await v.rerender(1);
-  box().props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault() {} });
-  await v.rerender();
-  assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/send')).at(-1).body, { to: 'bot-a', text: 'Tell me tomorrow too', replyTo: 'general' });
-  assert.equal(pane(v.tree)?.props['data-dsh-bots-thread-pane'], 'general', 'a message outside any topic becomes the root of a new one');
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-quote'] !== undefined).length, 0);
-  v.hooks.runCleanups();
-});
-
-test('topics: a message shows at once as queued, the Host copy replaces it; a failed one turns red and sends again', async () => {
+test('threads: a message shows at once as queued, the Host copy replaces it; a failed one turns red and sends again', async () => {
   let fail = true;
   let release;
   const gate = new Promise((r) => (release = r));
-  const v = await topicsChat({
-    send: (body) => (fail ? { ok: false, reason: 'HTTP 500' } : { ok: true, sessionId: 'sess-a', message: { id: 'psent0009', from: 'user', to: 'bot-a', chat: 'bot-a', kind: 'user', text: body.text, at: Date.now(), topic: 'psent0009', pending: true } }),
+  const v = await threadsChat({
+    send: (body) => (fail ? { ok: false, reason: 'HTTP 500' } : { ok: true, sessionId: 'sess-a', message: { id: 'psent0009', from: 'user', to: 'bot-a', chat: 'bot-a', kind: 'user', text: body.text, at: Date.now(), pending: true } }),
   });
   // A Host copy of an earlier message that is still waiting for the bot reads as queued.
-  v.state.items = [...topicItems(), { id: 'pqueued01', from: 'user', to: 'bot-a', chat: 'bot-a', kind: 'user', text: 'Still waiting', at: Date.now(), topic: 'pqueued01', pending: true }];
+  v.host.items = [...mainItems(), { id: 'pqueued01', from: 'user', to: 'bot-a', chat: 'bot-a', kind: 'user', text: 'Still waiting', at: Date.now(), pending: true }];
   const box = () => findAll(v.tree, (n) => n.props['data-dsh-bots-composer'])[0];
   // The send is slow: the bubble is there before the Host answers.
   const slow = globalThis.fetch;
@@ -2601,94 +2646,176 @@ test('topics: a message shows at once as queued, the Host copy replaces it; a fa
   click(tree, 'data-dsh-bots-resend');
   tree = await v.rerender();
   const sends = v.posts.filter((x) => x.path.endsWith('/send'));
-  assert.deepEqual(sends.map((x) => x.body.text), ['Shenzhen too', 'Shenzhen too']);
+  assert.deepEqual(sends.map((x) => x.body), [{ to: 'bot-a', text: 'Shenzhen too' }, { to: 'bot-a', text: 'Shenzhen too' }]);
   assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-send-failed'] !== undefined).length, 0);
-  // The Host's copy took its place: its id, still queued.
-  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-msg-id'] === 'psent0009').length, 1);
+  // The Host's copy took its place in the main chat: its id, still queued.
+  assert.equal(findAll(mainOf(tree), (n) => n.props['data-dsh-bots-msg-id'] === 'psent0009').length, 1);
   assert.equal(findAll(tree, (n) => n.props['data-local'] === 'true' && n.props['data-dsh-bots-msg-id'] !== 'psent0009').length, 0);
   assert.deepEqual(attrs(tree, 'data-dsh-bots-pending').sort(), ['pqueued01', 'psent0009']);
   v.hooks.runCleanups();
 });
 
-test('topics: a message the dispatcher put into another topic links there instead of a bar', async () => {
-  const v = await topicsChat();
-  const [moved] = findAll(v.tree, (n) => n.props['data-dsh-bots-moved'] === 'pbeijing1');
-  assert.ok(moved);
-  assert.match(collect(moved).join(' '), /Put into “Look up the Beijing work residence perm…”/);
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-topic-bar'] === 'pmoved001').length, 0);
-  moved.props.onClick();
-  await v.rerender();
-  assert.equal(pane(v.tree)?.props['data-dsh-bots-thread-pane'], 'pbeijing1');
+test('threads: rows of 0.9 read as the chat they were, with no quotes and no link: the replies are right under their root', async () => {
+  const items = [
+    { id: 'pold00001', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Old topic root', at: T0, kind: 'user', topic: 'pold00001', thread: 'panel:sess-a:pold00001' },
+    { id: 'rold1', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'Old answer inside', at: T0 + 1000, kind: 'reply', topic: 'pold00001', thread: 'panel:sess-a:pold00001' },
+    { id: 'pmoved001', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Moved in', at: T0 + 2000, kind: 'user', topic: 'pmoved001', movedTo: 'pold00001' },
+    { id: 'after', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'Later in the chat', at: T0 + 3000, kind: 'reply' },
+  ];
+  const v = await threadsChat({ items, replies: {}, threads: {} });
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-msg-id'), ['pold00001', 'rold1', 'pmoved001', 'after']);
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-quoted'), []);
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-thread-bar'), []);
   v.hooks.runCleanups();
+  // A later reply away from its root brings the link back, and the thread holds them all.
+  const late = { id: 'plate0001', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'One more thing', at: T0 + 4000, kind: 'user', topic: 'pold00001', thread: 'panel:sess-a:pold00001' };
+  const w = await threadsChat({ items: [...items, late], replies: {}, threads: {} });
+  assert.deepEqual(attrs(mainOf(w.tree), 'data-dsh-bots-thread-bar'), ['pold00001']);
+  assert.equal(collect(findAll(w.tree, (n) => n.props['data-dsh-bots-thread-bar'] === 'pold00001')[0]).join(' '), '3 replies');
+  click(w.tree, 'data-dsh-bots-thread-bar', 'pold00001');
+  await w.rerender();
+  assert.deepEqual(attrs(pane(w.tree), 'data-dsh-bots-msg-id'), ['pold00001', 'rold1', 'pmoved001', 'plate0001']);
+  assert.deepEqual(attrs(pane(w.tree), 'data-dsh-bots-moved-in'), ['pmoved001']);
+  w.hooks.runCleanups();
 });
 
-test('topics: a teammate answering in the chat shows its own face, the report status and its task', async () => {
-  const v = await topicsChat();
-  click(v.tree, 'data-dsh-bots-topic-bar', 'pbeijing1');
+test('threads: a teammate answering in a thread shows its own face and its task; a finished answer is just the answer, no status', async () => {
+  const v = await threadsChat();
+  click(v.tree, 'data-dsh-bots-thread-bar', 'pbeijing1');
   await v.rerender();
   const p = pane(v.tree);
   const [answer] = findAll(p, (n) => n.props['data-dsh-bots-msg-id'] === 'r2');
   assert.equal(answer.props['data-dsh-bots-worker'], 'bot-b');
-  assert.match(collect(answer).join(' '), /Bob .*@bob .*Done/);
-  assert.equal(findAll(answer, (n) => n.props['data-dsh-bots-report'] === 'done').length, 1);
+  assert.match(collect(answer).join(' '), /Bob .*@bob /);
+  assert.equal(findAll(answer, (n) => n.props['data-dsh-bots-report'] === 'done').length, 0);
   assert.equal(findAll(answer, (n) => n.props['data-dsh-bots-worker-task'] === 'tdone0001').length, 1);
   assert.equal(findAll(answer, (n) => n.props['data-dsh-bots-task-card'] === 'tdone0001').length, 1);
-  // Ada's own reply in the topic is no worker's.
-  assert.equal(findAll(p, (n) => n.props['data-dsh-bots-msg-id'] === 'r1')[0].props['data-dsh-bots-worker'], undefined);
+  // Your own reply in the thread is no worker's.
+  assert.equal(findAll(p, (n) => n.props['data-dsh-bots-msg-id'] === 'pq1haidia')[0].props['data-dsh-bots-worker'], undefined);
   v.hooks.runCleanups();
 });
 
-test('topics: new replies are marked unread, a pill points at them, and opening a topic reads it', async () => {
-  // Seen marks kept from before: Beijing was read before Bob's answer came.
-  const storage = fakeStorage({ 'dshb:topics-seen:bot-a': JSON.stringify({ pbeijing1: T0 + 30_000 }) });
-  const v = await topicsChat({ storage });
-  const unread = () => attrs(v.tree, 'data-dsh-bots-topic-unread');
-  assert.deepEqual(unread(), ['pbeijing1']);
-  // Its bar is not on screen (nothing is, here): the pill says so and points at it.
-  const pill = () => findAll(v.tree, (n) => n.props['data-dsh-bots-new-replies'] !== undefined)[0];
-  assert.ok(pill(), 'the pill');
-  assert.match(collect(pill()).join(' '), /A topic has a new reply/);
-  pill().props.onClick();
-  await v.rerender(1);
-  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-topic-bar'] === 'pbeijing1')[0].props['data-flash'], 'true');
-  // Opening it reads it: the dot and the pill go, and the mark is kept.
-  click(v.tree, 'data-dsh-bots-topic-bar', 'pbeijing1');
+test('chat: work a bot hands itself is not shown as a message to itself; while it works the chat shows the bot at work, what it does now', async () => {
+  const state = { bots: BOTS.map((b) => (b.id === 'bot-a' ? { ...b, status: 'idle' } : b)), taskActivity: { tself0001: { ...SEARCHING, botId: 'bot-a', title: 'Beijing weather' } } };
+  const items = [
+    { id: 'pweather1', from: 'user', to: 'bot-a', chat: 'bot-a', text: 'Study the Beijing weather', at: T0, kind: 'user', thread: 'panel:sess-a' },
+    { id: 'dself1', from: 'bot-a', to: 'bot-a', text: 'Task: look up the weather in Beijing for the coming weeks…', at: T0 + 5000, kind: 'dm', ticket: 'tself0001' },
+    { id: 'ack1', from: 'bot-a', to: 'user', chat: 'bot-a', text: 'Let me look into it, back in a few minutes.', at: T0 + 6000, kind: 'reply', thread: 'panel:sess-a' },
+    { id: 'dbob1', from: 'bot-a', to: 'bot-b', text: 'Check the air quality too', at: T0 + 7000, kind: 'dm', ticket: 'tbob0001' },
+  ];
+  const v = await threadsChat({ items, replies: {}, threads: {}, state });
+  const main = mainOf(v.tree);
+  assert.deepEqual(attrs(main, 'data-dsh-bots-msg-id'), ['pweather1', 'ack1']);
+  // Handing work to a teammate still shows, as a line between bots.
+  assert.match(collect(main).join(' '), /Ada .*Bob/);
+  assert.doesNotMatch(collect(main).join(' '), /look up the weather in Beijing/);
+  const [working] = findAll(main, (n) => n.props['data-dsh-bots-working'] === 'bot-a');
+  assert.ok(working, 'Ada at work');
+  assert.match(collect(working).join(' '), /Shanghai hukou 2026/);
+  v.hooks.runCleanups();
+});
+
+test('threads: a thread answering shows the bot at work at the end of the chat; opening one with new replies tells the Host they were read, once', async () => {
+  // Ada herself is idle.
+  const state = { bots: BOTS.map((b) => (b.id === 'bot-a' ? { ...b, status: 'idle' } : b)) };
+  const threads = threadSummaries();
+  threads.pbeijing1 = { ...threads.pbeijing1, answering: true };
+  const busy = await threadsChat({ threads, state });
+  assert.deepEqual(attrs(mainOf(busy.tree), 'data-dsh-bots-working'), ['bot-a']);
+  busy.hooks.runCleanups();
+  // A task working in a thread is no answer coming in the chat.
+  const v = await threadsChat({ state });
+  assert.deepEqual(attrs(mainOf(v.tree), 'data-dsh-bots-working'), []);
+  click(v.tree, 'data-dsh-bots-thread-bar', 'pbeijing1');
   await v.rerender();
+  await v.rerender();
+  assert.deepEqual(v.posts.filter((x) => x.path.endsWith('/threads/seen')).map((x) => x.body), [{ bot: 'bot-a', root: 'pbeijing1' }]);
   click(v.tree, 'data-dsh-bots-thread-close', 'pbeijing1');
   await v.rerender();
-  assert.deepEqual(unread(), []);
-  assert.equal(pill(), undefined);
-  const marks = JSON.parse(storage.data['dshb:topics-seen:bot-a']);
-  assert.ok(marks.pbeijing1 >= T0 + 6 * MIN, 'read up to its latest message');
+  // A thread with nothing unread is not marked again.
+  click(v.tree, 'data-dsh-bots-thread-bar', 'pbeijing1');
+  await v.rerender();
+  assert.equal(v.posts.filter((x) => x.path.endsWith('/threads/seen')).length, 1);
   v.hooks.runCleanups();
 });
 
-test('topics: the first visit counts what is there as read; without storage nothing is unread', async () => {
-  const storage = fakeStorage();
-  const v = await topicsChat({ storage });
-  assert.deepEqual(attrs(v.tree, 'data-dsh-bots-topic-unread'), []);
-  assert.ok(JSON.parse(storage.data['dshb:topics-seen:bot-a']).pbeijing1 > 0, 'marks taken on the first visit');
-  v.hooks.runCleanups();
-  for (const blocked of [undefined, fakeStorage({}, { broken: true })]) {
-    const w = await topicsChat({ storage: blocked });
-    assert.deepEqual(attrs(w.tree, 'data-dsh-bots-topic-unread'), []);
-    assert.equal(findAll(w.tree, (n) => n.props['data-dsh-bots-new-replies'] !== undefined).length, 0);
-    assert.deepEqual(attrs(w.tree, 'data-dsh-bots-topic-bar'), ['pbeijing1', 'pshangha1'], 'topics work all the same');
-    w.hooks.runCleanups();
+test('threads: a Host that runs another Bots than this page says to restart Harness', async () => {
+  const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
+  const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
+  assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.10\.0\. Quit and reopen Harness/);
+  stale.hooks.runCleanups();
+  for (const state of [{ botsVersion: '0.10.0' }, { version: 7 }, {}]) {
+    const v = await threadsChat({ state });
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
+    v.hooks.runCleanups();
   }
 });
 
-test('topics: every new word has English and Chinese', async () => {
+test('threads: Harness closing the panel over a new topic opens it again; closing it otherwise is left alone', async () => {
+  /** A layout whose panelInfo is observable, like Harness's. */
+  const layout = () => {
+    const subs = new Set();
+    const l = {
+      info: { activePanelId: 'bots' },
+      selected: [],
+      selectPanel(id) {
+        l.selected.push(id);
+        l.info = { activePanelId: id };
+      },
+      panelInfo: {
+        getSnapshot: () => l.info,
+        subscribe(fn) {
+          subs.add(fn);
+          return () => subs.delete(fn);
+        },
+      },
+      close() {
+        l.info = { activePanelId: null };
+        for (const fn of [...subs]) fn();
+      },
+    };
+    return l;
+  };
+  // A new topic from here: Harness closes the panel; it comes back, on that bot's chat.
+  const a = layout();
+  const v = await threadsChat({ services: { layout: a } });
+  click(v.tree, 'data-dsh-bots-new-topic', 'chat');
+  a.close();
+  await flush();
+  assert.deepEqual(a.selected, ['bots']);
+  v.hooks.runCleanups();
+  // Closed by the person, with no topic starting: it stays closed.
+  const b = layout();
+  const w = await threadsChat({ services: { layout: b }, state: { rotatedAt: 0 } });
+  b.close();
+  for (let i = 0; i < 4; i += 1) await flush();
+  assert.deepEqual(b.selected, []);
+  w.hooks.runCleanups();
+  // A topic the Host started (the state says when): the panel comes back too.
+  const c = layout();
+  const x = await threadsChat({ services: { layout: c }, state: { rotatedAt: Date.now() } });
+  c.close();
+  for (let i = 0; i < 4; i += 1) await flush();
+  assert.deepEqual(c.selected, ['bots']);
+  x.hooks.runCleanups();
+});
+
+test('threads: every new word has English and Chinese', async () => {
   const { exports } = await loadClient();
   const { ctx, seen } = fakeContext();
   exports.apply(ctx);
   const { en, zh } = seen.locale.dict;
-  const keys = ['replyAction', 'replyingTo', 'cancelReply', 'topicLabel', 'topicTitle', 'topicReplyOne', 'topicReplies', 'topicEmpty', 'topicComposer', 'topicUnread', 'openTopic', 'closeTopic', 'movedTo', 'movedToTopic', 'movedIn', 'newReplyOne', 'newReplies', 'msgPending', 'msgPendingHint', 'msgFailed', 'resend'];
+  const keys = ['replyAction', 'replyingTo', 'cancelReply', 'quoteWho', 'threadWord', 'threadPaneTitle', 'threadReplyOne', 'threadReplies', 'threadEmpty', 'threadComposer', 'threadRunning', 'openThread', 'closeThread', 'movedIn', 'versionStale', 'msgPending', 'msgPendingHint', 'msgFailed', 'resend'];
   for (const k of keys) {
     assert.ok(en[k] && zh[k], k);
     assert.notEqual(en[k], zh[k], k);
   }
-  assert.equal(zh.newReplies, '{n} 个话题有新回复');
+  assert.equal(zh.threadPaneTitle, '讨论串');
+  assert.equal(zh.quoteWho, '{name}：');
+  assert.equal(zh.threadEmpty, '还没有回复。在这里回复会引用这条消息');
   assert.equal(zh.msgPending, '排队中');
-  assert.equal(zh.movedTo, '已归入「{title}」');
+  // "New topic" keeps meaning a fresh conversation; nothing about threads says 话题 any more.
+  assert.equal(zh.newTopic, '新话题');
+  for (const k of keys) assert.doesNotMatch(zh[k], /话题/, k);
 });

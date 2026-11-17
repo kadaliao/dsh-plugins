@@ -447,20 +447,38 @@ export function createStore(dir) {
      * those with no `chat` sent from or to it. `topic` limits to one panel topic: its first
      * message, the replies in it and the messages filed under it (`movedTo`). Without `topic`, a
      * reply in the window whose topic began earlier brings that first message along, before the rest.
+     * `main` (Bots 0.10): only the main conversation, without what was said in discussions.
+     * `roots: false`: the window as it is, without bringing earlier first messages along.
      */
-    messages({ bot = '', limit = 200, topic = '' } = {}) {
+    messages({ bot = '', limit = 200, topic = '', main = false, roots = true } = {}) {
       const all = readLog();
       // A message that was never handed over (`hidden`) is in no chat.
       const mine = (m) => !m.hidden && (!bot || (m.chat ? m.chat === bot : m.from === bot || m.to === bot));
       const cap = Math.max(1, Math.min(2000, Number(limit) || 200));
       if (topic) return all.filter((m) => mine(m) && (m.id === topic || m.topic === topic || m.movedTo === topic)).slice(-cap);
+      // The main conversation (Bots 0.10): what is said in a discussion stays in it.
+      if (main) return all.filter((m) => mine(m) && !(m.topic && m.topic !== m.id) && !(m.movedTo && m.movedTo !== m.id)).slice(-cap);
       const rows = all.filter(mine);
       const window = rows.slice(-cap);
       const have = new Set(window.map((m) => m.id));
       const missing = new Set();
       for (const m of window) for (const r of [m.topic, m.movedTo]) if (r && !have.has(r)) missing.add(r);
-      if (missing.size === 0) return window;
+      if (!roots || missing.size === 0) return window;
       return [...rows.filter((m) => missing.has(m.id)), ...window];
+    },
+    /** The replies in the discussions under `roots` (ids) in `bot`'s chat, oldest first, per root. */
+    replies(bot, roots) {
+      const want = new Set([...(roots ?? [])].filter(Boolean));
+      const out = new Map();
+      if (want.size === 0) return out;
+      for (const m of readLog()) {
+        if (m.hidden || (bot && !(m.chat ? m.chat === bot : m.from === bot || m.to === bot))) continue;
+        const root = m.topic && m.topic !== m.id ? m.topic : m.movedTo && m.movedTo !== m.id ? m.movedTo : '';
+        if (!root || !want.has(root)) continue;
+        if (!out.has(root)) out.set(root, []);
+        out.get(root).push(m);
+      }
+      return out;
     },
     messageCount() {
       return readLog().length;

@@ -20,6 +20,10 @@ window.__ModuleLoader__.load({
 
     const NS = 'bots';
     const PANEL_ID = 'bots';
+    /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
+    const BOTS_VERSION = '0.10.0';
+    /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
+    const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
     const STATE_POLL_MS = 5000;
     /** While a bot works (or a picture is being drawn), its live status is polled this often (`activity`, a small answer). */
@@ -799,23 +803,20 @@ button.dshb-tline:hover{background:${C.hover}}
 .dshb-msg-act:hover{color:${C.primary};background:${C.hover}}
 .dshb-msg-actbox{position:absolute;top:0;right:0;z-index:1}
 @media (hover:none){.dshb-msg-act{opacity:.65}}
-.dshb-topicbar{display:flex;flex-direction:column;gap:5px;width:min(520px,100%);min-width:0;padding:8px 11px;border:1px solid ${C.border1};border-radius:11px;background:${C.layer1};font-size:${SMALL};cursor:pointer;text-align:left;transition:border-color .12s,background .12s}
-.dshb-topicbar:hover{border-color:${C.border};background:${C.layer2}}
-.dshb-topicbar:focus-visible{outline:2px solid ${C.label};outline-offset:1px}
-.dshb-topicbar[data-unread=true]{border-color:${tint(C.label, 45)}}
-.dshb-topicbar[data-flash=true]{animation:dshb-flash 1.8s ease-out}
-.dshb-topictask{display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;padding:2px 6px;border:none;border-radius:7px;background:${C.base};color:${C.primary};font:inherit;font-size:${TINY};text-align:left;cursor:pointer}
-.dshb-topictask:hover{background:${C.hover}}
-.dshb-moved{display:inline-flex;align-items:center;gap:6px;max-width:min(520px,100%);min-width:0;font-size:${TINY};color:${C.muted}}
-.dshb-moved:hover{color:${C.label}}
-.dshb-pillrow{position:absolute;left:0;right:0;top:-42px;display:flex;justify-content:center;pointer-events:none;z-index:2}
-.dshb-pill{pointer-events:auto;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border-radius:999px;border:1px solid ${C.border};background:${C.base};color:${C.primary};font:inherit;font-size:${SMALL};font-weight:600;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:calc(100% - 32px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dshb-pill:hover{background:${C.layer2}}
+.dshb-threadbar{display:inline-flex;align-items:center;gap:5px;max-width:100%;height:24px;padding:0 9px;border:none;border-radius:999px;background:${tint(C.label, 8)};color:${C.label};font:inherit;font-size:${TINY};font-weight:600;cursor:pointer;white-space:nowrap;transition:background .12s}
+.dshb-threadbar:hover{background:${tint(C.label, 15)}}
+.dshb-threadbar:focus-visible{outline:2px solid ${C.label};outline-offset:1px}
+.dshb-qline{display:block;width:100%;min-width:0;margin:0;padding:1px 0 1px 8px;border:none;border-left:2px solid ${C.border};background:transparent;color:${C.muted};font:inherit;font-size:${TINY};line-height:1.5;text-align:left;word-break:break-word}
+button.dshb-qline{cursor:pointer}
+button.dshb-qline:hover{color:${C.primary};border-left-color:${C.label}}
+.dshb-qline-light{color:inherit;opacity:.75;border-left-color:currentColor}
+button.dshb-qline-light:hover{color:inherit;opacity:1}
+.dshb-threaddiv{display:flex;align-items:center;gap:10px;margin:8px 0 2px;color:${C.faint};font-size:${TINY}}
+.dshb-threaddiv-line{flex:1;height:1px;background:${C.border1}}
 .dshb-threadpane{width:420px;flex:none;display:flex;flex-direction:column;min-height:0;min-width:0;border-left:1px solid ${C.border1};background:${C.base}}
 .dshb-threadhead{display:flex;align-items:center;gap:10px;padding:12px 12px 10px 16px;border-bottom:1px solid ${C.border1};min-width:0}
 @container (max-width: 860px){.dshb-threadpane{position:absolute;inset:0;width:auto;z-index:6;border-left:none}}
 @media (max-width: 760px){.dshb-threadpane{position:absolute;inset:0;width:auto;z-index:6;border-left:none}}
-@keyframes dshb-flash{0%{box-shadow:0 0 0 3px ${tint(C.label, 50)}}100%{box-shadow:0 0 0 0 ${tint(C.label, 0)}}}
 @keyframes dshb-breathe{0%{box-shadow:0 0 0 0 ${tint(C.ok, 45)}}70%{box-shadow:0 0 0 5px ${tint(C.ok, 0)}}100%{box-shadow:0 0 0 0 ${tint(C.ok, 0)}}}
 @keyframes dshb-pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.6)}70%{box-shadow:0 0 0 5px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
 @keyframes dshb-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
@@ -1348,16 +1349,16 @@ button.dshb-tline:hover{background:${C.hover}}
 
     /**
      * A thread of one bot: the user's prompts right, the bot's replies left, DMs as cards. With `fold`
-     * (the main timeline of a chat with topics), replies inside a topic are not listed: each root gets its
-     * topic bar instead (`topic` props: `{index, topics, onOpen, unread, flash}`).
+     * (a chat as it was said), a message with a thread gets a link to it under it (`fold`: `{index, onOpen}`).
+     * `quoteOf(m, prev)`: the message `m` quotes, shown on top of it (null for none); `onQuote(m)` opens it.
      */
-    function MessageList({ t, items, botId, empty, fold = null, onReply, onRetry, movedIn }) {
+    function MessageList({ t, items, botId, empty, fold = null, onReply, onRetry, movedIn, quoteOf, onQuote }) {
       const count = items.length;
       if (count === 0) return empty;
       const names = threadNamesOf(items);
       const rows = [];
       let lastDay = '';
-      const shown = fold ? fold.index.main : items;
+      const shown = (fold ? fold.index.main : items).filter((m) => !selfTalk(m));
       shown.forEach((m, i) => {
         const at = toMs(m.at);
         let day = '';
@@ -1392,15 +1393,14 @@ button.dshb-tline:hover{background:${C.hover}}
           return;
         }
         const prev = shown[i - 1];
-        // A root with its topic bar under it ends a run: the next message starts with its own header.
-        const prevBar = fold && prev && fold.index.roots.has(prev.id) && topicBarShows(fold, prev.id);
-        // Answers to two chats of one turn keep their own headers (where each went), and so do two tasks.
-        const grouped = !prevBar && prev && !isTraffic(prev) && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
-        rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped, names, onReply, onRetry, moved: movedIn ? movedIn(m) : false }));
-        if (fold && fold.index.roots.has(m.id)) {
-          const bar = m.movedTo ? h(MovedBar, { key: `mv${m.id}`, t, m, fold }) : topicBarShows(fold, m.id) ? h(TopicBar, { key: `tb${m.id}`, t, m, fold }) : null;
-          if (bar) rows.push(bar);
-        }
+        // A message with its thread bar under it ends a run: the next message starts with its own header.
+        const prevBar = fold && prev && threadBarShows(fold, prev.id);
+        // A reply in a thread quotes the message it answers, unless that is the thread's message just above.
+        const quote = quoteOf ? quoteOf(m, prev) : null;
+        // Answers to two chats of one turn keep their own headers (where each went), and so do two tasks; a quoted reply starts a run.
+        const grouped = !quote && !prevBar && prev && !isTraffic(prev) && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
+        rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped, names, onReply, onRetry, moved: movedIn ? movedIn(m) : false, quote, onQuote }));
+        if (fold && threadBarShows(fold, m.id)) rows.push(h(ThreadBar, { key: `tb${m.id}`, t, m, fold }));
       });
       const level = botMessagesLevel();
       return h(
@@ -1409,117 +1409,63 @@ button.dshb-tline:hover{background:${C.hover}}
         rows.map((r) => (r && r.traffic ? h(BotTraffic, { key: r.key, t, items: r.items, level }) : r)),
       );
     }
-    /** The tasks of a topic (the Host's TicketRows for it). */
-    const topicTasks = (fold, rootId) => {
-      const list = fold?.topics?.[rootId]?.tickets;
-      return Array.isArray(list) ? list.filter((r) => r && typeof r.id === 'string') : [];
-    };
-    /** Whether a root shows a bar: it was moved, or its topic has replies or tasks. */
-    function topicBarShows(fold, rootId) {
+    /** Whether a message shows its thread's link: it is answering there, or its replies are not all right under it. */
+    function threadBarShows(fold, rootId) {
       const r = fold?.index?.roots.get(rootId);
       if (!r) return false;
-      if (r.root?.movedTo) return true;
-      return r.replies.length > 0 || topicTasks(fold, rootId).length > 0;
+      const f = threadFacts(r);
+      return f.running || (f.count > 0 && !r.together);
     }
 
     /**
-     * The bar under a topic's root in the main timeline: how many replies, who said the latest and what,
-     * the topic's tasks (alive while they work), and a dot when there is something new. It opens the topic.
+     * The link under a message that has a thread, as a chat app has: how many replies, and "replying…"
+     * while the thread answers. The replies are in the chat, quoted; this opens the thread on its own.
      */
-    function TopicBar({ t, m, fold }) {
-      const r = fold.index.roots.get(m.id);
-      const n = r.replies.length;
-      const last = r.last;
-      const who = last ? party(t, last.from) : null;
-      const tasks = topicTasks(fold, m.id).slice(0, 3);
-      const unread = fold.unread?.has(m.id) === true;
+    function ThreadBar({ t, m, fold }) {
+      const f = threadFacts(fold.index.roots.get(m.id));
       const mine = m.from === 'user';
       return h(
         'div',
-        { style: { display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', paddingLeft: mine ? 0 : 40, margin: '3px 0 6px' } },
+        { style: { display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', paddingLeft: mine ? 0 : 40, margin: '3px 0 2px' } },
         h(
-          'div',
-          {
-            role: 'button',
-            tabIndex: 0,
-            className: 'dshb-topicbar dshb-fade',
-            'data-dsh-bots-topic-bar': m.id,
-            'data-unread': unread ? 'true' : undefined,
-            'data-flash': fold.flash === m.id ? 'true' : undefined,
-            title: t('openTopic'),
-            onClick: () => fold.onOpen(m.id),
-            onKeyDown: (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault?.();
-                fold.onOpen(m.id);
-              }
-            },
-          },
-          h(
-            'div',
-            { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
-            h('span', { style: { color: C.label, display: 'inline-flex', flex: 'none' } }, Icon.chat(13)),
-            h('span', { 'data-dsh-bots-topic-count': n, style: { fontWeight: 650, color: C.label, flex: 'none' } }, n === 0 ? t('topicLabel') : t(n === 1 ? 'topicReplyOne' : 'topicReplies', { n })),
-            last && who ? h('span', { style: { color: C.faint, flex: 'none' } }, '·') : null,
-            last && who ? h(PartyAvatar, { p: who, size: 16 }) : null,
-            last && who ? h('span', { style: { fontWeight: 600, color: C.primary, flex: 'none', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, who.name) : null,
-            last ? h('span', { style: { color: C.faint, flex: 'none', fontSize: TINY } }, fmtClock(toMs(last.at))) : null,
-            h('span', { style: { flex: 1 } }),
-            unread ? h('span', { 'data-dsh-bots-topic-unread': m.id, title: t('topicUnread'), style: { width: 8, height: 8, borderRadius: '50%', background: C.error, flex: 'none' } }) : null,
-            h('span', { style: { color: C.faint, display: 'inline-flex', flex: 'none' } }, Icon.arrow(11)),
-          ),
-          last ? h('div', { className: 'dshb-clamp2', 'data-dsh-bots-topic-last': last.id ?? true, style: { color: C.muted, fontSize: SMALL, lineHeight: 1.45, wordBreak: 'break-word' } }, plainPreview(last.text)) : null,
-          tasks.length
-            ? h(
-                'div',
-                { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
-                tasks.map((row) => {
-                  const live = row.stage === 'working' ? liveTask(row.id) ?? (row.activity && typeof row.activity === 'object' ? row.activity : null) : null;
-                  return h(
-                    'button',
-                    {
-                      key: row.id,
-                      type: 'button',
-                      className: 'dshb-topictask',
-                      'data-dsh-bots-topic-task': row.id,
-                      'data-stage': row.stage,
-                      title: t('openTask'),
-                      onClick: (e) => {
-                        e?.stopPropagation?.();
-                        openTicket(row.id);
-                      },
-                    },
-                    h('span', { style: { color: C.muted, display: 'inline-flex', flex: 'none' } }, Icon.tasks(12)),
-                    h(BotFace, { id: row.botId, size: 14 }),
-                    h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, taskTitle(t, row)),
-                    live ? h(LiveChip, { t, a: live }) : h(TaskChip, { t, row }),
-                  );
-                }),
-              )
+          'button',
+          { type: 'button', className: 'dshb-threadbar dshb-fade', 'data-dsh-bots-thread-bar': m.id, title: t('openThread'), onClick: () => fold.onOpen(m.id) },
+          h('span', { style: { display: 'inline-flex', flex: 'none' } }, Icon.chat(12)),
+          h('span', { 'data-dsh-bots-thread-replies': f.count }, f.count === 0 ? t('threadWord') : t(f.count === 1 ? 'threadReplyOne' : 'threadReplies', { n: f.count })),
+          f.running
+            ? h('span', { 'data-dsh-bots-thread-running': m.id, style: { display: 'inline-flex', alignItems: 'center', gap: 4, fontWeight: 500 } }, h('span', { style: { width: 6, height: 6, borderRadius: '50%', background: C.label, animation: 'dshb-blink 1.2s ease-in-out infinite' } }), t('threadRunning'))
             : null,
+          h('span', { style: { display: 'inline-flex', flex: 'none', opacity: 0.7 } }, Icon.arrow(10)),
         ),
       );
     }
-    /** Where a top-level message went when the dispatcher placed it in another topic: a link to that topic. */
-    function MovedBar({ t, m, fold }) {
-      const target = fold.index.byId.get(m.movedTo);
-      const title = target ? excerpt(target.text, 40) : '';
-      const mine = m.from === 'user';
+
+    /** The message a reply quotes, on top of it as a chat app shows a quoted reply: who and a line or two; it opens the thread. */
+    function QuoteLine({ t, q, light = false, onOpen }) {
+      const who = q.from === 'user' && str(q.who) ? { name: str(q.who) } : party(t, q.from);
+      const body = h('span', { className: 'dshb-clamp2' }, h('span', { style: { fontWeight: 600 } }, t('quoteWho', { name: who.name })), plainPreview(q.text));
+      const className = light ? 'dshb-qline dshb-qline-light' : 'dshb-qline';
+      if (!onOpen) return h('div', { className, 'data-dsh-bots-quoted': q.id }, body);
       return h(
-        'div',
-        { style: { display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', paddingLeft: mine ? 0 : 40, margin: '2px 0 6px' } },
-        h(
-          'button',
-          { type: 'button', className: 'dshb-link dshb-moved', 'data-dsh-bots-moved': m.movedTo, title: t('openTopic'), onClick: () => fold.onOpen(m.movedTo) },
-          h('span', { style: { display: 'inline-flex', flex: 'none' } }, Icon.layers(12)),
-          h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title ? t('movedTo', { title }) : t('movedToTopic')),
-          h('span', { style: { display: 'inline-flex', flex: 'none' } }, Icon.arrow(11)),
-        ),
+        'button',
+        {
+          type: 'button',
+          className,
+          'data-dsh-bots-quoted': q.id,
+          title: t('openThread'),
+          onClick: (e) => {
+            e?.stopPropagation?.();
+            onOpen();
+          },
+        },
+        body,
       );
     }
 
     /** A message between two bots (a delegation, a report, a DM), or a scheduled prompt: secondary traffic. */
     const isTraffic = (m) => m?.kind === 'system' || ((m?.kind === 'dm' || m?.kind === 'report') && m.from !== 'user' && m.to !== 'user');
+    /** A bot's message to itself: work it hands itself (or its own report back). The chat leaves it out: to the person it is the bot at work. */
+    const selfTalk = (m) => isTraffic(m) && m.kind !== 'system' && str(m.from) !== '' && m.from === m.to;
     /** How much of what bots say to each other a chat shows (a team setting): 'line' | 'short' | 'full'. */
     function botMessagesLevel() {
       const v = store.state?.display?.botMessages ?? store.settings?.settings?.display?.botMessages;
@@ -1677,7 +1623,7 @@ button.dshb-tline:hover{background:${C.hover}}
       return null;
     }
 
-    function MessageRow({ t, m, botId, grouped, names, onReply, onRetry, moved = false }) {
+    function MessageRow({ t, m, botId, grouped, names, onReply, onRetry, moved = false, quote = null, onQuote }) {
       if (m.kind === 'topic') {
         const at = toMs(m.at);
         return h(
@@ -1721,7 +1667,12 @@ button.dshb-tline:hover{background:${C.hover}}
             'div',
             { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, width: '100%', minWidth: 0 } },
             h(ReplyAction, { t, m, onReply }),
-            h('div', { style: { maxWidth: '78%', minWidth: 0, padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT, opacity: m.local && !m.failed ? 0.8 : 1, boxShadow: m.failed ? `0 0 0 2px ${C.error}` : undefined } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
+            h(
+              'div',
+              { style: { maxWidth: '78%', minWidth: 0, padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT, opacity: m.local && !m.failed ? 0.8 : 1, boxShadow: m.failed ? `0 0 0 2px ${C.error}` : undefined } },
+              quote ? h('div', { style: { marginBottom: 5 } }, h(QuoteLine, { t, q: quote, light: true, onOpen: onQuote ? () => onQuote(m) : null })) : null,
+              h(Clamp, { t, text: m.text, lines: 14, light: true }),
+            ),
           ),
           state,
           h('div', { style: { width: 'min(480px, 78%)', display: 'flex', justifyContent: 'flex-end' } }, h(LinkCards, { t, text: m.text, align: 'flex-end' })),
@@ -1753,10 +1704,12 @@ button.dshb-tline:hover{background:${C.hover}}
                 m.to !== 'user' && to.kind === 'bot' && m.to !== botId ? h('span', { style: { color: C.faint } }, `→ ${to.name}`) : null,
                 h('span', { style: { color: C.faint } }, time),
                 m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, title: t('sentToChannel', { app: place }), 'data-dsh-bots-via': m.via }, `→ ${place}`) : null,
-                report ? h(ReportChip, { t, status: report }) : null,
+                // A finished answer is just the answer; a question or a block says so.
+                report && report !== 'done' ? h(ReportChip, { t, status: report }) : null,
                 notice ? h(StageChip, { t, stage: notice }) : null,
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
               ),
+          quote ? h(QuoteLine, { t, q: quote, onOpen: onQuote ? () => onQuote(m) : null }) : null,
           h('div', { className: 'dshb-reply', 'data-dsh-bots-reply-text': true }, h(Clamp, { t, text: m.text, lines: 24, variant: 'body' })),
           choices.length
             ? h(
@@ -2299,8 +2252,9 @@ button.dshb-tline:hover{background:${C.hover}}
     }
 
     /**
-     * A bot's chat (or every message, without `botId`), polled: `items` oldest first and, per panel topic,
-     * `topics[rootId] = {key, tickets}` (PLAN-0.9 §7.3). With `topic`, only that topic's messages.
+     * A bot's chat (or every message, without `botId`), polled: `items` oldest first (the main timeline)
+     * and, per message with a thread, `threads[rootId]`, its summary (PLAN-0.10 §7.2). With `topic`, one
+     * thread: its root and its replies.
      */
     function useMessages(botId, active = true, topic = '') {
       const [data, setData] = useState(null);
@@ -2320,26 +2274,26 @@ button.dshb-tline:hover{background:${C.hover}}
             if (!alive.current) return;
             if (r && Array.isArray(r.items)) {
               setFailed(false);
-              const topics = r.topics && typeof r.topics === 'object' ? r.topics : {};
-              // Same messages in the same states and the same tasks: keep what is shown (no re-render).
-              const sig = `${r.items.map((m) => `${m?.id}${m?.pending ? '~' : ''}${m?.movedTo ? `>${m.movedTo}` : ''}`).join(',')}|${JSON.stringify(topics)}`;
-              setData((prev) => (prev && prev.sig === sig ? prev : { items: r.items, topics, sig }));
+              // A Host of 0.9 called them topics.
+              const threads = r.threads && typeof r.threads === 'object' ? r.threads : r.topics && typeof r.topics === 'object' ? r.topics : {};
+              // Same messages in the same states and the same threads: keep what is shown (no re-render).
+              const sig = `${r.items.map((m) => `${m?.id}${m?.pending ? '~' : ''}${m?.movedTo ? `>${m.movedTo}` : ''}`).join(',')}|${JSON.stringify(threads)}`;
+              setData((prev) => (prev && prev.sig === sig ? prev : { items: r.items, threads, sig }));
             } else setFailed(true);
           })
           .catch(() => {
             if (alive.current) setFailed(true);
           });
       usePoll(() => (active ? load() : undefined), CHAT_POLL_MS, [botId, active, topic]);
-      return { items: data ? data.items : null, topics: data ? data.topics : {}, failed, reload: load };
+      return { items: data ? data.items : null, threads: data ? data.threads : {}, failed, reload: load };
     }
 
-    // --- panel topics (PLAN-0.9): every top-level message is a topic's root ---------------------
+    // --- threads (PLAN-0.10): a reply to a message, talked over beside the chat --------------------
 
-    /** The topic a message's thread is: the one it was moved into, else its own (a root's is its id), else ''. */
-    const topicOfMsg = (m) => str(m?.movedTo) || str(m?.topic);
-    /** A message is a reply inside topic `root` (moved in, or written there), not the root itself. */
-    const inTopic = (m, root) => Boolean(root) && m?.id !== root && (m?.topic === root || m?.movedTo === root);
-    /** A short excerpt of a message for a quote or a label. */
+    /** The thread a message is in: the one it was put into (0.9), else the root it names (a root of 0.9 names itself), else ''. */
+    const threadOfMsg = (m) => str(m?.movedTo) || (str(m?.topic) && str(m.topic) !== str(m?.id) ? str(m.topic) : '');
+    /** A message is a reply inside thread `root` (put there, or written there), not the root itself. */
+    const inThread = (m, root) => Boolean(root) && m?.id !== root && (m?.topic === root || m?.movedTo === root);
     /** Markdown as a line of plain text, for a preview: no emphasis marks, headings, list markers or link targets. */
     const plainPreview = (text) =>
       str(text)
@@ -2350,23 +2304,29 @@ button.dshb-tline:hover{background:${C.hover}}
         .replace(/(^|[\s(])[*_](\S[^*_]*?)[*_](?=[\s).,!?:;，。！？：；]|$)/g, '$1$2')
         .replace(/\s+/g, ' ')
         .trim();
+    /** A short excerpt of a message for a quote or a label. */
     const excerpt = (text, n = 48) => {
       const line = plainPreview(str(text).split('\n').find((l) => plainPreview(l) !== '') ?? '');
       return [...line].length > n ? `${[...line].slice(0, n - 1).join('').trimEnd()}…` : line;
     };
+    /** One thread's summary as the Host gives it (PLAN-0.10 §7.2), or null. */
+    const summaryOf = (threads, rootId) => {
+      const s = threads && typeof threads === 'object' ? threads[rootId] : null;
+      return s && typeof s === 'object' ? s : null;
+    };
     /**
-     * A chat's messages folded into topics: `main` (what the main timeline shows: messages outside any
-     * topic, and the roots), and per root its replies (oldest first) and its latest activity. A reply whose
-     * root is not among the messages stays in the main timeline, so nothing goes missing.
+     * A chat and its threads. The Host lists the chat as it was said (`items`: a reply in a thread
+     * among the rest, with the message it quotes) and a summary per thread (`threads`). `main`: every
+     * message in order; per root: its replies known here and the Host's summary.
      */
-    function topicIndex(items) {
+    function threadIndex(items, threads = {}) {
       const byId = new Map();
       for (const m of items) if (m && m.id != null) byId.set(m.id, m);
       const roots = new Map();
       const rootOf = (id) => {
         let r = roots.get(id);
         if (!r) {
-          r = { root: byId.get(id), replies: [], lastAt: toMs(byId.get(id)?.at) || 0, last: null, botAt: 0 };
+          r = { root: byId.get(id), replies: [], summary: summaryOf(threads, id) };
           roots.set(id, r);
         }
         return r;
@@ -2374,62 +2334,78 @@ button.dshb-tline:hover{background:${C.hover}}
       const main = [];
       for (const m of items) {
         if (!m) continue;
-        const own = str(m.topic);
-        if (own && own === m.id) {
-          rootOf(m.id);
-          main.push(m);
+        main.push(m);
+        const home = threadOfMsg(m);
+        if (home && home !== m.id) {
+          // What bots said to each other about a thread's tasks is not counted as a reply.
+          if (!isTraffic(m)) rootOf(home).replies.push(m);
+          continue;
         }
-        // A moved root stays where it was and is listed in the topic it went to; a reply only there.
-        const home = str(m.movedTo) || (own && own !== m.id ? own : '');
-        if (home && byId.has(home) && home !== m.id) {
-          const r = rootOf(home);
-          // What bots said to each other about the topic's tasks is shown in the topic, not counted as a reply.
-          if (isTraffic(m)) continue;
-          r.replies.push(m);
-          const at = toMs(m.at) || 0;
-          if (at >= r.lastAt) r.lastAt = at;
-          if (!r.last || at >= (toMs(r.last.at) || 0)) r.last = m;
-          // When a bot (or anyone not you) last said something here: what can be unread.
-          if (m.from !== 'user' && at > r.botAt) r.botAt = at;
-        } else if (!(own && own === m.id)) main.push(m);
+        if (summaryOf(threads, m.id)) rootOf(m.id);
       }
       for (const r of roots.values()) r.replies.sort((a, b) => (toMs(a.at) || 0) - (toMs(b.at) || 0));
+      // A thread whose replies all come right under its root (what bots say to each other aside) reads as the chat itself.
+      const pos = new Map(main.map((m, i) => [m.id, i]));
+      for (const [id, r] of roots) {
+        const at = pos.get(id);
+        let k = 0;
+        let together = at !== undefined;
+        for (let j = (at ?? main.length) + 1; together && j < main.length && k < r.replies.length; j += 1) {
+          if (isTraffic(main[j])) continue;
+          if (main[j].id !== r.replies[k].id) together = false;
+          else k += 1;
+        }
+        r.together = together && k === r.replies.length;
+      }
       return { byId, roots, main };
     }
-    /** Where the "seen" marks of topics live: the browser's storage, or null when there is none (then nothing is unread). */
-    function seenStorage() {
-      try {
-        const s = typeof window !== 'undefined' ? window.localStorage : undefined;
-        return s && typeof s.getItem === 'function' && typeof s.setItem === 'function' ? s : null;
-      } catch {
-        return null;
-      }
+    /**
+     * What a thread's bar shows: how many replies, the latest one (`{from, text, at}`), how many of the
+     * bot's replies are unread, whether it is answering now, and its tasks. The Host's summary, with the
+     * replies sent from here that it has not counted yet.
+     */
+    function threadFacts(r) {
+      const s = r?.summary ?? {};
+      const replies = r?.replies ?? [];
+      const latestHere = replies[replies.length - 1] ?? null;
+      const hostLast = s.last && typeof s.last === 'object' ? { ...s.last, at: s.lastAt } : null;
+      const hostAt = Number(s.lastAt) || 0;
+      const last = latestHere && (toMs(latestHere.at) || 0) >= hostAt ? latestHere : hostLast;
+      const count = Math.max(Number(s.count) || 0, replies.length);
+      const tickets = Array.isArray(s.tickets) ? s.tickets.filter((row) => row && typeof row.id === 'string') : [];
+      return { count, last, lastAt: Math.max(hostAt, toMs(latestHere?.at) || 0), unread: Math.max(0, Number(s.unread) || 0), running: s.running === true, answering: s.answering === true, tickets };
     }
-    const seenKey = (botId) => `dshb:topics-seen:${botId}`;
-    /** The seen marks of a bot's topics (`{rootId: ms}`), `{}` when none were kept yet (`fresh`), or null without storage. */
-    function readSeen(botId) {
-      const s = seenStorage();
-      if (!s) return null;
-      try {
-        const raw = s.getItem(seenKey(botId));
-        if (raw === null || raw === undefined) return { marks: {}, fresh: true };
-        const v = JSON.parse(raw);
-        return { marks: v && typeof v === 'object' && !Array.isArray(v) ? v : {}, fresh: false };
-      } catch {
-        return null;
+    /**
+     * The message a reply in a thread quotes (Bots 0.10): the Host's `quote`, else as the Host picks it
+     * from what is here (one sent from here): the message the person replied to, a bot's the person's
+     * latest message of the thread before it, else the thread's root. Null for a message of the chat itself.
+     */
+    function quoteFor(m, index) {
+      if (m?.quote && typeof m.quote === 'object' && m.quote.id != null) return m.quote;
+      const root = threadOfMsg(m);
+      if (!root) return null;
+      let target = str(m.replyTo) ? index.byId.get(m.replyTo) : null;
+      if (!target && m.from !== 'user') {
+        for (const x of index.roots.get(root)?.replies ?? []) {
+          if (x.id === m.id) break;
+          if (x.from === 'user' && x.kind === 'user') target = x;
+        }
       }
+      target = target || index.byId.get(root);
+      return target ? { id: target.id, from: target.from, text: str(target.text), ...(str(target.who) ? { who: str(target.who) } : {}) } : null;
     }
-    function writeSeen(botId, marks) {
-      const s = seenStorage();
-      if (!s) return;
-      try {
-        // Only the newest topics are worth keeping.
-        const keep = Object.entries(marks).sort((a, b) => b[1] - a[1]).slice(0, 400);
-        s.setItem(seenKey(botId), JSON.stringify(Object.fromEntries(keep)));
-      } catch {
-        // A full or blocked storage: unread marks are a convenience.
-      }
+    /**
+     * Whether a message of the chat shows its quote: a reply the person picked always does; any other
+     * message of a thread does unless the message above it is of the same thread (or is its root).
+     */
+    function chatQuote(m, prev, index) {
+      const root = threadOfMsg(m);
+      if (!root) return null;
+      const picked = m.from === 'user' && (str(m.replyTo) !== '' || (str(m.topic) !== '' && str(m.topic) !== str(m.id)));
+      if (!picked && prev && (threadOfMsg(prev) || prev.id) === root) return null;
+      return quoteFor(m, index);
     }
+
 
     /** A first chat: the bot's bio and three opening messages to start from. */
     function ChatEmpty({ t, bot, onPick }) {
@@ -2628,20 +2604,6 @@ button.dshb-tline:hover{background:${C.hover}}
       const extra = local.filter((m) => !ids.has(m.id));
       return extra.length ? [...items, ...extra] : items;
     }
-    /** Whether a topic's bar is on screen in the scrolling `box` (no box, no DOM: not on screen). */
-    function barOnScreen(box, id) {
-      if (!box || typeof box.querySelector !== 'function' || typeof box.getBoundingClientRect !== 'function') return false;
-      let el = null;
-      try {
-        el = box.querySelector(`[data-dsh-bots-topic-bar="${String(id).replace(/["\\]/g, '\\$&')}"]`);
-      } catch {
-        el = null;
-      }
-      if (!el || typeof el.getBoundingClientRect !== 'function') return false;
-      const a = el.getBoundingClientRect();
-      const b = box.getBoundingClientRect();
-      return a.bottom > b.top + 8 && a.top < b.bottom - 8;
-    }
     /** The line above a composer naming the message a reply answers, with a way to drop it. */
     function QuoteBar({ t, m, onCancel, attr = 'data-dsh-bots-quote' }) {
       const who = party(t, m.from);
@@ -2656,103 +2618,57 @@ button.dshb-tline:hover{background:${C.hover}}
     }
 
     function ChatTab({ t, bot, env, toast }) {
-      const { items: listed, topics, failed, reload } = useMessages(bot.id);
+      const { items: listed, threads, failed, reload } = useMessages(bot.id);
       const [text, setText] = useState('');
       // Messages sent from here: shown at once (queued), then the Host's own copy; a failed one stays to be sent again.
       const [local, setLocal] = useState([]);
-      // The message the main composer replies to, the topic open beside the chat, the bar to point out.
-      const [quote, setQuote] = useState(null);
+      // The thread open beside the chat; the message the next one replies to (quoted above the composer).
       const [open, setOpen] = useState('');
-      const [flash, setFlash] = useState('');
-      // Which topics were read up to when (null: no storage, so nothing is unread).
-      const [seen, setSeen] = useState(() => readSeen(bot.id));
-      const [offscreen, setOffscreen] = useState('');
-      const offscreenRef = useRef('');
-      const measuring = useRef(false);
+      const [quote, setQuote] = useState(null);
+      const input = useRef(null);
       // The quick poll may know before the state does that it started or stopped.
       const live = liveBot(bot);
       const running = live.status === 'running' || Boolean(live.activity);
       const items = mergeLocal(listed, local);
-      const index = topicIndex(items ?? []);
-      const lastMain = index.main[index.main.length - 1];
-      const thread = useStickToBottom(`${index.main.length}:${lastMain?.id ?? ''}:${running}`);
-      const [topicBusy, setTopicBusy] = useState(false);
-
-      // The Host listed what was sent from here: its copies take over.
-      useEffect(() => {
-        if (!Array.isArray(listed) || !local.some((m) => !m.failed)) return;
-        const ids = new Set(listed.map((m) => m?.id));
-        if (local.some((m) => ids.has(m.id))) setLocal((list) => list.filter((m) => !ids.has(m.id)));
-      }, [listed]);
-      // First time here: what is already there counts as read; only replies from now on are new.
-      useEffect(() => {
-        if (!seen || !seen.fresh || !Array.isArray(listed)) return;
-        const marks = {};
-        for (const [id, r] of index.roots) marks[id] = r.lastAt;
-        writeSeen(bot.id, marks);
-        setSeen({ marks, fresh: false });
-      }, [listed === null, seen?.fresh]);
-      const markSeen = (id, at) => {
-        if (!id || !at) return;
-        setSeen((prev) => {
-          if (!prev || (Number(prev.marks[id]) || 0) >= at) return prev;
-          const marks = { ...prev.marks, [id]: at };
-          writeSeen(bot.id, marks);
-          return { marks, fresh: false };
-        });
-      };
-      // A topic with a reply you have not seen: the latest reply is a bot's, newer than when you last looked.
-      const unread = new Set();
-      if (seen && !seen.fresh) {
-        for (const [id, r] of index.roots) {
-          if (id === open || !r.botAt || r.root?.movedTo) continue;
-          const mark = Number(seen.marks[id]) || toMs(r.root?.at) || 0;
-          if (r.botAt > mark) unread.add(id);
+      const index = threadIndex(items ?? [], threads);
+      // A thread answering now, or work the bot handed itself: the chat shows the bot at work at its end, where the answer will be.
+      const answering = !running && [...index.roots.values()].some((r) => threadFacts(r).answering);
+      let ownWork = null;
+      if (!running) {
+        for (let i = index.main.length - 1; i >= 0 && !ownWork; i -= 1) {
+          const m = index.main[i];
+          if (selfTalk(m) && m.from === bot.id && m.kind === 'dm' && !messageReport(m)) ownWork = liveTask(messageTicket(m));
         }
       }
-      const unreadIds = [...unread].sort((a, b) => index.roots.get(b).botAt - index.roots.get(a).botAt);
-      const unreadKey = unreadIds.join(',');
-      const measure = () => {
-        const box = thread.box.current;
-        const key = unreadIds.filter((id) => !barOnScreen(box, id)).join(',');
-        if (key !== offscreenRef.current) {
-          offscreenRef.current = key;
-          setOffscreen(key);
-        }
+      const lastMain = index.main[index.main.length - 1];
+      const thread = useStickToBottom(`${index.main.length}:${lastMain?.id ?? ''}:${running}:${answering}:${Boolean(ownWork)}`);
+      const [topicBusy, setTopicBusy] = useState(false);
+      // The chat the panel shows comes back to it when Harness closes the panel over a new topic.
+      store.lastChat = bot.id;
+      /** The Host listed these (the chat, or the open thread): its copies take over from what was sent from here. */
+      const dropListed = (list) => {
+        if (!Array.isArray(list) || !local.some((m) => !m.failed)) return;
+        const ids = new Set(list.map((m) => m?.id));
+        if (local.some((m) => !m.failed && ids.has(m.id))) setLocal((rows) => rows.filter((m) => m.failed || !ids.has(m.id)));
       };
-      useEffect(() => {
-        measure();
-      }, [unreadKey]);
-      const measureSoon = () => {
-        if (measuring.current) return;
-        measuring.current = true;
-        const run = () => {
-          measuring.current = false;
-          measure();
-        };
-        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
-        else setTimeout(run, 60);
+      useEffect(() => dropListed(listed), [listed]);
+      const openThread = (id) => {
+        if (id) setOpen(id);
       };
-      const hidden = offscreen ? offscreen.split(',').filter((id) => unread.has(id)) : [];
-      const pointAt = (id) => {
+      // Reply quotes the message above the composer, as a chat app does; what is sent then answers it in its thread.
+      const replyTo = (m) => {
+        setQuote(m);
         try {
-          const el = thread.box.current?.querySelector?.(`[data-dsh-bots-topic-bar="${String(id).replace(/["\\]/g, '\\$&')}"]`);
-          el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+          input.current?.focus?.();
         } catch {
-          // Scrolling is a nicety.
+          // Focus is a nicety.
         }
-        setFlash(id);
-        setTimeout(() => setFlash((f) => (f === id ? '' : f)), 1800);
-        measureSoon();
-      };
-      const openTopic = (id) => {
-        if (!id) return;
-        setOpen(id);
-        markSeen(id, index.roots.get(id)?.lastAt ?? Date.now());
       };
 
       const startTopic = () => {
         setTopicBusy(true);
+        // Starting a topic archives the last conversation, and Harness closes the panel over it: it comes back.
+        store.rotatingAt = Date.now();
         postJson('topic/new', { id: bot.id })
           .then((r) => {
             if (r?.ok) {
@@ -2761,18 +2677,23 @@ button.dshb-tline:hover{background:${C.hover}}
               void refreshState();
             } else toast(r?.reason || t('actionFailed'), 'error');
           })
-          .finally(() => setTopicBusy(false));
+          .finally(() => {
+            setTopicBusy(false);
+            env.keepPanel?.(bot.id);
+          });
       };
       /**
-       * Send `body` (a reply in a topic with `replyTo`): it shows at once as queued, the Host's copy
-       * replaces it, and a failure stays with a way to send again. Resolves `{ok, topic}`.
+       * Send `body` to the chat, or with `replyTo` into a thread (`root`: the thread's root, when known):
+       * it shows at once as queued, the Host's copy replaces it, and a failure stays with a way to send
+       * again. Resolves `{ok, topic}` (the thread it went into, '' for the chat).
        */
-      const sendText = (body, replyTo = '', again = '', topicHint = '') => {
+      const sendText = (body, replyTo = '', again = '', root = '') => {
         const id = again || `local-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
         const target = replyTo ? index.byId.get(replyTo) : null;
-        // The topic it goes into (the Host says for sure): the pane's own, else the one of the message it answers.
-        const topic = replyTo ? topicHint || (target ? topicOfMsg(target) || target.id : replyTo) : id;
-        const row = { id, local: true, pending: true, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, at: Date.now(), topic, ...(replyTo ? { replyTo } : {}) };
+        // The thread it goes into (the Host says for sure): the pane's own, else the thread of the message it answers, else that message's.
+        const topic = replyTo ? root || (target ? threadOfMsg(target) || target.id : replyTo) : '';
+        const quoted = target ? { id: target.id, from: target.from, text: str(target.text), ...(str(target.who) ? { who: str(target.who) } : {}) } : null;
+        const row = { id, local: true, pending: true, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, at: Date.now(), ...(topic ? { topic } : {}), ...(replyTo && replyTo !== topic ? { replyTo } : {}), ...(quoted ? { quote: quoted } : {}) };
         setLocal((list) => [...list.filter((m) => m.id !== id), row]);
         return postJson('send', { to: bot.id, text: body, ...(replyTo ? { replyTo } : {}) }).then((r) => {
           if (r?.ok) {
@@ -2780,7 +2701,7 @@ button.dshb-tline:hover{background:${C.hover}}
             setLocal((list) => list.flatMap((m) => (m.id !== id ? [m] : msg ? [{ ...msg, pending: msg.pending ?? true, chat: msg.chat ?? bot.id }] : [])));
             void reload();
             void refreshState();
-            return { ok: true, topic: msg ? topicOfMsg(msg) || topic : topic };
+            return { ok: true, topic: msg ? str(msg.topic) || topic : topic };
           }
           setLocal((list) => list.map((m) => (m.id === id ? { ...m, pending: false, failed: true } : m)));
           toast(r?.reason || t('sendFailed'), 'error');
@@ -2789,27 +2710,24 @@ button.dshb-tline:hover{background:${C.hover}}
       };
       const retry = (m) => {
         if (!m?.local) return;
-        void sendText(str(m.text), str(m.replyTo), m.id, m.replyTo ? str(m.topic) : '');
+        const root = threadOfMsg(m);
+        void sendText(str(m.text), root ? str(m.replyTo) || root : '', m.id, root);
       };
       const send = () => {
         const body = text.trim();
         if (!body) return;
-        const replyTo = quote?.id ?? '';
+        const to = quote?.id ?? '';
         setText('');
         setQuote(null);
-        if (!replyTo) thread.stick();
-        void sendText(body, replyTo).then((r) => {
-          // A reply went into its topic: open it there, where the answer will come.
-          if (r.ok && replyTo) openTopic(r.topic);
-          else if (!replyTo) thread.stick();
-        });
+        thread.stick();
+        void sendText(body, to).then(() => thread.stick());
       };
       // A pasted link previews above the composer, as it will in the thread.
       const previewUrl = linksIn(useDebounced(text, 400))[0] ?? '';
-      const fold = { index, topics, onOpen: openTopic, unread, flash };
+      const fold = { index, onOpen: openThread };
       return h(
         'div',
-        { className: 'dshb-chatwrap', 'data-dsh-bots-chat': bot.id, 'data-topic-open': open || undefined },
+        { className: 'dshb-chatwrap', 'data-dsh-bots-chat': bot.id, 'data-thread-open': open || undefined },
         h(
           'div',
           { className: 'dshb-chatmain' },
@@ -2819,10 +2737,7 @@ button.dshb-tline:hover{background:${C.hover}}
               className: 'dshb-scroll',
               'data-dsh-bots-thread': bot.id,
               ref: thread.box,
-              onScroll: (e) => {
-                thread.onScroll(e);
-                if (unreadIds.length) measureSoon();
-              },
+              onScroll: thread.onScroll,
               style: { flex: 1, padding: '6px 24px' },
             },
             h(
@@ -2835,29 +2750,18 @@ button.dshb-tline:hover{background:${C.hover}}
                     items,
                     botId: bot.id,
                     fold,
-                    onReply: (m) => setQuote(m),
+                    onReply: replyTo,
                     onRetry: retry,
+                    quoteOf: (m, prev) => chatQuote(m, prev, index),
+                    onQuote: (m) => openThread(threadOfMsg(m) || m.id),
                     empty: h(ChatEmpty, { t, bot, onPick: setText }),
                   }),
-              running ? h('div', { style: { maxWidth: 880, margin: '0 auto' } }, h(WorkingRow, { t, bot, a: live.activity, attr: bot.id })) : null,
+              running || answering || ownWork ? h('div', { style: { maxWidth: 880, margin: '0 auto' } }, h(WorkingRow, { t, bot, a: running ? live.activity : ownWork, attr: bot.id })) : null,
             ),
           ),
           h(
             'div',
             { style: { padding: '10px 24px 16px', borderTop: `1px solid ${C.border1}`, background: C.base, position: 'relative' } },
-            hidden.length
-              ? h(
-                  'div',
-                  { className: 'dshb-pillrow' },
-                  h(
-                    'button',
-                    { type: 'button', className: 'dshb-pill', 'data-dsh-bots-new-replies': hidden.length, onClick: () => pointAt(hidden[0]) },
-                    h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: C.error, flex: 'none' } }),
-                    hidden.length === 1 ? t('newReplyOne') : t('newReplies', { n: hidden.length }),
-                    h('span', { style: { display: 'inline-flex' } }, Icon.chevron(11)),
-                  ),
-                )
-              : null,
             h(
               'div',
               { style: { maxWidth: 880, margin: '0 auto' } },
@@ -2873,15 +2777,19 @@ button.dshb-tline:hover{background:${C.hover}}
                   { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
                   h('textarea', {
                     'data-dsh-bots-composer': true,
+                    ref: input,
                     value: text,
                     rows: Math.min(8, Math.max(1, text.split('\n').length)),
-                    placeholder: quote ? t('topicComposer') : t('composer', { handle: bot.handle }),
+                    placeholder: t('composer', { handle: bot.handle }),
                     onChange: (e) => setText(e.target.value),
                     onKeyDown: (e) => {
                       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
                         e.preventDefault();
                         send();
-                      } else if (e.key === 'Escape' && quote) setQuote(null);
+                      } else if (e.key === 'Escape' && quote) {
+                        e.stopPropagation?.();
+                        setQuote(null);
+                      }
                     },
                     style: { flex: 1, minWidth: 0, minHeight: 32, maxHeight: 200, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '6px 8px' },
                   }),
@@ -2901,35 +2809,61 @@ button.dshb-tline:hover{background:${C.hover}}
             ),
           ),
         ),
-        // Last in the tree: the topic beside the chat (over it when the panel is narrow).
-        open ? h(ThreadPane, { key: open, t, bot, rootId: open, base: index, baseTopics: topics, local, onClose: () => setOpen(''), onSend: sendText, onRetry: retry, onSeen: markSeen }) : null,
+        // Last in the tree: the thread beside the chat (over it when the panel is narrow).
+        open
+          ? h(ThreadPane, {
+              key: open,
+              t,
+              bot,
+              rootId: open,
+              base: index,
+              local,
+              onClose: () => setOpen(''),
+              onSend: sendText,
+              onRetry: retry,
+              onSeen: () => void reload(),
+              onListed: dropListed,
+            })
+          : null,
       );
     }
 
     /**
-     * One topic beside the chat: its root, every reply (and the messages the dispatcher moved into it),
-     * its tasks while they run, and a composer whose messages go into this topic (or answer one of its
-     * messages). It polls the topic on its own, starting from what the chat already shows.
+     * One thread beside the chat (PLAN-0.10 §7.7): its root on top, the replies under it (and its tasks
+     * while they run), and a composer whose messages go into this thread, answering its root or one of
+     * its messages; a thread has no threads of its own. It polls the thread on its own, starting from
+     * what the chat already knows, and tells the Host when its new replies have been read.
      */
-    function ThreadPane({ t, bot, rootId, base, baseTopics, local, onClose, onSend, onRetry, onSeen }) {
-      const { items, topics } = useMessages(bot.id, true, rootId);
+    function ThreadPane({ t, bot, rootId, base, local, onClose, onSend, onRetry, onSeen, onListed }) {
+      const { items, threads, reload } = useMessages(bot.id, true, rootId);
       const [text, setText] = useState('');
       const [quote, setQuote] = useState(null);
-      const fromBase = [base.byId.get(rootId), ...(base.roots.get(rootId)?.replies ?? [])].filter(Boolean);
-      const list = mergeLocal(Array.isArray(items) && items.length ? items : fromBase, local) ?? [];
+      const seenAsked = useRef('');
+      const known = base.roots.get(rootId);
+      const fromBase = [base.byId.get(rootId), ...(known?.replies ?? [])].filter(Boolean);
+      // What the thread lists, with what the chat already knew of it (sent from here, rows of 0.9) and what is being sent.
+      const list = mergeLocal(mergeLocal(Array.isArray(items) && items.length ? items : fromBase, fromBase), local) ?? [];
       const root = list.find((m) => m?.id === rootId) ?? base.byId.get(rootId) ?? null;
       const seenIds = new Set();
       const replies = list
-        .filter((m) => inTopic(m, rootId) && !seenIds.has(m.id) && seenIds.add(m.id))
+        .filter((m) => inThread(m, rootId) && !seenIds.has(m.id) && seenIds.add(m.id))
         .sort((a, b) => (toMs(a.at) || 0) - (toMs(b.at) || 0));
-      const shown = root ? [root, ...replies] : replies;
-      const lastAt = Math.max(toMs(root?.at) || 0, ...replies.map((m) => toMs(m.at) || 0));
-      const tasks = topicTasks({ topics: Array.isArray(items) ? topics : baseTopics }, rootId);
+      const summary = Array.isArray(items) ? summaryOf(threads, rootId) : known?.summary ?? null;
+      const facts = threadFacts({ summary, replies: [] });
       const stick = useStickToBottom(`${replies.length}:${replies[replies.length - 1]?.id ?? ''}`);
-      // Open means read: what arrives while it is open is read too.
       useEffect(() => {
-        onSeen?.(rootId, lastAt);
-      }, [rootId, lastAt]);
+        if (Array.isArray(items)) onListed?.(items);
+      }, [items]);
+      // Open, on screen and loaded: its new replies are read (once per state of the thread).
+      const seenKey = `${rootId}:${facts.lastAt}:${facts.unread}`;
+      useEffect(() => {
+        if (!Array.isArray(items) || facts.unread <= 0 || !visible() || seenAsked.current === seenKey) return;
+        seenAsked.current = seenKey;
+        void postJson('threads/seen', { bot: bot.id, root: rootId }).then(() => {
+          void reload();
+          onSeen?.();
+        });
+      }, [seenKey, items === null]);
       const send = () => {
         const body = text.trim();
         if (!body) return;
@@ -2937,9 +2871,13 @@ button.dshb-tline:hover{background:${C.hover}}
         setText('');
         setQuote(null);
         stick.stick();
-        void onSend(body, replyTo, '', rootId).then(() => stick.stick());
+        void onSend(body, replyTo, '', rootId).then(() => {
+          stick.stick();
+          void reload();
+        });
       };
       const count = replies.filter((m) => !isTraffic(m)).length;
+      const pick = (m) => setQuote(m.id === rootId ? null : m);
       return h(
         'aside',
         {
@@ -2956,30 +2894,46 @@ button.dshb-tline:hover{background:${C.hover}}
           h(
             'div',
             { style: { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 } },
-            h('span', { style: { fontWeight: 700, fontSize: SMALL } }, t('topicTitle')),
+            h('span', { style: { fontWeight: 700, fontSize: SMALL } }, t('threadPaneTitle')),
             h('span', { 'data-dsh-bots-thread-title': true, style: { fontSize: TINY, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, root ? excerpt(root.text, 80) : ''),
           ),
-          h('button', { type: 'button', className: 'dshb-btn dshb-btn-ghost dshb-btn-sm dshb-btn-icon', 'data-dsh-bots-thread-close': rootId, title: t('closeTopic'), 'aria-label': t('closeTopic'), onClick: onClose }, Icon.close(14)),
+          h('button', { type: 'button', className: 'dshb-btn dshb-btn-ghost dshb-btn-sm dshb-btn-icon', 'data-dsh-bots-thread-close': rootId, title: t('closeThread'), 'aria-label': t('closeThread'), onClick: onClose }, Icon.close(14)),
         ),
-        tasks.length ? h('div', { 'data-dsh-bots-thread-tasks': tasks.length, style: { padding: '6px 10px', borderBottom: `1px solid ${C.border1}`, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '32%', overflow: 'auto' } }, tasks.map((row) => h(TaskRow, { key: row.id, t, row }))) : null,
+        facts.tickets.length ? h('div', { 'data-dsh-bots-thread-tasks': facts.tickets.length, style: { padding: '6px 10px', borderBottom: `1px solid ${C.border1}`, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '32%', overflow: 'auto' } }, facts.tickets.map((row) => h(TaskRow, { key: row.id, t, row }))) : null,
         h(
           'div',
           { className: 'dshb-scroll', 'data-dsh-bots-thread-body': rootId, ref: stick.box, onScroll: stick.onScroll, style: { flex: 1, padding: '4px 16px 12px' } },
           h(
             'div',
             { ref: stick.content },
-            shown.length
+            root ? h(MessageList, { t, items: [root], botId: bot.id, onReply: pick, onRetry, empty: null }) : null,
+            h(
+              'div',
+              { className: 'dshb-threaddiv', 'data-dsh-bots-thread-count': count },
+              h('span', { className: 'dshb-threaddiv-line' }),
+              h('span', { style: { flex: 'none', maxWidth: '80%', textAlign: 'center' } }, count ? t(count === 1 ? 'threadReplyOne' : 'threadReplies', { n: count }) : t('threadEmpty')),
+              h('span', { className: 'dshb-threaddiv-line' }),
+            ),
+            replies.length
               ? h(MessageList, {
                   t,
-                  items: shown,
+                  items: replies,
                   botId: bot.id,
-                  onReply: (m) => setQuote(m.id === rootId ? null : m),
+                  onReply: pick,
                   onRetry,
                   movedIn: (m) => m.movedTo === rootId && m.id !== rootId,
+                  // In the thread the root goes without saying: a reply quotes another message of it only.
+                  quoteOf: (m) => {
+                    const to = str(m.replyTo);
+                    if (!to || to === rootId || m.from !== 'user') return null;
+                    if (m.quote?.id === to) return m.quote;
+                    const target = list.find((x) => x?.id === to);
+                    return target ? { id: target.id, from: target.from, text: str(target.text), ...(str(target.who) ? { who: str(target.who) } : {}) } : null;
+                  },
                   empty: null,
                 })
               : null,
-            h('div', { 'data-dsh-bots-thread-count': count, style: { fontSize: TINY, color: C.faint, textAlign: 'center', padding: '10px 0 0' } }, count ? t(count === 1 ? 'topicReplyOne' : 'topicReplies', { n: count }) : t('topicEmpty')),
+            facts.running ? h('div', { 'data-dsh-bots-thread-working': rootId, style: { fontSize: TINY, color: C.label, padding: '6px 0 0 40px' } }, t('threadRunning')) : null,
           ),
         ),
         h(
@@ -2996,7 +2950,7 @@ button.dshb-tline:hover{background:${C.hover}}
                 'data-dsh-bots-thread-composer': rootId,
                 value: text,
                 rows: Math.min(6, Math.max(1, text.split('\n').length)),
-                placeholder: t('topicComposer'),
+                placeholder: t('threadComposer'),
                 onChange: (e) => setText(e.target.value),
                 onKeyDown: (e) => {
                   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
@@ -3685,6 +3639,20 @@ button.dshb-tline:hover{background:${C.hover}}
     }
 
     /** Once, after an upgrade moved an existing team to router mode: what changed and where to switch back. */
+    /** The Bots the Host runs, as its state says (`botsVersion`; a Host that names it `version` as a string too), or ''. */
+    const hostVersion = (state) => {
+      const v = state?.botsVersion ?? state?.version;
+      return typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v.trim()) ? v.trim() : '';
+    };
+    /** The window reloaded after an update but Harness still runs the Bots it started with: say how to finish. */
+    function VersionBanner({ t, server }) {
+      return h(
+        'div',
+        { role: 'status', 'data-dsh-bots-version-stale': server, className: 'dshb-fade', style: { display: 'flex', alignItems: 'center', gap: 10, margin: '12px 24px 0', padding: '9px 14px', borderRadius: 12, border: `1px solid ${tint(C.warn, 45)}`, background: tint(C.warn, 9), fontSize: SMALL, lineHeight: 1.5 } },
+        h('span', { style: { color: C.warn, display: 'inline-flex', flex: 'none' } }, Icon.alert(15)),
+        h('span', { style: { flex: 1, minWidth: 0 } }, t('versionStale', { server, client: BOTS_VERSION })),
+      );
+    }
     function RouterNoticeBanner({ t, onOpenDispatcher, onDismiss }) {
       return h(
         'div',
@@ -4060,6 +4028,8 @@ button.dshb-tline:hover{background:${C.hover}}
       const isPrimary = bot.role === 'primary' || bot.id === store.state?.primaryId;
       const routing = isPrimary && routerActiveOf();
       const routerDeny = new Set(routing ? routerDenyOf(catalog) : []);
+      // In a team, Harness's sub-agents are off for the dispatcher: its teammates help instead (the other bots keep theirs).
+      const teamDeny = new Set(isPrimary && Array.isArray(catalog?.teamDeny) ? catalog.teamDeny.map(String) : []);
       const routerAllow = new Set(draft.routerAllow);
       const routerBlocked = (names) => names.filter((x) => routerDeny.has(x) && !routerAllow.has(x));
       const inEffect = routing ? new Set([...draft.deny, ...routerBlocked([...routerDeny])]) : denied;
@@ -4150,9 +4120,10 @@ button.dshb-tline:hover{background:${C.hover}}
                     'div',
                     { 'data-dsh-bots-abilities': true, style: { display: 'flex', flexDirection: 'column', border: `1px solid ${C.border1}`, borderRadius: 12, overflow: 'hidden', background: C.layer1 } },
                     abilities.map((ab, i) => {
-                      const on = abilityOn(ab, inEffect);
+                      const teamOff = ab.available.length > 0 && ab.available.every((x) => teamDeny.has(x));
+                      const on = !teamOff && abilityOn(ab, inEffect);
                       const warn = ab.risky && on;
-                      const gated = ab.available.filter((x) => routerDeny.has(x));
+                      const gated = teamOff ? [] : ab.available.filter((x) => routerDeny.has(x));
                       const blocked = routerBlocked(gated);
                       const whole = gated.length > 0 && gated.length === ab.available.length;
                       return h(
@@ -4167,6 +4138,7 @@ button.dshb-tline:hover{background:${C.hover}}
                             { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
                             h('span', { style: { fontWeight: 600, color: on ? C.primary : C.muted } }, pick(ab.name, lang)),
                             ab.risky ? h(Badge, { color: '#d97706' }, Icon.alert(10), t('risky')) : null,
+                            teamOff ? h(Badge, { color: C.muted, title: t('teamOffHint'), 'data-dsh-bots-team-off': ab.id }, t('teamOff')) : null,
                             gated.length
                               ? blocked.length
                                 ? h(Badge, { color: C.muted, title: blocked.join(', '), 'data-dsh-bots-router-off': ab.id }, t(whole ? 'routerOff' : 'routerPartOff'))
@@ -4179,7 +4151,7 @@ button.dshb-tline:hover{background:${C.hover}}
                           h('span', { style: { fontSize: TINY, color: C.muted } }, pick(ab.description, lang)),
                         ),
                         h('span', { className: 'dshb-mono', title: ab.available.join(', '), style: { fontSize: 11, color: C.faint, flex: 'none' } }, t('nTools', { n: ab.available.length })),
-                        h(Switch, { on, title: pick(ab.name, lang), onChange: (v) => set(gated.length ? toggleRouterAbility(draft, ab, v, routerDeny) : { deny: toggleAbility(draft.deny, ab, v) }), 'data-dsh-bots-ability-switch': ab.id }),
+                        h(Switch, { on, disabled: teamOff, title: teamOff ? t('teamOffHint') : pick(ab.name, lang), onChange: (v) => set(gated.length ? toggleRouterAbility(draft, ab, v, routerDeny) : { deny: toggleAbility(draft.deny, ab, v) }), 'data-dsh-bots-ability-switch': ab.id }),
                       );
                     }),
                   ),
@@ -5896,7 +5868,7 @@ button.dshb-tline:hover{background:${C.hover}}
       else if (tab === 'skills') body = h(SkillsTab, { key: bot.id, t, bot, toast, catalog, setTab, env });
       else if (tab === 'schedules') body = h(SchedulesTab, { key: bot.id, t, bot, toast, catalog });
       else if (tab === 'apps') body = h(AppsTab, { key: bot.id, t, bot, toast, catalog });
-      else if (tab === 'memory') body = h(MemoryTab, { key: bot.id, t, bot, toast, onSettings });
+      else if (tab === 'memory') body = h(MemoryTab, { key: bot.id, t, bot, env, toast, onSettings });
       else body = h(ChatTab, { key: bot.id, t, bot, env, toast });
       return h(
         'div',
@@ -6538,13 +6510,16 @@ button.dshb-tline:hover{background:${C.hover}}
     }
     const memModelText = (t, m) => (m ? `${m.provider} · ${m.model}` : t('botsOwnModel'));
 
-    function MemoryTab({ t, bot, toast, onSettings }) {
+    function MemoryTab({ t, bot, env, toast, onSettings }) {
       const { data, reload } = useJson(`memory?bot=${encodeURIComponent(bot.id)}`, 15_000);
       const [busy, setBusy] = useState(false);
       const name = bot.name || `@${bot.handle}`;
       const topic = data?.topic;
       const startTopic = () => {
         setBusy(true);
+        // Harness may close the panel over the conversation this archives: it comes back on this bot (see ChatTab).
+        store.rotatingAt = Date.now();
+        store.lastChat = bot.id;
         postJson('topic/new', { id: bot.id })
           .then((r) => {
             if (r?.ok) {
@@ -6553,7 +6528,10 @@ button.dshb-tline:hover{background:${C.hover}}
               void refreshState();
             } else toast(r?.reason || t('actionFailed'), 'error');
           })
-          .finally(() => setBusy(false));
+          .finally(() => {
+            setBusy(false);
+            env?.keepPanel?.(bot.id);
+          });
       };
       return h(
         'div',
@@ -7520,6 +7498,7 @@ button.dshb-tline:hover{background:${C.hover}}
         h(
           'div',
           { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', minHeight: 0 } },
+          hostVersion(s.state) && hostVersion(s.state) !== BOTS_VERSION ? h(VersionBanner, { t, server: hostVersion(s.state) }) : null,
           !noticeGone && routerNotice.pending(s.state)
             ? h(RouterNoticeBanner, {
                 t,
@@ -7919,20 +7898,18 @@ button.dshb-tline:hover{background:${C.hover}}
         replyAction: 'Reply',
         replyingTo: 'Replying to {name}',
         cancelReply: 'Cancel the reply',
-        topicLabel: 'Topic',
-        topicTitle: 'Topic',
-        topicReplyOne: '1 reply',
-        topicReplies: '{n} replies',
-        topicEmpty: 'No replies yet.',
-        topicComposer: 'Reply in this topic',
-        topicUnread: 'New replies',
-        openTopic: 'Open the topic',
-        closeTopic: 'Close the topic',
-        movedTo: 'Put into “{title}”',
-        movedToTopic: 'Put into another topic',
-        movedIn: 'Moved into this topic',
-        newReplyOne: 'A topic has a new reply',
-        newReplies: '{n} topics have new replies',
+        threadWord: 'Thread',
+        threadPaneTitle: 'Thread',
+        threadReplyOne: '1 reply',
+        threadReplies: '{n} replies',
+        threadEmpty: 'No replies yet. Replying here quotes this message',
+        quoteWho: '{name}: ',
+        threadComposer: 'Reply in this thread',
+        threadRunning: 'Replying…',
+        openThread: 'Open the thread',
+        closeThread: 'Close the thread',
+        movedIn: 'Moved into this thread',
+        versionStale: 'Harness still runs Bots {server}; this page is {client}. Quit and reopen Harness to finish the update.',
         msgPending: 'Queued',
         msgPendingHint: 'Delivered; the bot takes it as soon as it finishes its current step.',
         msgFailed: 'Not sent',
@@ -8526,6 +8503,8 @@ button.dshb-tline:hover{background:${C.hover}}
         routerWaiting: 'Router mode starts once the team has another bot; until then {name} does the work itself.',
         abilitiesRouterHint: 'What {name} can do with the Harness’s built-in tools. In Router mode it does not run commands, write files, use sub-agents, draw or make Office files; turn one back on below if it needs it.',
         routerOff: 'Off in Router mode',
+        teamOff: 'Off for the dispatcher',
+        teamOffHint: 'The dispatcher hands work in parallel to its teammates, so the panel shows it as their tasks. The other bots keep sub-agents.',
         routerPartOff: 'Partly off in Router mode',
         routerAllowed: 'On in Router mode',
         routerAllowBack: 'Turn back on',
@@ -8817,20 +8796,18 @@ button.dshb-tline:hover{background:${C.hover}}
         replyAction: '回复',
         replyingTo: '回复 {name}',
         cancelReply: '取消回复',
-        topicLabel: '话题',
-        topicTitle: '话题',
-        topicReplyOne: '1 条回复',
-        topicReplies: '{n} 条回复',
-        topicEmpty: '还没有回复。',
-        topicComposer: '在话题里回复',
-        topicUnread: '有新回复',
-        openTopic: '打开话题',
-        closeTopic: '关闭话题',
-        movedTo: '已归入「{title}」',
-        movedToTopic: '已归入另一个话题',
-        movedIn: '归入此话题',
-        newReplyOne: '1 个话题有新回复',
-        newReplies: '{n} 个话题有新回复',
+        threadWord: '讨论串',
+        threadPaneTitle: '讨论串',
+        threadReplyOne: '1 条回复',
+        threadReplies: '{n} 条回复',
+        threadEmpty: '还没有回复。在这里回复会引用这条消息',
+        quoteWho: '{name}：',
+        threadComposer: '在讨论串里回复',
+        threadRunning: '正在回复…',
+        openThread: '打开讨论串',
+        closeThread: '关闭讨论串',
+        movedIn: '归入此讨论串',
+        versionStale: 'Harness 里运行的还是 Bots {server}，界面是 {client}。退出并重新打开 Harness 后生效。',
         msgPending: '排队中',
         msgPendingHint: '已送达，bot 做完手头这一步就会看到。',
         msgFailed: '发送失败',
@@ -9308,7 +9285,7 @@ button.dshb-tline:hover{background:${C.hover}}
         channelPrivate: '只有配对过的人能找到团队，其他人一律忽略（每天最多回一句“这是私人 Bot”）。在群里，只有 @ 它或回复它时才会回答。',
         viaChannel: '{app} · {who}',
         sentToChannel: '也已发到 {app}',
-        threadPart: '话题',
+        threadPart: '讨论串',
         threadTopic: '话题',
         notSent: '未发出',
         notSentChats: '没有发到任何聊天：这一轮涉及多个聊天（{chats}）。',
@@ -9413,6 +9390,8 @@ button.dshb-tline:hover{background:${C.hover}}
         routerWaiting: '团队里再有一个 Bot 后才开始只调度，在此之前 {name} 自己动手。',
         abilitiesRouterHint: '{name} 能用 Harness 内置工具做哪些事。只调度时它不执行命令、不写文件、不用子代理、不作图也不做 Office 文档；确实需要时可以在下面逐项打开。',
         routerOff: '只调度时关闭',
+        teamOff: '调度员不用',
+        teamOffHint: '调度员把要并行的活交给队友，面板里能看到他们各自的任务；其他 bot 照常可以用子代理。',
         routerPartOff: '只调度时部分关闭',
         routerAllowed: '只调度时也可用',
         routerAllowBack: '重新打开',
@@ -9436,7 +9415,7 @@ button.dshb-tline:hover{background:${C.hover}}
         setStallHint: '进行中的任务这么久没动静，先请它汇报；之后仍没动静就标为卡住。',
         setArchive: '任务完成多少小时后归档会话',
         usageAllTasks: '显示全部 {n} 个任务',
-        setArchiveHint: '在此之前，它所在话题或回复串里的新消息会让这个任务继续。',
+        setArchiveHint: '在此之前，它所在讨论串里的新消息会让这个任务继续。',
         // 用量、记忆、话题、设置、模型来源
         settings: '设置',
         usage: '用量',
@@ -9653,6 +9632,79 @@ button.dshb-tline:hover{background:${C.hover}}
             return false;
           }
         };
+        /** The central panel Harness shows: its id, null for a conversation, undefined when it cannot say. */
+        const shownPanel = () => {
+          try {
+            const obs = service('layout')?.panelInfo;
+            const v = typeof obs?.getSnapshot === 'function' ? obs.getSnapshot() : typeof obs?.get === 'function' ? obs.get() : obs?.value;
+            return v && typeof v === 'object' && 'activePanelId' in v ? v.activePanelId : undefined;
+          } catch {
+            return undefined;
+          }
+        };
+        /** Show the panel again, on the chat it showed. */
+        const bringBack = (botId) => {
+          if (botId) navigate(botId);
+          return openPanel();
+        };
+        /**
+         * A new topic archives the bot's last conversation, and when that is the conversation behind the
+         * panel Harness closes the panel to show nothing (PLAN-0.10 §2.4). Closed within a moment of a
+         * topic starting (from here, or one the Host started: the state's `rotatedAt`), it comes back.
+         */
+        const watchPanel = (layout) => {
+          let obs;
+          try {
+            obs = layout?.panelInfo;
+          } catch {
+            obs = undefined;
+          }
+          if (!obs || typeof obs.subscribe !== 'function') return () => {};
+          let last = shownPanel();
+          const timers = new Set();
+          const later = (fn, ms) => {
+            const id = setTimeout(() => {
+              timers.delete(id);
+              fn();
+            }, ms);
+            timers.add(id);
+          };
+          const onChange = (v) => {
+            const now = v && typeof v === 'object' && 'activePanelId' in v ? v.activePanelId : shownPanel();
+            const was = last;
+            last = now;
+            if (was !== PANEL_ID || now !== null) return;
+            const at = Date.now();
+            if (at - (Number(store.rotatingAt) || 0) < ROTATE_WINDOW_MS) return void bringBack(store.lastChat);
+            // The Host may have started the topic (a message after a quiet spell, a long conversation): ask it, twice at most.
+            const check = (tries) =>
+              Promise.resolve(refreshState()).then((st) => {
+                const rotated = Number(st?.rotatedAt) || 0;
+                if (rotated && Math.abs(rotated - (at + (Number(store.skew) || 0))) < ROTATE_WINDOW_MS) {
+                  if (shownPanel() === null) bringBack(store.lastChat);
+                } else if (tries > 1) later(() => void check(tries - 1), 1200);
+              });
+            void check(2).catch(() => {});
+          };
+          let off;
+          try {
+            off = obs.subscribe(onChange);
+          } catch {
+            return () => {};
+          }
+          return () => {
+            for (const id of timers) clearTimeout(id);
+            try {
+              if (typeof off === 'function') off();
+              else off?.unsubscribe?.();
+            } catch {
+              // Gone with the layout.
+            }
+          };
+        };
+        // The layout service may come up after this client does.
+        if (typeof ctx.inject === 'function') ctx.inject(['layout'], (scope) => scope.effect(() => watchPanel(scope.layout ?? service('layout')), 'bots: the panel stays open over a new topic'));
+        else ctx.effect(() => watchPanel(service('layout')), 'bots: the panel stays open over a new topic');
         const openSession = (id) => {
           try {
             const ws = service('uiWorkspace');
@@ -9696,6 +9748,14 @@ button.dshb-tline:hover{background:${C.hover}}
             return openPanel();
           },
           openPanel,
+          /** After a topic started from here: the panel was closed over it (now, or a moment later), so it comes back. */
+          keepPanel: (botId) => {
+            const again = () => {
+              if (shownPanel() === null) bringBack(botId);
+            };
+            again();
+            setTimeout(again, 1500);
+          },
           sessionTitle: (id) => {
             try {
               const title = service('sessions')?.list?.getSnapshot?.()?.byId?.[id]?.displayTitle;

@@ -6,8 +6,9 @@ Grok-style bots inside DeepSeek Harness: a team of bots that work together. Each
 persona, model, skills, abilities, apps, scheduled tasks and memory**, and its own conversation. Bots **message each
 other**, and one of them, the **dispatcher**, splits the work, hands it out, follows up and reports back. Each piece
 of work handed out is a **task** that the bot works on in a conversation of its own, so one bot can work on several
-at once. You chat with a bot as in a Feishu group: send messages whenever you like, and each one gets its answers in a
-**topic** of its own.
+at once. The chat with a bot reads like a chat app: the bot on the left, you on the right. To go on about one
+message, reply to it: your reply quotes it, and the bot answers in a **thread**, where it sees that message and what
+came before it, and nothing said in the chat since.
 
 It is built for two situations:
 
@@ -62,29 +63,46 @@ Bots answer in the language you write in, so the same team works in Chinese and 
 Each message from Atlas to a teammate opens a task, the three tasks run at the same time, and Forge's message is the
 report on its task.
 
-## The chat: one topic per request
+## The chat: reply to a message to open a thread
 
-Talk to a bot as you would in a Feishu group: send as many messages as you like, whenever you like, and each one gets
-its answers in a thread of its own.
+The chat with a bot reads like a chat app such as Feishu: the bot's messages on the left, yours on the right, in the
+order they were said. Send as many messages as you like, whenever you like. To go on about one message, reply to it,
+the way a chat app quotes a reply: the reply shows at the end of the chat with that message quoted on top, and the
+bot answers in that message's **thread**.
 
-<!-- screenshot: chat with topics -->
+<!-- screenshot: a quoted reply in the chat -->
 
-- **Every message is a topic.** What you send shows at once, marked **Queued** until the bot takes it. The answers to
-  it, and everything said about the work it started, collect under it. A bar under the message shows how many replies
-  there are, the latest one, the task working on it (with its live status) and a dot for anything you haven't read;
-  click it to open the topic beside the chat. When a topic out of sight gets a reply, **N topics have new replies**
-  shows above the box and takes you there.
-- **Reply to any message.** Hover over a message and click **Reply**: what you write goes into that message's topic.
-  In a topic whose task is still open (or finished in the last day), it goes straight to the bot doing the task; the
-  dispatcher only gets a note, which doesn't wake it.
+- **What you send shows at once**, marked **Queued** until the bot takes it.
+- **Reply to any message.** Hover over a message and click **Reply**: it is quoted above the box (**×** or Esc drops
+  it), and what you send answers it. The bot answers in a conversation of its own, **forked from its conversation at
+  that message**: it sees that message and everything before it, and nothing the main chat said after it. So when
+  you come back to an older message a few turns later, the bot answers about that message instead of taking it as a
+  reply to the last one. When the message you reply to is your own, the answer the bot gave it then is part of what
+  the thread sees.
+- **Replies show in the chat, quoted.** Your reply quotes the message it answers; the bot's answer quotes your reply,
+  unless it is right under it. Click a quote to see the whole thread on its own beside the chat (over it on a
+  narrow screen), where you can go on too. A message with a thread has a small **N replies** link under it, with
+  **Replying…** while the bot answers there; the chat also shows the bot at work at its end.
+- **The main chat hears what was said in threads.** Since you read the replies in the chat, your next message
+  there comes to the bot with a short note of what was said in its threads since (who said what, under which
+  message), so it doesn't lose the thread of the conversation. A thread doesn't hear what the main chat said after
+  its message.
+- **Reply** to a message of a thread to go on in that thread (it quotes that message); threads don't nest. A thread
+  has no new topic: `/new` works in the main chat only.
+- **Replying to a task's message talks to that task.** Reply to a result or a question from the bot doing a task and
+  what you write goes straight to that task; the dispatcher only gets a note, which doesn't wake it, and the task's
+  later reports show in that thread. A task that is done but whose conversation isn't archived yet takes it and goes on.
 - **The dispatcher answers every message within a step or two**, because it doesn't do the work in its own
-  conversation: it hands it to the teammate that fits, or to itself as a task of its own when none does, and is free
-  again at once. Two requests sent back to back run side by side, and neither is dropped for the other. A message that
-  continues something already under way is added to that task and filed under its topic (**Filed under "…"**).
-- **The bot doing the work answers you itself**, in the topic the request came from, with the whole result. Only when
-  the dispatcher splits one request between several bots and has to put the results together does it ask for their
-  reports back and answer you itself.
-- Messages from before 0.9 stay in the main timeline as they were.
+  conversation: it hands it to the teammate that fits (the closest one when none fits exactly), never to itself, and
+  is free again at once. Two requests sent back to back run side by side, and neither is dropped for the other; a message that
+  continues something already under way is added to that task. In a thread it still only routes: a task it hands out
+  there reports back into the thread, and what you write later in the thread comes to it first, and it decides which
+  task it is for.
+- **The bot doing the work answers you itself**, where the request came from (the main chat or a thread), with the
+  whole result. Only when the dispatcher splits one request between several bots and has to put the results together
+  does it ask for their reports back and answer you itself.
+- A thread quiet for a day leaves the Harness sidebar; a new reply brings it back, and the thread goes on where it was.
+- 0.9's topics read as the chat they were, with a link to each under its first message.
 
 ## Tasks: delegated work in conversations of their own
 
@@ -96,7 +114,8 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 
 - **Reports**: the bot doing a task reports with a status: **done** with the result, **question** when it needs an
   answer, **blocked** when it cannot go on, or **progress**, which is kept on the task without interrupting anyone.
-  Done, question and blocked go to you as they are, in the topic or chat the request came from, and the bot that asked
+  Done, question and blocked go to you as they are, where the request came from (the main chat, a thread or a chat
+  app; after you reply to one of them in the panel, in that thread), and the bot that asked
   gets a note that doesn't wake it. When the bot that asked wants the reports back (to put several results together),
   they reach it at once instead and it passes them on; so do a sub-task's reports, and those of a task that came from
   no chat (a scheduled run). A report from a task that has already ended, or from a sub-task whose task has ended, is
@@ -117,8 +136,8 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
   **Mark done** and **Stop** both end the task and stop its bot's work on it at once. Each bot's **Tasks** tab lists
   what it is working on.
 - **What bots say to each other stays out of your way**: in a bot's chat, hand-offs, reports and messages between
-  bots run together as one quiet group under your conversation with it; those about a task that came from a topic show
-  in that topic. **Settings → Chat → Messages between bots**
+  bots run together as one quiet group under your conversation with it; those about a task that came from a thread
+  show in that thread. **Settings → Chat → Messages between bots**
   sets how much of them shows, the same on every device: **One line** (the default: who hands what to whom, its
   stage and time; a click opens the task), **Short** (and the first two lines of the message) or **Full** (the whole
   message, with the task's card). The bot's replies to you read like the main conversation, without a box.
@@ -139,12 +158,12 @@ The dispatcher works in one of two ways, chosen under **How it works** on its **
 
 - **Router** (the default): it understands the request, hands the work out and keeps track of it. It does not run
   commands, write or edit files, search the web, use sub-agents and workflows, draw images or make Office files; it can
-  still read files and use its skills. Work that needs any of those, when no teammate fits, it hands to itself: it
-  then does it in a task of its own, with all its tools, while its own conversation stays free for you. Its **Abilities** section marks what Router mode turns off, and **Turn
+  still read files and use its skills. Work that needs any of those goes to a teammate, never to itself (0.9 handed
+  it to itself when no teammate fit; 0.10 doesn't), while its own conversation stays free for you. Its **Abilities** section marks what Router mode turns off, and **Turn
   back on** gives an ability back (even then it may not `sleep`, and a command must finish within 30 seconds or run in
   the background). It never waits for a teammate: it ends its turn and is woken when something needs it, so a new
   request is not stuck behind work in progress, and messages that arrive while it is busy are taken together at its
-  next step, each answered in its own topic. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
+  next step, and each one gets its answer. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
   not change the model for you. In Router mode every bot that hands work to a teammate opens a task, not only the
   dispatcher.
 - **Hands-on**: how 0.7 worked. The dispatcher also does small jobs itself, and a message from one bot's own
@@ -161,16 +180,23 @@ a Telegram topic, or the panel.
 
 - **Answers go back where the request came from.** The bot doing a task answers in that task's chat itself, signed
   with its name (`【Forge】`) when the chat app belongs to another bot, so two requests from two chats are answered each
-  in its own chat. When one turn of the dispatcher involves more than one chat or topic, it answers each with
-  `bot_reply`, and a task it opens there has to say which one it is for. Plain text left over from such a turn stays in
-  the panel, marked **Not sent**, unless each chat and topic has its answer already.
+  in its own chat. When one turn of the dispatcher involves more than one chat (the panel and a chat app, say), it
+  answers each with `bot_reply`, and a task it opens there has to say which one it is for. Plain text left over from
+  such a turn stays in the panel, marked **Not sent**, unless each chat has its answer already.
 - **A follow-up in a thread goes straight to the task.** In a Slack or Discord thread, a Feishu topic or reply chain,
   or a Telegram topic, what you write later in the same thread goes to the tasks started there; the dispatcher only
   gets a note, which does not wake it. Until its conversation is archived, a done task also takes such a message and
   goes on; a stopped task does not. In Slack, Discord and Feishu groups the bot answers under your message, so each
   request there starts a thread of its own.
+- **Otherwise a thread gets a conversation of its own, as in the panel.** In a thread with no live task, its first
+  message (the one that @mentions the bot in a group, say) goes to the bot's own conversation; once the bot has
+  answered there, what you write later in the same thread goes to a conversation forked from the bot's at that
+  exchange: it doesn't see what the bot talked about elsewhere since, and nothing said in the thread goes back.
+  Replying to one of the bot's own chat messages (a Feishu or Discord reply, a Slack thread) works the same way,
+  forked at that message; this needs the message's id from the chat app, so it works for messages sent since 0.10.
+  In Telegram only forum topics are threads; a reply in a private chat is not.
 - **A follow-up in a private chat goes to the dispatcher.** A private chat (and a group without threads) is one long
-  conversation where new requests arrive too, so a new message there goes to the dispatcher, unless one task asked a
+  conversation where new requests arrive too, so a message sent there (not a reply) goes to the dispatcher, unless one task asked a
   question there and is still waiting for the answer: then that task takes it. With two or more waiting, it goes to
   the dispatcher, which works out which one it answers.
 - A message that starts with `@handle` still goes to that bot's own conversation.
@@ -209,7 +235,9 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 
 - **Abilities**: web search, files, running commands and code, Office documents, image generation,
   sub-agents and workflows, handing over files… switched per bot on its Profile tab (a reviewer bot
-  that cannot run commands, for instance).
+  that cannot run commands, for instance). In a team of more than one bot, the dispatcher has no Harness sub-agents or
+  workflows: work in parallel goes to teammates, so the panel shows it as their tasks (even when a skill says to start
+  sub-agents). The other bots keep them.
 - **Skills**:
   - **Add from Harness**: pick from the skills you already installed (`~/.agents/skills`,
     `~/.dsh/skills`, …); referenced, not copied, so they stay up to date;
@@ -281,7 +309,9 @@ bot's scheduled tasks move along); what the bot knows carries over in its memory
 
 Harness still compacts a conversation that nears the model's limit; topics keep every call small and cheap
 long before that. A task's conversation is not a topic: it ends with its task. A task's report reaches the bot
-that asked for it even after that bot started a new topic.
+that asked for it even after that bot started a new topic. Threads are not topics either: a new topic leaves the
+threads as they are, and a message from an earlier topic can still be replied to. The old conversation is archived,
+and the Bots panel stays where it is (it used to jump to Harness's conversation view).
 
 ## Memory
 
@@ -456,7 +486,9 @@ one connection. If you change scopes later, reinstall the app to the workspace a
 - Each bot owns one ordinary Harness conversation of its own, in the **Bots** workspace
   (`~/.dsh/bots/workspace` unless `workdir` is set), and one more for each task it works on
   (`ticket-<id>`), in the same workspace. A task's conversation is archived in Harness once the task has
-  been over for the hours set in Settings.
+  been over for the hours set in Settings. Each thread is a conversation too, forked with Harness's session fork
+  from the bot's conversation at the message replied to and titled "<bot> · <the start of that message>"; it is
+  archived after a quiet day and taken out of the archive on the next reply.
 - When it runs, the bot's persona and the team roster join its system prompt; its own skills, ability
   limits and apps apply to its conversations only. In a task's conversation the prompt also says which
   task it is, who asked, and how to report. Edits apply at once; a new or changed app connects the next
@@ -483,7 +515,7 @@ one connection. If you change scopes later, reinstall the app to the workspace a
 - A chat app is not an MCP server: the Host keeps one connection per chat app (long polling for Telegram,
   the gateway for Discord, Socket Mode for Slack, the long connection for Feishu), starts and stops it as you add, change, switch off or remove the
   app, and hands paired people's messages to the bot as user prompts headed
-  `[Telegram · Name] (thread <key>)`, or to the tasks of that thread (see
+  `[Telegram · Name] (thread <key>)`, or to the tasks or the own conversation of that thread (see
   [Chats and threads](#chats-and-threads)). The thread key is what `bot_reply` names.
 
 ## Open Computer Use
@@ -500,7 +532,8 @@ permission and restart it.
   per chat), `tickets.json` (tasks, with what was asked and their reports, and the chat threads they came
   from; the newest 500 archived tasks are kept), `avatars/`, `skills/` (skills imported from GitHub),
   `memory/` (notes, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
-  kept 400 days), `topics.json`, `settings.json`, `price-catalog.json`. If `tickets.json` cannot be read
+  kept 400 days), `topics.json`, `discussions.json` (threads, where each message sits in its conversation, threads
+  you have read), `settings.json`, `price-catalog.json`. If `tickets.json` cannot be read
   (permissions, say), Bots does not start and says why in the Harness log, so the file is never written over;
   a damaged one is kept as `tickets.json.corrupt-<time>` and tasks start empty.
 - Custom endpoints and a borrowed Codex login are written to Harness's own model settings (`llm-pi-ai`) and
@@ -530,6 +563,19 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/bots
 ```
 
 Refresh the page once after installing. For AI avatars, install [Images](../images) too.
+
+## Upgrading from 0.9
+
+- **Quit and reopen Harness** once after the upgrade. A page reload alone gives you the new page while Harness still
+  runs the old Bots, and replies don't land in threads; a banner at the top of the panel says so until you reopen it.
+- Nothing else to do: bots, tasks, memory, schedules, chat apps and pairings stay as they are; 0.10 adds
+  `discussions.json` for threads.
+- The messages of 0.9's topics show in the chat in the order they were said, with a link to each topic's thread under
+  its first message; in one with a live task, what you write there still goes to the task.
+- Messages from before the upgrade can be replied to: Bots finds the message's place in the conversation's log by its
+  time and forks there. When it cannot (a very long conversation, or one that is gone), it forks at the
+  conversation's latest turn and tells the bot that the chat may have gone on past that message.
+- Threads use Harness's session fork; on a Harness without it, a reply says to update Harness first.
 
 ## Upgrading from 0.8
 
@@ -563,9 +609,12 @@ Refresh the page once after installing. For AI avatars, install [Images](../imag
 - In a group chat a bot hears only messages that @mention it (or reply to it); it does not listen to the
   rest of the conversation. 0.8 does not change that.
 - Thread history starts with 0.8: messages from before the upgrade belong to no thread, so reading a chat
-  thread with `bot_recall` shows only what was said there since. Panel topics start with 0.9.
-- Topics are in the panel only. In a chat app, threads, topics and reply chains play that part where the app has
-  them; a private chat stays one conversation, where a new message goes to the dispatcher.
+  thread with `bot_recall` shows only what was said there since. Panel threads start with 0.10.
+- A thread doesn't see the main chat's later messages because it is a fork, and a fork needs the message's place in
+  the conversation's log. For a very old message whose place cannot be found, the thread forks at the latest turn and
+  sees what came after (the bot is told so).
+- In a chat app, replying to one of the bot's messages makes a thread only for messages sent since 0.10; a message
+  sent straight into a private chat is still part of one conversation and goes to the dispatcher.
 - The watchdog goes by time and status only; it does not judge whether a task is heading the right way.
 - Costs are estimates. Gateways, subscriptions and discounts bill differently; set your own prices.
 - Only the Codex CLI's login can be borrowed so far; other subscriptions sign in from Harness Settings →

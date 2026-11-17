@@ -583,7 +583,13 @@ Entries written before 0.8 have none of these fields.
   context.
 
 ### Tools
-Every conversation gets `bot_reply`, `bot_recall` and `bot_ticket` besides the 0.7 tools. A Harness sub-agent or fork
+Every conversation gets `bot_reply`, `bot_recall` and `bot_ticket` besides the 0.7 tools. Since 0.10, in a team of more
+than one bot the dispatcher's conversations (role `primary`: its home and any task of its own) are denied the
+"Sub-agents & workflows" ability's tools (`subagent`, `wait_agent`, `workflow`, …; `GET catalog` lists them as
+`teamDeny`, which the panel applies to the dispatcher only); the other bots keep them, and a router dispatcher's `bot_send_message` to
+itself is refused (`you are the dispatcher: hand the work to a teammate, …`). A tool's `presentationMeta` leaves out
+empty fields (0.9's `bot_reply` into the panel returned `via: undefined`, which Harness rejects as not lossless JSON:
+the reply was shown, the call failed and the model sent the answer again). A Harness sub-agent or fork
 (Session header `origin: 'subagent'` with a `parentSession`) uses the bot tools and the memory tools as the bot home or
 task Session it descends from, with that one's limits; a helper of a conversation of no bot acts as no bot. One whose
 line cannot be traced (a creator that is gone and was no bot's, or a loop) acts for no one: `bot_send_message`,
@@ -636,6 +642,8 @@ changed first, ≤ 10). From a task Session only its task, parent and sub-tasks,
 digests. Result `+= { tickets: string[] }`.
 
 ## v0.9 — the panel chat in topics
+
+0.10 replaces per-message topics with threads opened by a reply (see [v0.10](#v010--threads)); 0.9 data still reads as below.
 
 ### Topics
 A message typed in the panel is a topic, or with `replyTo` joins the topic of the message it answers. A topic's key is
@@ -698,3 +706,134 @@ the requester as in 0.8. Requester reminders skip these tasks. The worker's tool
 `ROUTER_DENY` adds the web ability (`web_search`, `web_fetch`). The dispatcher's home may open a task for its own bot
 (`to` its own handle); no other conversation can message itself.
 
+## v0.10 — threads
+
+The panel chat lists what was said in order, like a chat app. A reply to a message goes into that message's thread
+and shows in the chat quoting what it answers. A thread on a task's own message goes to that task (as a 0.9 topic
+with a live task did); any other thread is a **discussion**: the bot's conversation forked with Harness's
+`sessionController.fork({ sessionId, atSeq })` at the replied message, so it sees that message and what came before,
+and nothing the main chat said after it. The main conversation hears what was said in the threads with the person's
+next message there (`[Threads]`, below).
+
+### Timeline
+Fields as in 0.9, with these meanings:
+
+| Field | 0.10 |
+|---|---|
+| `topic` | only on a message inside a thread: the thread's root id. A message without `topic`, or with `topic === id` (a 0.9 root), is in the main chat |
+| `thread` | main chat: `panel:<sessionId>` (two parts) or the chat app's key; in a thread: the thread's key, `panel:<homeSessionId>:<rootId>` or the chat key |
+| `replyTo` | only when a message in a thread quotes one other than the root |
+| `ticket` | a task's report, or a message that went to that task |
+| `movedTo` | 0.9 data only; such a row is in the target thread |
+| `quote` | in `GET messages?bot=` only, on a message inside a thread: `{ id, from, text, who?, via? }`, the message it quotes (text clipped to 140 characters). The person's: the one they replied to (`replyTo`, else the root); a bot's: the person's latest message of the thread before it, else the root |
+
+A new top-level panel message: `{ id: 'p…', from: 'user', to: bot, chat: bot, kind: 'user', thread: 'panel:<sid>' }`;
+the bot's answer: `{ from: bot, to: 'user', chat: bot, kind: 'reply', thread: 'panel:<sid>' }`. Answers in a
+discussion carry the thread's `thread` and `topic` (a discussion's Session answers in its own Thread when its turn
+names none).
+
+### Routes
+| Method | Path | Body / query | Returns |
+|---|---|---|---|
+| GET | `messages` | `?bot=<id>&limit=200` | `{ items, threads }`: `items` is the chat as it was said, oldest first, the messages of threads among the rest with their `quote` (the window as it is: a root older than it is not brought along); `threads: { [rootId]: ThreadSummary }` for each item that has a thread |
+| GET | `messages` | `?bot=<id>&topic=<rootId>&limit=500` | `{ items: [root, ...replies], threads: { [rootId]: ThreadSummary } }` |
+| POST | `send` | `{ to, text, replyTo? }` | `{ ok, sessionId, message }`; `message.topic` is the root id when it went into a thread. `replyTo`: a main-chat message opens (or joins) its thread; a message in a thread keeps it in that thread, quoted. Refused: `/new` in a thread (`a thread has no new topic: send /new in the main chat`), a message of another bot's chat (`that message is not in this chat`) |
+| POST | `threads/seen` | `{ bot, root }` | `{ ok, unread: 0 }`: the thread's replies up to now count as read (kept in `discussions.json`, so the same on every device) |
+
+```ts
+ThreadSummary = {
+  key: string,                       // the thread's key
+  count: number,                     // replies: what people and bots said, task reports (system lines left out)
+  lastAt: number,                    // ms of the latest reply, 0 for none
+  last: { from: string, text: string } | null,  // text clipped to the preview length
+  unread: number,                    // bot replies after the person last looked (threads/seen)
+  running: boolean,                  // the discussion's Session runs, or a task it follows is working
+  answering: boolean,                // the discussion's Session runs (the chat shows the bot at work at its end)
+  tickets: TicketRow[],              // tasks subscribed to the thread, archived ones left out
+}
+```
+
+`GET state` adds `botsVersion` (the Bots version this Harness process loaded; `version` stays the store's revision)
+and `rotatedAt` (ms of the latest time Bots archived a conversation: a new topic, or an idle thread; 0 since start).
+The panel shows a banner when `botsVersion` differs from its own version, and selects itself again when Harness
+closes it within 3 s of `rotatedAt` (Harness closes the active panel when the Session behind it is archived).
+
+### Routing
+- A top-level panel message goes to the bot's home as in 0.9, logged before it is handed over (`bots:panel:<id>`),
+  without a thread id: a router home gets `[Panel]` and `Open tasks: …`, another home no header. When the panel's
+  threads had messages since the home last heard (`discussions.json` `told[botId]`, at first the time the file began;
+  and not before the current topic started), the message comes after this note (at most `NEWS_MESSAGES` = 16, the
+  latest; each clipped to 300 characters; chat-app threads, bot-to-bot messages and system lines left out):
+  ```
+  [Threads] Since your last message here, the user replied to messages of this chat in threads (each its own conversation, which answered there). So you know what was said; nothing to answer:
+  - On your message: "约 39.5 万。要不要我写个小脚本？"
+    The user: "什么情况下你会这么做？"
+    You: "当你会反复问同一个数字的时候。"
+  ```
+  The root is named `your message`, `the user's message` or `@handle's message`; a teammate's line `@handle`.
+- A reply goes to a task when the root is that task's own message (`root.ticket`, live: not archived, not stopped by a
+  person): the task is subscribed to the thread and `Ticket += { showIn?: string }` is set to the thread's key, where
+  its later `done` / `question` / `blocked` reports are shown. A 0.9 topic with subscribed live tasks and no
+  discussion goes to its tasks too. The note `[follow_up] …` is injected into whoever asked for each task: the home,
+  or the discussion that opened it.
+- Any other reply goes to the thread's discussion, forked the first time:
+  1. at the replied message's anchor (where it sat in its Session, noted as events arrive; for a person's message,
+     the end of the turn that took it, so the answer it got is included);
+  2. else at its place found in the Session's log by time (`seqByTime`: a bot's message at the last event at most
+     1.5 s after it was logged; a person's at its own `user/message` event — the first one from 50 ms before it was
+     logged on — then the end of that turn), in the Session the message was said in (its `sid`, the panel Thread's
+     session, the bot's own task, or the bot's home);
+  3. else at the latest finished turn of the bot's home. Such a discussion, or one whose `atSeq` fork failed and was
+     retried without it, is `exact: false`.
+  The fork is given the bot (tools, persona, memory; a router home's fork stays a router) and its model (a fork starts
+  on Harness's default), and titled `<bot> · <the start of the root>`. Its replies are logged in the thread; topic
+  rotation, `topics.noteCall` and `noteTask` look only at the home.
+- In a discussion the person talks to its bot even after that bot opened tasks there: such tasks have the thread as
+  origin, report into it, and their relays and reminders reach the discussion (`requesterAgent`).
+- The first message of a discussion carries (claimed before the hand-over, so two first replies at once carry it once):
+  ```
+  [Thread] From here on this is a thread: the user replies to this message of @forge above: "…". Answer about it.
+  What the main conversation said after that message is not visible here.
+  ```
+  With `exact: false`: `… this message of @forge: "…". Answer about it.` and `The conversation above may go on past that
+  message; stay on that message.` A quote of another message of the thread adds
+  `In reply to <who>: "…"`; later quotes get `[Panel]\nIn reply to <who>: "…"`.
+- Errors: `threads need the Web profile (no session controller here)`; `this DeepSeek Harness cannot fork a
+  conversation; update it to reply in a thread`; `the conversation that message was said in is gone; send it as a new
+  message instead`. The message is then dropped from the chat (`hidden`).
+- A discussion quiet for 24 h (`IDLE_ARCHIVE_MS`) is archived in Harness by the task upkeep; the next reply takes it out
+  of the archive (`workspaceRegistry.unarchiveSession`), or, when that fails, forks it again from its own latest turn.
+  Removing a bot archives and forgets its discussions; a model change applies to them too.
+
+### Chat apps
+- Unchanged from 0.8: a leading `@handle` goes to that bot; a Thread with live subscribed tasks gives them the message.
+- Otherwise a message in a Thread (`kind:appKey:chatId:rootId`) goes to that Thread's discussion when there is one;
+  when there is none, it forks one at the Thread's anchor (the home's latest exchange there: the message it took, its
+  answer, the end of that turn) or at the anchor of the root message (`chat:<appKey>:<chatId>:<messageId>`, a message
+  the bot took in or sent), if that Session is the bot's. The Thread's first message, one that arrives while the home is
+  still on that Thread, and a message of a whole chat go home as before. The first message in a discussion gets
+  `[Thread] From here on this is a thread: the user replies to an earlier message of the conversation above. …` before
+  its source line.
+- Connectors' `send(chatId, text, opts)` resolves to `{ ids: string[] }`, the chat app's ids of the messages it made
+  (Telegram `message_id`, Slack `ts`, Discord `id`, Feishu `message_id`). `createChannels` takes
+  `onSent({ tag, appKey, chatId, threadKey, ids })`, called after a send made with a `tag` (`noteReply`, `replyTo`,
+  `post` take one; Bots tags a home's replies and `bot_reply` with `{ sessionId, seq }`), and `homeKey(sessionId)`, the
+  Thread a Session's input without one belongs to (a discussion's own key; default `panel:<sessionId>`).
+
+### Storage
+`~/.dsh/cache/bots/discussions.json`:
+```ts
+{
+  items: { [threadKey]: {
+    key, botId, sessionId, rootId,
+    source?: { sessionId, seq? },    // where it was forked
+    title?, createdAt, lastAt,
+    archivedAt?, noted?: true,       // noted: its first message carried the [Thread] note
+    exact?: false,                   // forked at the latest turn, not at the root
+  } },
+  anchors: { [ref]: { sessionId, seq, at } },  // ref: `msg:<id>`, `chat:<appKey>:<chatId>:<messageId>`, or a Thread key; newest 4000
+  seen: { [rootId]: number },        // when the person last looked at that thread
+}
+```
+Discussions past 2000 lose the oldest archived ones. A new discussion is written at once; anchors and the rest within
+200 ms.

@@ -274,12 +274,12 @@ export function followUpNoticeText(notice, ctx = {}) {
 }
 
 /**
- * Bots 0.9: a worker's report went to the person as it is, in the topic or chat its task came
+ * Bots 0.9: a worker's report went to the person as it is, in the panel, thread or chat its task came
  * from. Its requester is told without being woken (the note is "good to know"): it need not pass
  * the result on, and a `question` is the person's to answer there.
  * @param {object} ticket
  * @param {{status?: string, text?: string}} report
- * @param {CardContext & {where?: string}} [ctx] - `where`: how that topic or chat reads ("Panel · topic …")
+ * @param {CardContext & {where?: string}} [ctx] - `where`: how that place reads ("Panel · thread …")
  */
 export function shownNoticeText(ticket, report, ctx = {}) {
   const status = report?.status ?? 'done';
@@ -300,11 +300,11 @@ export function shownNoticeText(ticket, report, ctx = {}) {
 export const HEADER_TASKS = 8;
 
 /**
- * The line a message typed in the panel reaches a bot's home with (Bots 0.9): its topic, as
- * `bot_reply` and `bot_send_message` name it (`[Panel] (thread p…)`); for a reply in a topic,
- * the message it answers; and for the dispatcher the tasks a message may continue (`open`: open
- * ones, or ones that finished lately; at most `HEADER_TASKS`).
- * @param {{topic: string, replyTo?: {who?: string, text?: string}, open?: object[]}} what
+ * The lines a message typed in the panel reaches a bot with: for the dispatcher's main chat the
+ * tasks a message may continue (`open`: open ones, or ones that finished lately; at most
+ * `HEADER_TASKS`); in a thread, the message of it the person quotes (`replyTo`). `topic` (a
+ * thread id to name, as 0.9 did) is optional.
+ * @param {{topic?: string, replyTo?: {who?: string, text?: string}, open?: object[]}} what
  * @param {CardContext} [ctx]
  */
 export function panelHeaderText({ topic, replyTo, open = [] } = {}, ctx = {}) {
@@ -313,6 +313,52 @@ export function panelHeaderText({ topic, replyTo, open = [] } = {}, ctx = {}) {
   if (quoted) lines.push(`In reply to ${replyTo.who || 'a message'}: ${quote(clip(quoted, 160).text)}`);
   const listed = open.slice(0, HEADER_TASKS);
   if (listed.length) lines.push(`Open tasks: ${listed.map((t) => ticketPhrase(t, ctx)).join('; ')}`);
+  return lines.join('\n');
+}
+
+/**
+ * The lines before the first message of a discussion (Bots 0.10, after open-super-agent's
+ * THREAD_NOTE): the person replies to one message, the conversation up to it is what the bot
+ * sees, and the main conversation after it is out of sight. `text`: the replied message (none
+ * when a chat app did not say); `quoted`: another message of the thread the person points at;
+ * `exact: false` when the fork could not be made at that message (it sees the conversation past it).
+ * @param {{who?: string, text?: string, quoted?: {who?: string, text?: string}, exact?: boolean}} [p]
+ */
+export function discussionNoteText({ who, text, quoted, exact = true } = {}) {
+  const t = String(text ?? '').trim();
+  const lines = [
+    t
+      ? `[Thread] From here on this is a thread: the user replies to this message of ${who || 'the conversation'}${exact ? ' above' : ''}: ${quote(clip(t, 200).text)}. Answer about it.`
+      : '[Thread] From here on this is a thread: the user replies to an earlier message of the conversation above. Answer about it.',
+    exact
+      ? 'What the main conversation said after that message is not visible here.'
+      : 'The conversation above may go on past that message; stay on that message.',
+  ];
+  const q = String(quoted?.text ?? '').trim();
+  if (q) lines.push(`In reply to ${quoted.who || 'a message'}: ${quote(clip(q, 160).text)}`);
+  return lines.join('\n');
+}
+
+/** Messages of the threads a news note lists at most, the latest kept. */
+export const NEWS_MESSAGES = 16;
+
+/**
+ * Before the person's next message in a bot's main conversation (Bots 0.10): what was said in the
+ * threads of its panel chat since it last heard. The panel shows a reply in the chat, quoting the
+ * message it answers, so what the person reads there the main conversation knows too; each thread
+ * is a conversation of its own and is not to be answered here.
+ * @param {{threads?: {who?: string, text?: string, said: {who: string, text: string}[]}[]}} [p]
+ *   per thread: whose message it answers ("your message"), that message, and what was said in it, in order
+ */
+export function threadNewsText({ threads = [] } = {}) {
+  const list = threads.filter((th) => th?.said?.length);
+  if (!list.length) return '';
+  const lines = ['[Threads] Since your last message here, the user replied to messages of this chat in threads (each its own conversation, which answered there). So you know what was said; nothing to answer:'];
+  for (const th of list) {
+    const on = String(th.text ?? '').trim();
+    lines.push(on ? `- On ${th.who || 'a message'}: ${quote(clip(on.replace(/\s+/g, ' '), 80).text)}` : '- On an earlier message:');
+    for (const x of th.said) lines.push(`  ${x.who}: ${quote(clip(String(x.text ?? '').trim(), 300).text)}`);
+  }
   return lines.join('\n');
 }
 
