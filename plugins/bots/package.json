@@ -1,6 +1,6 @@
 {
   "name": "@kadaliao/dsh-bots",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "description": "Grok-style bots for DeepSeek Harness: create bots with their own avatar, persona, model, skills, apps, scheduled tasks and memory; they message each other, a dispatcher bot hands out the work, and a usage view counts tokens by bot, task and day.",
   "exports": {

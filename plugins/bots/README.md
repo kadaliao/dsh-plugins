@@ -6,7 +6,8 @@ Grok-style bots inside DeepSeek Harness: a team of bots that work together. Each
 persona, model, skills, abilities, apps, scheduled tasks and memory**, and its own conversation. Bots **message each
 other**, and one of them, the **dispatcher**, splits the work, hands it out, follows up and reports back. Each piece
 of work handed out is a **task** that the bot works on in a conversation of its own, so one bot can work on several
-at once.
+at once. You chat with a bot as in a Feishu group: send messages whenever you like, and each one gets its answers in a
+**topic** of its own.
 
 It is built for two situations:
 
@@ -61,6 +62,30 @@ Bots answer in the language you write in, so the same team works in Chinese and 
 Each message from Atlas to a teammate opens a task, the three tasks run at the same time, and Forge's message is the
 report on its task.
 
+## The chat: one topic per request
+
+Talk to a bot as you would in a Feishu group: send as many messages as you like, whenever you like, and each one gets
+its answers in a thread of its own.
+
+<!-- screenshot: chat with topics -->
+
+- **Every message is a topic.** What you send shows at once, marked **Queued** until the bot takes it. The answers to
+  it, and everything said about the work it started, collect under it. A bar under the message shows how many replies
+  there are, the latest one, the task working on it (with its live status) and a dot for anything you haven't read;
+  click it to open the topic beside the chat. When a topic out of sight gets a reply, **N topics have new replies**
+  shows above the box and takes you there.
+- **Reply to any message.** Hover over a message and click **Reply**: what you write goes into that message's topic.
+  In a topic whose task is still open (or finished in the last day), it goes straight to the bot doing the task; the
+  dispatcher only gets a note, which doesn't wake it.
+- **The dispatcher answers every message within a step or two**, because it doesn't do the work in its own
+  conversation: it hands it to the teammate that fits, or to itself as a task of its own when none does, and is free
+  again at once. Two requests sent back to back run side by side, and neither is dropped for the other. A message that
+  continues something already under way is added to that task and filed under its topic (**Filed under "…"**).
+- **The bot doing the work answers you itself**, in the topic the request came from, with the whole result. Only when
+  the dispatcher splits one request between several bots and has to put the results together does it ask for their
+  reports back and answer you itself.
+- Messages from before 0.9 stay in the main timeline as they were.
+
 ## Tasks: delegated work in conversations of their own
 
 When a bot hands work to a teammate, the work becomes a **task**. The teammate works on each task in a conversation
@@ -69,10 +94,12 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 
 <!-- screenshot: tasks view -->
 
-- **Reports**: the bot doing a task reports to the bot that asked, with a status: **done** with the result,
-  **question** when it needs an answer, **blocked** when it cannot go on, or **progress**, which is kept on the task
-  without interrupting anyone. Done, question and blocked reach the bot that asked at once, and it passes them on
-  (the dispatcher, to you). A report from a task that has already ended, or from a sub-task whose task has ended, is
+- **Reports**: the bot doing a task reports with a status: **done** with the result, **question** when it needs an
+  answer, **blocked** when it cannot go on, or **progress**, which is kept on the task without interrupting anyone.
+  Done, question and blocked go to you as they are, in the topic or chat the request came from, and the bot that asked
+  gets a note that doesn't wake it. When the bot that asked wants the reports back (to put several results together),
+  they reach it at once instead and it passes them on; so do a sub-task's reports, and those of a task that came from
+  no chat (a scheduled run). A report from a task that has already ended, or from a sub-task whose task has ended, is
   only kept on the task. Anything else the working bot writes stays in the task's conversation.
 - **Sub-tasks**: a bot working on a task can ask a teammate for help; that opens a sub-task, whose report comes back
   to the task that asked for it.
@@ -90,7 +117,8 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
   **Mark done** and **Stop** both end the task and stop its bot's work on it at once. Each bot's **Tasks** tab lists
   what it is working on.
 - **What bots say to each other stays out of your way**: in a bot's chat, hand-offs, reports and messages between
-  bots run together as one quiet group under your conversation with it. **Settings → Chat → Messages between bots**
+  bots run together as one quiet group under your conversation with it; those about a task that came from a topic show
+  in that topic. **Settings → Chat → Messages between bots**
   sets how much of them shows, the same on every device: **One line** (the default: who hands what to whom, its
   stage and time; a click opens the task), **Short** (and the first two lines of the message) or **Full** (the whole
   message, with the task's card). The bot's replies to you read like the main conversation, without a box.
@@ -109,13 +137,14 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 
 The dispatcher works in one of two ways, chosen under **How it works** on its **Profile** tab, for the whole team:
 
-- **Router** (the default): it understands the request, hands the work out and reports back. It does not run
-  commands, write or edit files, use sub-agents and workflows, draw images or make Office files; it can still read
-  files, search the web and use its skills. Its **Abilities** section marks what Router mode turns off, and **Turn
+- **Router** (the default): it understands the request, hands the work out and keeps track of it. It does not run
+  commands, write or edit files, search the web, use sub-agents and workflows, draw images or make Office files; it can
+  still read files and use its skills. Work that needs any of those, when no teammate fits, it hands to itself: it
+  then does it in a task of its own, with all its tools, while its own conversation stays free for you. Its **Abilities** section marks what Router mode turns off, and **Turn
   back on** gives an ability back (even then it may not `sleep`, and a command must finish within 30 seconds or run in
-  the background). It never waits for a teammate: it ends its turn and is woken when a report arrives, so a new
+  the background). It never waits for a teammate: it ends its turn and is woken when something needs it, so a new
   request is not stuck behind work in progress, and messages that arrive while it is busy are taken together at its
-  next step. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
+  next step, each answered in its own topic. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
   not change the model for you. In Router mode every bot that hands work to a teammate opens a task, not only the
   dispatcher.
 - **Hands-on**: how 0.7 worked. The dispatcher also does small jobs itself, and a message from one bot's own
@@ -130,10 +159,11 @@ work itself.
 A task remembers the chat it was asked from: a private chat, a Slack or Discord thread, a Feishu topic or reply chain,
 a Telegram topic, or the panel.
 
-- **Answers go back where the request came from.** When a task reports, the dispatcher's answer goes to that task's
-  chat, so two requests from two chats are answered each in its own chat. When one turn of the dispatcher involves
-  more than one chat (or a chat and the panel), its plain text stays in the panel, marked **Not sent**, and it sends
-  each answer to its chat with `bot_reply`.
+- **Answers go back where the request came from.** The bot doing a task answers in that task's chat itself, signed
+  with its name (`【Forge】`) when the chat app belongs to another bot, so two requests from two chats are answered each
+  in its own chat. When one turn of the dispatcher involves more than one chat or topic, it answers each with
+  `bot_reply`, and a task it opens there has to say which one it is for. Plain text left over from such a turn stays in
+  the panel, marked **Not sent**, unless each chat and topic has its answer already.
 - **A follow-up in a thread goes straight to the task.** In a Slack or Discord thread, a Feishu topic or reply chain,
   or a Telegram topic, what you write later in the same thread goes to the tasks started there; the dispatcher only
   gets a note, which does not wake it. Until its conversation is archived, a done task also takes such a message and
@@ -155,8 +185,9 @@ Every 5 minutes Bots checks the tasks in progress by fixed rules; no model judge
 - After a step fails with a temporary error (HTTP 408, 429 or 5xx, a dropped or refused connection), the task is told
   to continue 15 seconds later, then 30, then 60. A fourth such failure in a row, or any other error, and it has
   **Failed**; the bot that asked is told.
-- When every task a bot asked for has settled (done, failed, stopped or stuck) and that bot has said nothing since
-  (an answer marked **Not sent** doesn't count), it gets one reminder to tell whoever asked. A task that asked for
+- When every task a bot asked for the reports of has settled (done, failed, stopped or stuck) and that bot has said
+  nothing since (an answer marked **Not sent** doesn't count), it gets one reminder to tell whoever asked. Tasks that
+  answered the person themselves need no reminder. A task that asked for
   sub-tasks and has ended since gets none.
 - After Harness restarts, a task that was in the middle of its work gets a note: check what was already done (files,
   commands, messages sent), don't repeat it, then go on. A task whose conversation is gone starts again from its
@@ -500,6 +531,15 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/bots
 
 Refresh the page once after installing. For AI avatars, install [Images](../images) too.
 
+## Upgrading from 0.8
+
+- Nothing to do: bots, tasks, memory, schedules, chat apps and pairings stay as they are. The timeline in
+  `messages.jsonl` gains fields for topics; older messages stay in the main timeline.
+- A task opened before the upgrade that came from a chat or the panel now answers the person itself when it
+  reports, like new ones.
+- The dispatcher in **Router** mode loses web search in its own conversation (it hands searches to a task, its own
+  if no teammate fits); **Turn back on** under its **Abilities** gives it back.
+
 ## Upgrading from 0.7
 
 - Bots, memory, scheduled tasks, topics, chat apps and pairings stay as they are. 0.8 adds `tickets.json`
@@ -523,7 +563,9 @@ Refresh the page once after installing. For AI avatars, install [Images](../imag
 - In a group chat a bot hears only messages that @mention it (or reply to it); it does not listen to the
   rest of the conversation. 0.8 does not change that.
 - Thread history starts with 0.8: messages from before the upgrade belong to no thread, so reading a chat
-  thread with `bot_recall` shows only what was said there since.
+  thread with `bot_recall` shows only what was said there since. Panel topics start with 0.9.
+- Topics are in the panel only. In a chat app, threads, topics and reply chains play that part where the app has
+  them; a private chat stays one conversation, where a new message goes to the dispatcher.
 - The watchdog goes by time and status only; it does not judge whether a task is heading the right way.
 - Costs are estimates. Gateways, subscriptions and discounts bill differently; set your own prices.
 - Only the Codex CLI's login can be borrowed so far; other subscriptions sign in from Harness Settings →

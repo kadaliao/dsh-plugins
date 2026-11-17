@@ -634,3 +634,67 @@ the user stopped); `status` asks an idle working task for a report. Result `{ ok
 `memory_search { query }` also matches tasks: every word in the title, else in one of its reports (most recently
 changed first, ≤ 10). From a task Session only its task, parent and sub-tasks, and only their journal lines; no
 digests. Result `+= { tickets: string[] }`.
+
+## v0.9 — the panel chat in topics
+
+### Topics
+A message typed in the panel is a topic, or with `replyTo` joins the topic of the message it answers. A topic's key is
+`panel:<sessionId>:<rootId>` (`rootId`: the id of its first message); the two-part `panel:<sessionId>` is still the
+panel as a whole, and what was logged before 0.9 stays there (the main timeline). Messages typed in the panel get ids
+`p` + 8 lowercase letters or digits; that id is how a model names a topic (`[Panel] (thread p…)`), and `bot_reply` /
+`bot_send_message` take it for `thread`. Any message can become a topic's first message: one a person replies to that
+was in no topic is given `topic` (its own id) and the three-part `thread`.
+
+### Timeline
+```ts
+Message += {
+  chat?: string,     // the bot whose panel chat it belongs to; set: only that chat shows it
+  topic?: string,    // the root id of its panel topic; the root has topic === id
+  replyTo?: string,  // the message a person replied to
+  movedTo?: string,  // a top-level message the dispatcher filed under another topic: that topic's root id
+  failed?: true,     // a panel message that could not be handed over
+}
+```
+| kind | Fields | Entry |
+|---|---|---|
+| `user` | `chat`, `thread`, `topic`, `replyTo?`, `ticket?` | a panel message, logged before it is handed over; `ticket`: a reply that went straight to that task |
+| `reply` | `chat`, `thread`, `topic?` | a bot's answer in a topic (a turn's only Thread, or `bot_reply`) |
+| `reply` | `chat` (the bot that asked), `ticket`, `status`, `thread`, `topic?`, `via?` | a task's `done` / `question` / `blocked` report, shown to the person where the task came from (`from`: the task's bot) |
+| `dm` | `chat`, `thread`, `topic`, `ticket` | a delegation, a message added to a task, a relayed report or a watchdog notice of a task that came from a panel topic |
+
+`messages.jsonl` stays append-only: a change to a logged message is a later line `{ id, patch: true, ...fields }`,
+merged into it when the log is read, and dropped when the log is compacted.
+
+### Routes
+| Method | Path | Body / query | Returns |
+|---|---|---|---|
+| GET | `messages` | `?bot=<id>&limit=200` | `{ items: Message[], topics: { [rootId]: { key, tickets: TicketRow[] } } }`, oldest first: messages whose `chat` is the bot, and those without `chat` from or to it. A reply in the window whose topic began earlier brings the topic's first message along, before the rest. `pending: true` on a panel message no model has taken yet (or waiting for a task to start or for a worker slot). `tickets`: the tasks subscribed to the topic, archived ones left out |
+| GET | `messages` | `?bot=<id>&topic=<rootId>&limit=500` | the same shape for one topic: its first message, the replies in it and the messages filed under it |
+| POST | `send` | `{ to, text, replyTo? }` | `{ ok, sessionId, message? }`: `message` is the logged message (with `topic`, the resolved root, and `pending`); none for `/new` alone. `replyTo` must be a message of that bot's chat |
+
+### Routing
+- A top-level panel message goes to the bot's home: a router home steers it with a header `[Panel] (thread <rootId>)`
+  and `Open tasks: …` (its tasks still open or ended within a day, latest change first, ≤ 8); another home takes it as
+  a turn of its own, with no header. Its delivery id is `bots:panel:<id>`, so it is logged once.
+- A reply in a topic with live tasks (not archived, not stopped) goes to each of them as the person's message
+  (`bots:panel:<id>:<ticketId>`, `[Panel]\nIn reply to …` when it answers a message other than the root), and the
+  chat's bot gets an injected `[follow_up]` note. Without one it goes to the home, with `In reply to <who>: "…"`.
+- One topic in a turn is a Thread like a chat thread: plain replies go into it. Several topics (or a topic and a
+  chat) make a choice: `bot_reply` names each, and a new task must name its `thread` (refused otherwise, with the
+  choices). Plain text of such a turn is not logged when `bot_reply` already answered every topic and chat of it.
+- `bot_send_message { ticket }` from a home whose turn has one other panel topic that is only a person's message (or the
+  one `thread` names) files that message under the task's topic (`movedTo`), and the turn's replies go there.
+
+### Reports
+`bot_send_message { …, report_to?: 'thread' | 'me' }` on a new task. A task with an origin Thread that is no sub-task
+and was not opened with `report_to: 'me'` (`Ticket += { relay?: true }` for those) answers the person itself: its
+`done`, `question` and `blocked` reports are logged as replies in its panel topic (or the panel), or posted to its chat
+Thread through that chat's app (signed `【Name】` when the worker is not the bot the chat belongs to; quoting the
+message that started it). The requester gets an injected note, id `bots:shown:<ticket>:<index>:<at>`, text
+`[Shown] @bot's report on task …`, which is no input of its turn. When the chat cannot be reached the report goes to
+the requester as in 0.8. Requester reminders skip these tasks. The worker's tool result says where it was shown.
+
+### Router
+`ROUTER_DENY` adds the web ability (`web_search`, `web_fetch`). The dispatcher's home may open a task for its own bot
+(`to` its own handle); no other conversation can message itself.
+
