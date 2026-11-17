@@ -1259,10 +1259,20 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     }
 
     /** Markdown through the product's own renderer (the same as the main chat), else a small built-in one. */
+    /**
+     * Amounts stay amounts: the Harness renderer reads `$…$` as inline math, so "$9 monthly / $90 annual"
+     * would turn into a formula. A `$` right before a digit is escaped, outside code.
+     */
+    function moneySafe(text) {
+      return str(text)
+        .split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/g)
+        .map((part, i) => (i % 2 ? part : part.replace(/(^|[^\\])\$(?=\d)/g, '$1\\$')))
+        .join('');
+    }
     function RichText({ t, text }) {
       const Md = primitives && primitives.MarkdownText;
       if (Md && (typeof Md === 'function' || typeof Md === 'object')) {
-        return h('div', { className: 'dshb-rich', 'data-dsh-bots-md': 'harness' }, h(Md, { text, labels: mdLabels(t), variant: 'compact' }));
+        return h('div', { className: 'dshb-rich', 'data-dsh-bots-md': 'harness' }, h(Md, { text: moneySafe(text), labels: mdLabels(t), variant: 'compact' }));
       }
       return h('div', { className: 'dshb-rich dshb-mdf', 'data-dsh-bots-md': 'builtin' }, miniMarkdown(text));
     }

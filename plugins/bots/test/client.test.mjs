@@ -1138,6 +1138,13 @@ test('with the shell renderer available, bot replies use its MarkdownText', asyn
   assert.equal(new Set(seenProps.map((p) => p.labels)).size, 1);
 });
 
+test('amounts in a reply are not read as math by the shell renderer', async () => {
+  const seenProps = [];
+  const MarkdownText = (props) => (seenProps.push(props), { type: 'md', props, children: [props.text] });
+  await chatWith('Ledger created the $9 monthly / $90 annual prices. Code stays: `$9`, and so does $x^2$.', { primitives: { MarkdownText } });
+  assert.equal(seenProps.at(-1).text, 'Ledger created the \\$9 monthly / \\$90 annual prices. Code stays: `$9`, and so does $x^2$.');
+});
+
 test('links in a message get rich cards: a playable YouTube video and an X post', async () => {
   const { tree, unfurled } = await chatWith(TABLE_REPLY);
   assert.deepEqual(unfurled.sort(), ['https://github.com/', 'https://x.com/jack/status/20', 'https://youtu.be/dQw4w9WgXcQ'].sort());
