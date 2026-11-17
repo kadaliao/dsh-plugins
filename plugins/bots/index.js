@@ -36,7 +36,7 @@
 
 import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
+import { isAbsolute, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
@@ -2495,10 +2495,60 @@ export function apply(ctx, config, deps = {}) {
     if (!path || !/^image\/(png|jpeg|webp|gif)$/.test(String(type))) throw new Error('the image model returned no picture');
     const bytes = readFileSync(path);
     if (bytes.length > 8 * 1024 * 1024) throw new Error('the generated picture is too large');
+    return savePicture(bot, bytes, type, 'ai');
+  }
+  /** Store `bytes` as the bot's picture avatar. */
+  function savePicture(bot, bytes, type, source) {
     mkdirSync(join(dir, 'avatars'), { recursive: true });
     writeFileSync(join(dir, 'avatars', bot.id), bytes);
     writeFileSync(join(dir, 'avatars', `${bot.id}.type`), type);
-    return store.patch(bot.id, { avatar: { kind: 'image', source: 'ai', url: `${R}/avatar/${bot.id}?v=${Date.now().toString(36)}`, color: bot.avatar.color } });
+    return store.patch(bot.id, { avatar: { kind: 'image', ...(source ? { source } : {}), url: `${R}/avatar/${bot.id}?v=${Date.now().toString(36)}`, color: bot.avatar.color } });
+  }
+  /** The image type of `bytes` by its first bytes: PNG, JPEG, WebP or GIF; else ''. */
+  function pictureType(bytes) {
+    if (bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+    if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+    if (bytes.length > 12 && bytes.toString('latin1', 0, 4) === 'RIFF' && bytes.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+    if (bytes.length > 6 && /^GIF8[79]a$/.test(bytes.toString('latin1', 0, 6))) return 'image/gif';
+    return '';
+  }
+  /** A picture file on this computer becomes the bot's avatar (a tool's `avatar_file`). */
+  function avatarFromFile(bot, file) {
+    const path = String(file ?? '').trim().replace(/^~(?=\/)/, homedir());
+    if (!isAbsolute(path)) throw new Error('avatar_file must be an absolute path to an image file');
+    let bytes;
+    try {
+      if (statSync(path).size > MAX_AVATAR) throw new Error('the image is larger than 2 MB');
+      bytes = readFileSync(path);
+    } catch (error) {
+      throw new Error(/2 MB/.test(String(error?.message)) ? error.message : `cannot read ${path}: ${error?.code ?? error?.message ?? error}`);
+    }
+    const type = pictureType(bytes);
+    if (!type) throw new Error('avatar_file must be a PNG, JPEG, WebP or GIF image');
+    return savePicture(bot, bytes, type);
+  }
+  /** Back to letters: the picture is removed. */
+  function clearPicture(bot) {
+    for (const f of [bot.id, `${bot.id}.type`]) rmSync(join(dir, 'avatars', f), { force: true });
+    return store.patch(bot.id, { avatar: { kind: 'initials', color: bot.avatar.color } });
+  }
+  const AVATAR_PARAMS = {
+    avatar_prompt: { type: 'string', description: 'Draw a picture avatar with AI from this description of the look and style (e.g. "photorealistic portrait of a woman in her thirties, studio light"). Needs the Images plugin; takes up to a minute per picture. The result says so when it is not available.' },
+    avatar_file: { type: 'string', description: 'Absolute path of an image file on this computer (PNG, JPEG, WebP or GIF, at most 2 MB) to use as the avatar picture.' },
+  };
+  /** Apply a tool's picture arguments to `bot`; the note says what happened (a failed drawing leaves the rest of the change in place). */
+  async function applyPicture(bot, args) {
+    if (typeof args.avatar_file === 'string' && args.avatar_file.trim()) return { bot: avatarFromFile(bot, args.avatar_file), note: ' Its avatar is now that picture.' };
+    if (typeof args.avatar_prompt === 'string' && args.avatar_prompt.trim()) {
+      if (!imageGenAvailable()) return { bot, note: ' No picture was drawn: AI avatars need the Images plugin (generate_image), which is not installed or is turned off. The user can install it from the plugin market, or upload a picture on the bot\'s Profile page; avatar_file takes an image file.' };
+      try {
+        return { bot: await generateAvatar(bot, args.avatar_prompt), note: ' Its avatar is now a picture drawn from that description.' };
+      } catch (error) {
+        return { bot, note: ` The picture could not be drawn: ${String(error?.message ?? error).slice(0, 300)}` };
+      }
+    }
+    if (args.avatar_clear === true && bot.avatar.kind === 'image') return { bot: clearPicture(bot), note: ' Its avatar is back to letters.' };
+    return { bot, note: '' };
   }
 
   // --- who calls a tool ----------------------------------------------------------------------
@@ -2666,6 +2716,7 @@ export function apply(ctx, config, deps = {}) {
         persona: { type: 'string', description: 'Who the bot is and how it works, in the second person ("You are …"). Several sentences.' },
         initials: { type: 'string', description: 'Avatar letters, at most two; derived from the name (pinyin initials for a Chinese name) when left out.' },
         color: { type: 'string', description: 'Avatar background colour, CSS hex.' },
+        ...AVATAR_PARAMS,
         skills: { ...skillInput, description: 'Skills to give it.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ bot: v.bot }) },
@@ -2683,12 +2734,13 @@ export function apply(ctx, config, deps = {}) {
           },
           { createdBy: by?.id ?? 'user' },
         );
-        return { ok: true, text: `Created ${card(bot)}. Message it with bot_send_message to @${bot.handle}.${offNote(args.skills, bot)}`, bot: face(bot) };
+        const pic = await applyPicture(bot, args);
+        return { ok: true, text: `Created ${card(pic.bot)}. Message it with bot_send_message to @${bot.handle}.${pic.note}${offNote(args.skills, bot)}`, bot: face(pic.bot) };
       },
     }),
     defineTool({
       name: 'bot_update',
-      description: "Change a bot: name, bio, persona, avatar, skills, or make it the dispatcher. Only the fields you pass change.",
+      description: "Change a bot (yourself included): name, bio, persona, avatar (letters and colour, a picture drawn by AI, or an image file), skills, or make it the dispatcher. Only the fields you pass change.",
       parameters: {
         bot: { type: 'string', required: true, description: '@handle, id or name of the bot.' },
         name: { type: 'string' },
@@ -2696,6 +2748,8 @@ export function apply(ctx, config, deps = {}) {
         persona: { type: 'string', description: 'Replaces the whole persona.' },
         initials: { type: 'string', description: 'Avatar letters, at most two.' },
         color: { type: 'string', description: 'Avatar background colour, CSS hex.' },
+        ...AVATAR_PARAMS,
+        avatar_clear: { type: 'boolean', description: 'true to remove the avatar picture and go back to letters.' },
         add_skills: { ...skillInput, description: `Skills to add (a skill with the same name is replaced). At most ${MAX_SKILLS_ON} can be on at once; past that they are added switched off.` },
         remove_skills: { type: 'array', items: { type: 'string' }, description: 'Names of skills to remove.' },
         make_dispatcher: { type: 'boolean', description: 'true to make this bot the dispatcher.' },
@@ -2712,8 +2766,9 @@ export function apply(ctx, config, deps = {}) {
           tooManySkills(next.skills.length);
         }
         if (args.make_dispatcher === true) next.role = 'primary';
-        const saved = store.save(next);
-        return { ok: true, text: `Updated ${card(saved)}.${offNote(args.add_skills, saved)}`, bot: face(saved) };
+        const pic = await applyPicture(store.save(next), args);
+        const saved = pic.bot;
+        return { ok: true, text: `Updated ${card(saved)}.${pic.note}${offNote(args.add_skills, saved)}`, bot: face(saved) };
       },
     }),
     defineTool({
@@ -3753,11 +3808,7 @@ export function apply(ctx, config, deps = {}) {
         if (!m) return { ok: false, reason: 'send a PNG, JPEG, WebP or GIF image' };
         const bytes = Buffer.from(m[2], 'base64');
         if (bytes.length > MAX_AVATAR) return { ok: false, reason: 'the image is larger than 2 MB' };
-        mkdirSync(join(dir, 'avatars'), { recursive: true });
-        writeFileSync(join(dir, 'avatars', bot.id), bytes);
-        writeFileSync(join(dir, 'avatars', `${bot.id}.type`), m[1]);
-        const saved = store.patch(bot.id, { avatar: { kind: 'image', url: `${R}/avatar/${bot.id}?v=${Date.now().toString(36)}`, color: bot.avatar.color } });
-        return { ok: true, bot: publicBot(saved) };
+        return { ok: true, bot: publicBot(savePicture(bot, bytes, m[1])) };
       },
     },
     'avatar/generate': {
@@ -3771,8 +3822,7 @@ export function apply(ctx, config, deps = {}) {
       post: (body) => {
         const bot = store.get(String(body.id ?? ''));
         if (!bot) return { ok: false, reason: 'no such bot' };
-        for (const f of [bot.id, `${bot.id}.type`]) rmSync(join(dir, 'avatars', f), { force: true });
-        return { ok: true, bot: publicBot(store.patch(bot.id, { avatar: { kind: 'initials', color: bot.avatar.color } })) };
+        return { ok: true, bot: publicBot(clearPicture(bot)) };
       },
     },
     'ocu/install': {

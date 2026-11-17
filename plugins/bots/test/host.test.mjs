@@ -285,6 +285,49 @@ test('AI avatar retries a dropped gateway connection', async () => {
   }
 });
 
+test('a bot manages avatars: drawn by AI from a description, taken from an image file, or back to letters', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const png = join(process.env.DSH_HOME, 'portrait.png');
+  writeFileSync(png, Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
+  const bot = api.store.find('researcher');
+  // No Images plugin: the rest of the change lands, and the result says why there is no picture.
+  const none = await call('bot_update', { bot: '@researcher', bio: 'Reads everything', avatar_prompt: 'photorealistic portrait' });
+  assert.equal(api.store.get(bot.id).bio, 'Reads everything');
+  assert.match(none.text, /No picture was drawn: AI avatars need the Images plugin/);
+  const prompts = [];
+  h.tools.set('generate_image', {
+    name: 'generate_image',
+    async execute(args) {
+      prompts.push(args.prompt);
+      return { images: [{ path: png, mediaType: 'image/png' }] };
+    },
+  });
+  const original = h.ctx.tools.get;
+  h.ctx.tools.get = (name) => h.tools.get(name);
+  try {
+    const drawn = await call('bot_update', { bot: '@researcher', avatar_prompt: 'photorealistic portrait of a woman, studio light' });
+    assert.match(drawn.text, /avatar is now a picture drawn from that description/);
+    assert.match(prompts[0], /Style notes from the user: photorealistic portrait of a woman, studio light/);
+    assert.deepEqual([api.store.get(bot.id).avatar.kind, api.store.get(bot.id).avatar.source], ['image', 'ai']);
+    const made = await call('bot_create', { name: 'Painter', avatar_prompt: 'watercolour fox' });
+    assert.equal(made.bot.avatar.kind, 'image');
+  } finally {
+    h.ctx.tools.get = original;
+    h.tools.delete('generate_image');
+  }
+  const cleared = await call('bot_update', { bot: '@researcher', avatar_clear: true });
+  assert.match(cleared.text, /back to letters/);
+  assert.equal(api.store.get(bot.id).avatar.kind, 'initials');
+  const filed = await call('bot_update', { bot: '@researcher', avatar_file: png });
+  assert.match(filed.text, /avatar is now that picture/);
+  assert.equal(api.store.get(bot.id).avatar.kind, 'image');
+  assert.equal(api.store.get(bot.id).avatar.source, undefined);
+  const txt = join(process.env.DSH_HOME, 'note.txt');
+  writeFileSync(txt, 'not a picture');
+  await assert.rejects(call('bot_update', { bot: '@researcher', avatar_file: txt }), /must be a PNG, JPEG, WebP or GIF image/);
+  await assert.rejects(call('bot_update', { bot: '@researcher', avatar_file: 'portrait.png' }), /absolute path/);
+});
+
 test('teams: every bot is bilingual, timings parse, apps exist in the catalog', async () => {
   const { TEAMS, teamTiming } = await import('../lib/teams.mjs');
   const ids = new Set(templates().map((t) => t.id));

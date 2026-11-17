@@ -81,6 +81,11 @@ letters `ABCDEFGHJKLMNOPQRSTWXYZ`; the Host has the same `initialsOf` in lib/sto
 
 `catalog.imageGen: boolean` — whether `generate_image` is available.
 
+The tools manage avatars too (0.8): `bot_update` and `bot_create` take `avatar_prompt` (a picture drawn by the
+Images plugin from that description; without the plugin the result says so and the rest of the change still
+applies) and `avatar_file` (an absolute path to a PNG, JPEG, WebP or GIF of at most 2 MB); `bot_update` also takes
+`avatar_clear: true` (back to initials).
+
 ### Apps
 `App = { id, template, name, serverName, enabled, values: {[fieldKey]: string}, config: {command?, args?, env?, url?, headers?} }`.
 Catalog apps keep their settings in `values` (keys from the template's `fields`); custom apps

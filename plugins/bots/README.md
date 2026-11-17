@@ -200,7 +200,8 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 | Custom | Any local (stdio) or remote (Streamable HTTP) MCP server |
 
 - **Schedules** are ordinary Harness scheduled tasks, also on the Automation page.
-- **AI avatars**: with the [Images plugin](../images), draw a bot's avatar from its persona.
+- **AI avatars**: with the [Images plugin](../images), draw a bot's avatar from its persona. A bot can do it too:
+  ask the dispatcher to give the team new avatars and describe the look, or point it at an image file.
 - **Logos**: each app in the gallery shows its vendor's own logo (the App Store icon where there is an app,
   otherwise the logo from the vendor's site or repository). The logos are their owners' trademarks and
   only identify each service.
