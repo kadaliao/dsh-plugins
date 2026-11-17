@@ -1,0 +1,12 @@
+{
+  "name": "elkjs",
+  "version": "0.12.1",
+  "type": "commonjs",
+  "license": "EPL-2.0 OR GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kieler/elkjs.git"
+  },
+  "homepage": "https://github.com/kieler/elkjs",
+  "note": "Unmodified lib/elk.bundled.js and LICENSE.md from the elkjs 0.12.1 npm package, used under EPL-2.0."
+}

@@ -3,7 +3,7 @@ import test from 'node:test';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import { TYPES, candidateName, planPaths, resolveFrom, slugify, stamp, titleOf } from '../lib/paths.mjs';
+import { TYPES, candidateName, planPaths, portableOutput, resolveFrom, slugify, stamp, titleOf, withOutput } from '../lib/paths.mjs';
 
 test('slugify keeps Latin words and drops the rest', () => {
   assert.equal(slugify('My Checkout Flow!'), 'my-checkout-flow');
@@ -55,4 +55,18 @@ test('titles come from meta.title or the explainer heading', () => {
   assert.equal(titleOf('architecture', { meta: { title: 'Obj' } }), 'Obj');
   assert.equal(titleOf('architecture', 'not json'), '');
   assert.equal(titleOf('explainer', '# Why is TLS slow? {#tls}\n\nBecause.'), 'Why is TLS slow?');
+});
+
+test('meta.output is filled in when the draft leaves it out or writes one Archify rejects', () => {
+  for (const ok of ['page.html', 'docs/arch/page.html', 'a.HTM']) assert.equal(portableOutput(ok), true, ok);
+  for (const bad of [undefined, '', 'page', '/abs/page.html', 'C:/x.html', '../up.html', 'a/./b.html', 'a//b.html', 'a\\b.html', 7]) assert.equal(portableOutput(bad), false, String(bad));
+  const spec = { meta: { title: 'T' }, components: [] };
+  assert.deepEqual(withOutput(spec, 'shop.html').meta, { title: 'T', output: 'shop.html' });
+  assert.equal(spec.meta.output, undefined);
+  assert.equal(withOutput({ meta: { output: '/tmp/x.html' } }, 'shop.html').meta.output, 'shop.html');
+  const kept = { meta: { output: 'docs/shop.html' } };
+  assert.equal(withOutput(kept, 'shop.html'), kept);
+  // No meta at all is the schema's to report.
+  const bare = { components: [] };
+  assert.equal(withOutput(bare, 'shop.html'), bare);
 });

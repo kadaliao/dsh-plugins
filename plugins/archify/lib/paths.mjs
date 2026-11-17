@@ -91,3 +91,25 @@ export function titleOf(type, text) {
     return '';
   }
 }
+
+/**
+ * Whether `meta.output` is a plain relative `.html` path Archify accepts: no
+ * absolute or drive path, backslash, `.`/`..` step or empty step.
+ */
+export function portableOutput(value) {
+  if (typeof value !== 'string' || !/\.html?$/i.test(value)) return false;
+  if (value.startsWith('/') || value.includes('\\') || /^[A-Za-z]:/.test(value)) return false;
+  return value.split('/').every((step) => step !== '' && step !== '.' && step !== '..');
+}
+
+/**
+ * A native diagram's spec with `meta.output` set to `name` when the model left
+ * it out or wrote one Archify rejects: the tool decides where the page goes,
+ * so the field only has to pass the schema. Returns the same object otherwise.
+ */
+export function withOutput(spec, name) {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return spec;
+  const meta = spec.meta && typeof spec.meta === 'object' && !Array.isArray(spec.meta) ? spec.meta : null;
+  if (!meta || portableOutput(meta.output)) return spec;
+  return { ...spec, meta: { ...meta, output: name } };
+}

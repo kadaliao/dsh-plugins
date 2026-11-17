@@ -20,7 +20,8 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, sep } from 'node:path';
 
 import { CLI, SKILL_ROOT, clip, outcomeOf, parseJsonOutput, runArchify } from './lib/run.mjs';
-import { NATIVE_TYPES, TYPES, planPaths, resolveFrom, titleOf } from './lib/paths.mjs';
+import { WORKER, layoutReason, sidecarOf } from './lib/autolayout.mjs';
+import { NATIVE_TYPES, TYPES, planPaths, resolveFrom, titleOf, withOutput } from './lib/paths.mjs';
 import { createStore, newId } from './lib/store.mjs';
 
 // The registry wants the compiled definition `defineTool` makes. Outside a
@@ -213,6 +214,37 @@ export function aspectOf(htmlPath) {
   }
 }
 
+const parseJson = (text) => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+const readText = (file) => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+};
+
+/** The longest the layout worker may take. */
+const LAYOUT_TIMEOUT = 60_000;
+
+/**
+ * Lay an Architecture candidate out in the layout worker, which writes the
+ * positions into it. Returns the worker's summary.
+ */
+export async function placeCandidate(candidate, { cwd, quality, repoRoot, signal } = {}) {
+  const job = JSON.stringify({ candidate, cwd, quality, repoRoot: repoRoot || '' });
+  const run = await runArchify([job], { cwd, signal, timeoutMs: LAYOUT_TIMEOUT, cli: WORKER });
+  const summary = parseJsonOutput(run.stdout);
+  if (summary && typeof summary === 'object') return summary;
+  return { ok: false, error: clip(run.stderr || (run.timedOut ? 'timed out' : `exit ${run.code}`), 400), ms: run.ms };
+}
+
 /** Run one `archify_render` call. */
 export async function render(ctx, store, settings, args, exec) {
   const a = args && typeof args === 'object' ? args : {};
@@ -223,6 +255,7 @@ export async function render(ctx, store, settings, args, exec) {
 
   // The draft the model sent, as the text that goes into the candidate file.
   let draft = null;
+  let specObject = null;
   if (type === 'explainer') {
     if (typeof a.markdown === 'string' && a.markdown.trim() !== '') draft = a.markdown.endsWith('\n') ? a.markdown : `${a.markdown}\n`;
     else if (typeof a.spec === 'string' && a.spec.trim() !== '') draft = a.spec;
@@ -236,6 +269,7 @@ export async function render(ctx, store, settings, args, exec) {
       }
     }
     if (typeof spec !== 'object' || Array.isArray(spec)) throw new ToolInputError('spec must be the candidate JSON object');
+    specObject = spec;
     draft = `${JSON.stringify(spec, null, 2)}\n`;
   }
   const hasCandidate = typeof a.candidate === 'string' && a.candidate.trim() !== '';
@@ -244,13 +278,17 @@ export async function render(ctx, store, settings, args, exec) {
   }
 
   const plan = planPaths({ cwd, type, candidate: hasCandidate ? a.candidate : '', output: a.output, name: a.name, title: draft ? titleOf(type, draft) : '' });
+  if (specObject) {
+    const fixed = withOutput(specObject, basename(plan.output));
+    if (fixed !== specObject) draft = `${JSON.stringify(fixed, null, 2)}\n`;
+  }
   if (draft !== null) {
     mkdirSync(dirname(plan.candidate), { recursive: true });
     writeFileSync(plan.candidate, draft, 'utf8');
   } else if (!existsSync(plan.candidate)) {
     throw new ToolInputError(`candidate not found: ${plan.candidate}`);
   }
-  const text = draft ?? readFileSync(plan.candidate, 'utf8');
+  let text = draft ?? readFileSync(plan.candidate, 'utf8');
   const title = titleOf(type, text) || plan.slug;
 
   const outDir = typeof a.outDir === 'string' && a.outDir.trim() !== '' ? resolveFrom(cwd, a.outDir) : reviewDirFor(plan.folder, plan.output);
@@ -260,6 +298,18 @@ export async function render(ctx, store, settings, args, exec) {
   const repoRoot = typeof a.repoRoot === 'string' && a.repoRoot.trim() !== '' ? resolveFrom(cwd, a.repoRoot) : citesSources(type, text) ? await gitRoot(cwd) : '';
   if (repoRoot) cliArgs.push('--repo-root', repoRoot);
   if (outDir) cliArgs.push('--out-dir', outDir);
+
+  // An Architecture draft without positions is placed here, so the model writes
+  // topology only and never repairs coordinates.
+  let layout = null;
+  if (type === 'architecture') {
+    const reason = layoutReason(parseJson(text), { relayout: a.relayout === true, sidecar: parseJson(readText(sidecarOf(plan.candidate))) });
+    if (reason) {
+      layout = { reason, ...(await placeCandidate(plan.candidate, { cwd, quality, repoRoot, signal: exec?.signal })) };
+      if (exec?.signal?.aborted) throw new Error('the render was cancelled');
+      text = readText(plan.candidate) || text;
+    }
+  }
 
   const run = await runArchify(cliArgs, { cwd, signal: exec?.signal, timeoutMs: settings.timeoutMs });
   if (exec?.signal?.aborted) throw new Error('the render was cancelled');
@@ -310,7 +360,8 @@ export async function render(ctx, store, settings, args, exec) {
     browserSkipped: outcome.browserSkipped,
     ...(id ? { id, version, aspect } : {}),
     ...(failures > 0 ? { failures } : {}),
-    ms: run.ms,
+    ...(layout ? { layout } : {}),
+    ms: run.ms + (layout?.ms ?? 0),
     receipt: receipt ?? null,
     ...(receipt ? {} : { stdout: clip(run.stdout, 6000), stderr: clip(run.stderr, 6000), exitCode: run.code ?? -1, timedOut: run.timedOut }),
   };
@@ -323,8 +374,10 @@ export function renderResult(_args, value) {
     .map(([k, s]) => `${k} ${k === 'browser-check' && v.browserSkipped ? 'skipped (no Chrome-family browser installed)' : s}`)
     .join(', ');
   const lines = [];
+  const placedNow = v.layout?.ok === true;
   if (v.ok) {
     lines.push(`Delivered the ${v.type} page "${v.title}" at ${v.output} (candidate ${v.candidate}). Gates: ${gates}.`);
+    if (placedNow) lines.push(`The components were laid out automatically (${v.layout.width}×${v.layout.height}px); their pos and size are now in the candidate.`);
     lines.push('This page is the deliverable and the user already sees it in the conversation (interactive, with full screen, open in browser and download) and in the Archify panel. Reply now, as the skill\'s Output section says, without repeating the path. Do not run visual checks, captures or another layout round unless the user asks for one.');
     const r = v.receipt ?? {};
     const review = r.visualReviewRecommendation ?? r.layoutReviewRecommendation;
@@ -333,6 +386,11 @@ export function renderResult(_args, value) {
     if (warnings.length > 0 || r.writing) lines.push(`Warnings to mention only if they change how the page reads: ${clip(JSON.stringify({ warnings, writing: r.writing }), 3000)}`);
   } else if (v.receipt) {
     lines.push(`Archify stopped at ${v.failedStage || v.status}${gates ? ` (gates: ${gates})` : ''}. Nothing was delivered.`);
+    if (placedNow) {
+      lines.push('The components were laid out automatically before this run. Fix what the diagnostics name in the text or topology (components, connections, boundaries), never the coordinates: a render after such an edit lays the candidate out again. If only placement diagnostics remain (composition, clean-flow, label or route clearance), set meta.quality_profile to "standard" and render with quality "standard" and relayout true.');
+    } else if (v.layout && v.layout.ok === false) {
+      lines.push(`Automatic layout failed (${v.layout.error}), so the components had no positions. Check that every component has an id and every connection names existing components, then render again.`);
+    }
     const n = Number(v.failures) || 1;
     if (n >= STOP_REPAIRING) {
       lines.push(`Repair budget spent (failed render ${n} of this candidate). Stop repairing now: tell the user in two or three lines which issue remains, from the diagnostics below, that the candidate is at ${v.candidate}, and offer to keep going. Do not render again unless the user asks.`);
@@ -357,6 +415,7 @@ export function buildRenderTool(ctx, store, settings) {
     description:
       'Render, check and deliver an Archify diagram or one-page explainer as a standalone interactive HTML page (the Archify skill\'s `finalize`). Load the `archify` skill first and follow it to author the candidate. ' +
       'New request: pass the complete candidate as `spec` (JSON object; for type explainer, the Markdown draft as `markdown`) and a short Latin `name`; the tool writes it to `.archify/<type>-<name>-<timestamp>/` under the working directory and delivers the page next to it. ' +
+      'Architecture: leave out pos, size, row/col and route hints; the tool lays the components out (boundaries as groups) before checking, and writes the positions into the candidate. ' +
       'Repair: edit that candidate file in place, then call again with `candidate` set to its path. ' +
       'It runs validate, deliver, a strict check and a real-browser check, and returns the compact receipt: on failure its diagnostics say what to fix. A delivered page is shown to the user in the conversation and in the Archify panel.',
     parameters: {
@@ -366,6 +425,7 @@ export function buildRenderTool(ctx, store, settings) {
       candidate: { type: 'string', description: 'Path of an existing candidate file (relative to the working directory, absolute or ~/…): to re-render after editing it in place. With `spec`/`markdown` too, that file is overwritten first.' },
       name: { type: 'string', description: 'Short Latin kebab-case name for a new folder and page, e.g. checkout-flow. Leave out to derive it from the title.' },
       quality: { type: 'string', enum: ['showcase', 'standard'], description: 'Must match meta.quality_profile. Default showcase.' },
+      relayout: { type: 'boolean', description: 'For type architecture: lay every component out afresh, dropping the positions and route hints in the candidate. Not needed for a draft without positions (always laid out), or after editing the topology of a candidate this tool laid out (laid out again by itself).' },
       repoRoot: { type: 'string', description: 'For a repository-backed diagram whose repository is not the working directory\'s Git root: the root its source evidence points into. Default: that Git root, when the candidate cites sources.' },
       output: { type: 'string', description: 'Page path, only when the user names one. Default: <name>.html beside the candidate.' },
     },
@@ -386,6 +446,7 @@ export function buildRenderTool(ctx, store, settings) {
           output: String(v.output ?? ''),
           candidate: String(v.candidate ?? ''),
           ms: Number(v.ms) || 0,
+          autoLayout: v.layout?.ok === true,
           ...(v.id ? { id: String(v.id), version: String(v.version ?? ''), aspect: Number(v.aspect) || 0 } : {}),
           ...(v.receipt && !v.ok && Array.isArray(v.receipt.diagnostics)
             ? {

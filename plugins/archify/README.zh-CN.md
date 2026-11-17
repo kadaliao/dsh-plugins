@@ -11,7 +11,7 @@
 
 ```
 > 画一下这个仓库的运行时架构图
-  ▸ 已完成，用时 1 分 34 秒
+  ▸ 已完成，用时 39 秒
   [ 架构图，可交互 ]   ⛶ 全屏 · ↗ 浏览器 · ⤓ · 📁 · ⧉
   这个插件分成两半：……
 ```
@@ -62,6 +62,10 @@ git+https://github.com/kadaliao/dsh-plugins.git#main&path:/plugins/archify
 
 Archify 的检查很严，模型的时间大多花在修布局上。插件把这部分控制住：
 
+- **架构图由插件排版。** 模型只写有哪些框、哪些箭头、哪些分组，位置由插件用
+  [ELK](https://github.com/kieler/elkjs) 的分层布局算出来（同组的框排在一起，主链路从上往下），
+  大约一秒内试四种排法、逐个过 Archify 的检查，留下通过检查里交叉和绕行最少的一种。位置写进
+  `candidate.json`，之后照样能改：改了文字或结构会重新排，手动挪过的位置保持不动。
 - **检查通过的页面就是答案。** 页面一生成，模型就直接回复，不会自己再去做视觉检查、截图或者再调一轮
   布局。Archify 建议整理连线时，回复最后会问一句要不要整理；你说「整理一下布局」就会做这一轮。
 - **修复有预算。** 同一份图第三次渲染失败起，工具会让模型改用 Archify 的 `standard` 档，这一档不做
@@ -69,8 +73,9 @@ Archify 的检查很严，模型的时间大多花在修布局上。插件把这
   告诉你还剩什么问题。
 - **渲染本身很快。** 校验不过大约一秒就返回，完整通过（含真实浏览器检查）大约三秒。
 
-我们用 DeepSeek-V4.1-Flash 实测：一页讲解大约 20 秒，一张时序图大约 50 秒，读一个小仓库的代码画架构图
-大约一分半。
+我们用 DeepSeek-V4.1-Flash 实测：一页讲解大约 20 秒，一张时序图大约 50 秒，照描述画架构图大约 20 秒，
+读一个小仓库的代码画架构图大约 40 秒，都按 Archify 最严的 `showcase` 档交付。没有自动排版以前，最后这种
+要一分半到四分钟，而且常常只能降到 `standard` 档。
 
 ## 文件放在哪
 
@@ -79,6 +84,7 @@ Archify 的检查很严，模型的时间大多花在修布局上。插件把这
 ```
 .archify/<类型>-<名字>-<YYYYMMDD-HHMMSS>/
   candidate.json            图的内容（讲解页是 candidate.archify.md）
+  candidate.layout.json     插件写进去的排版记录（架构图）
   <名字>.html               页面
   <名字>.*.json             Archify 的生成和检查回执
 ```
@@ -119,6 +125,8 @@ Archify 的检查很严，模型的时间大多花在修布局上。插件把这
   就会用这一份。另外装了 `@tt-a1i/archify-dsh` 包的话，也会有两个 `archify` 技能，留一个就好。
 - **浏览器检查显示跳过。** 这台机器没装 Chrome、Chromium 或 Edge。页面照样生成，只是这一道检查没跑。
   想用别的浏览器，把 `ARCHIFY_CHROME` 设成它的可执行文件路径。
+- **架构图交叉很多。** 有些系统本身就缠在一起：主链路在一个大分组里进进出出，怎么排都会交叉。
+  让模型整理一下布局，或者少分几组、把组分小。
 - **复杂的图看起来很乱。** 多半是用完修复预算后按 `standard` 档交付的。让模型整理一下布局，或者画一张
   层次更高、节点更少的图。
 - **面板里显示文件已不在。** 页面被移走或从工作目录里删掉了。
@@ -134,7 +142,11 @@ lockfile。[`skill/SKILL.md`](skill/SKILL.md) 是它的 `SKILL.md` 为 Harness �
 node scripts/sync-archify.mjs /path/to/archify
 ```
 
+`vendor/elkjs/` 是 [elkjs](https://github.com/kieler/elkjs) 0.12.1 的 `lib/elk.bundled.js`（编译成
+JavaScript 的 Eclipse Layout Kernel），没有改动。它只在排版进程里加载：插件每排一张架构图就单独起一个进程。
+
 ## 许可
 
 插件本身是 MIT。`archify/` 是 tt-a1i 的作品，Apache-2.0 并保留历史上的 MIT 授权，见其中的 `LICENSE`、
-`LICENSE-MIT`、`NOTICE`、`THIRD_PARTY_NOTICES.md`，以及本插件的 [NOTICE](NOTICE)。
+`LICENSE-MIT`、`NOTICE`、`THIRD_PARTY_NOTICES.md`，以及本插件的 [NOTICE](NOTICE)。`vendor/elkjs/` 按
+Eclipse Public License 2.0 使用（elkjs 以 EPL-2.0 或 GPL-3.0-or-later 授权），见 `vendor/elkjs/LICENSE.md`。

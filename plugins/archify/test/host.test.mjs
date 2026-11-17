@@ -27,6 +27,7 @@ import {
   upstream,
 } from '../index.js';
 import { createStore } from '../lib/store.mjs';
+import { sidecarOf, topologyOf } from '../lib/autolayout.mjs';
 import { outcomeOf, parseJsonOutput } from '../lib/run.mjs';
 
 // Deterministic and fast everywhere: skip the real-browser gate.
@@ -88,6 +89,8 @@ test('archify_render delivers a page, records it, and a repair run reuses folder
   assert.ok(existsSync(v.output) && existsSync(v.candidate));
   assert.ok(v.aspect > 0.3 && v.aspect < 1);
   assert.equal(store.get(v.id).title, 'Sample Web App');
+  // A placed candidate is drawn as written.
+  assert.equal(v.layout, undefined);
   assert.equal(store.get(v.id).sessionId, 's1');
 
   const text = renderResult({}, v)[0].text;
@@ -106,6 +109,50 @@ test('archify_render delivers a page, records it, and a repair run reuses folder
   assert.equal(meta.ok, true);
   assert.equal(meta.id, v.id);
   assert.equal(meta.type, 'architecture');
+});
+
+test('an Architecture written as topology only is laid out, delivered, and laid out again after an edit', async () => {
+  const { ctx, store } = workspace();
+  const spec = topologyOf(example('web-app.architecture.json'));
+  // Models often leave meta.output out; the tool knows where the page goes.
+  delete spec.meta.output;
+  const v = await render(ctx, store, settings, { type: 'architecture', spec, name: 'web app' }, exec());
+  assert.equal(v.ok, true, JSON.stringify(v.receipt?.diagnostics ?? v.layout));
+  assert.equal(v.layout.reason, 'missing');
+  assert.equal(v.layout.ok, true);
+  assert.equal(v.layout.passed, true);
+  let placed = JSON.parse(readFileSync(v.candidate, 'utf8'));
+  assert.ok(placed.components.every((c) => Array.isArray(c.pos) && Array.isArray(c.size)));
+  assert.equal(placed.meta.output, 'web-app.html');
+  assert.ok(existsSync(sidecarOf(v.candidate)));
+  assert.match(renderResult({}, v)[0].text, /laid out automatically/);
+  assert.equal(buildRenderTool(ctx, store, settings).output.presentationMeta({}, v).autoLayout, true);
+
+  // Re-rendering as is keeps the placement.
+  const same = await render(ctx, store, settings, { type: 'architecture', candidate: v.candidate }, exec());
+  assert.equal(same.ok, true);
+  assert.equal(same.layout, undefined);
+
+  // A text edit lays it out afresh, as the box sizes depend on the text.
+  placed.components[0].label = 'Customer on a phone or a laptop';
+  writeFileSync(v.candidate, JSON.stringify(placed, null, 2));
+  const edited = await render(ctx, store, settings, { type: 'architecture', candidate: v.candidate }, exec());
+  assert.equal(edited.ok, true, JSON.stringify(edited.receipt?.diagnostics));
+  assert.equal(edited.layout.reason, 'changed');
+  assert.equal(edited.id, v.id);
+
+  // A hand-moved placement is the author's: no layout, even after a text edit.
+  placed = JSON.parse(readFileSync(v.candidate, 'utf8'));
+  placed.components.at(-1).pos[1] += 20;
+  placed.components.at(-1).label = 'Moved by hand';
+  writeFileSync(v.candidate, JSON.stringify(placed, null, 2));
+  const moved = await render(ctx, store, settings, { type: 'architecture', candidate: v.candidate }, exec());
+  assert.equal(moved.layout, undefined);
+  assert.equal(JSON.parse(readFileSync(v.candidate, 'utf8')).components.at(-1).pos[1], placed.components.at(-1).pos[1]);
+  // Unless a fresh layout is asked for.
+  const fresh = await render(ctx, store, settings, { type: 'architecture', candidate: v.candidate, relayout: true }, exec());
+  assert.equal(fresh.layout.reason, 'requested');
+  assert.equal(fresh.ok, true, JSON.stringify(fresh.receipt?.diagnostics));
 });
 
 test('a failed render returns the receipt, keeps the budget and asks for standard, then to stop', async () => {

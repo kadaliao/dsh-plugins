@@ -13,7 +13,7 @@ light and dark themes, motion and export.
 
 ```
 > 画一下这个仓库的运行时架构图
-  ▸ Completed in 1m 34s
+  ▸ Completed in 39s
   [ the architecture diagram, live ]   ⛶ Full screen · ↗ Browser · ⤓ · 📁 · ⧉
   The plugin has two halves: …
 ```
@@ -69,6 +69,13 @@ stays. `/archify` opens the panel.
 Archify's checks are strict, and repairing a layout is where a model spends its time. The plugin
 keeps that bounded:
 
+- **Architecture diagrams are laid out for the model.** The model writes only the boxes, the
+  arrows and the groups; the plugin places them with [ELK](https://github.com/kieler/elkjs)'s
+  layered layout (each group kept together, the main path top to bottom), tries four layouts
+  against Archify's own checks in about a second, and keeps the passing one with the fewest
+  crossings and detours. The positions go into `candidate.json`, so later edits still work: after
+  a change to the text or the topology the diagram is laid out again, while positions you move by
+  hand stay where you put them.
 - **A passing page is the answer.** The model replies as soon as a page is delivered. It does not
   start visual reviews, screenshots or another layout round on its own. When Archify suggests
   tidying routes, the reply ends with an offer instead: say "整理一下布局" or "tidy the layout" to
@@ -81,7 +88,9 @@ keeps that bounded:
   the real-browser check, takes about three.
 
 In our tests with DeepSeek-V4.1-Flash, an explainer page took about 20 seconds, a sequence diagram
-about 50, and an architecture diagram traced from a small repository about a minute and a half.
+about 50, an architecture diagram from a description about 20, and one traced from a small
+repository about 40, at Archify's strict `showcase` profile. Before automatic layout, that last
+one took between a minute and a half and four minutes and often ended at `standard`.
 
 ## Where the files go
 
@@ -90,6 +99,7 @@ Each request gets a folder in the conversation's working directory:
 ```
 .archify/<type>-<name>-<YYYYMMDD-HHMMSS>/
   candidate.json            the diagram (candidate.archify.md for an explainer)
+  candidate.layout.json     the layout the plugin wrote into it (architecture)
   <name>.html               the page
   <name>.*.json             Archify's delivery and check receipts
 ```
@@ -137,6 +147,9 @@ On the plugin's row in your profile patch (`cordis.patch.yml`):
 - **The browser check says skipped.** No Chrome, Chromium or Edge is installed. The page is still
   delivered; only that gate did not run. Set `ARCHIFY_CHROME` to a browser's executable to use
   another one.
+- **An architecture diagram has many crossings.** Some systems are tangled: a main path that runs
+  in and out of a large group crosses itself whatever the layout. Ask for a tidy-up, or for fewer
+  or smaller groups.
 - **A dense diagram looks busy.** It was probably delivered at the `standard` profile after the
   repair budget. Ask for a tidy-up, or for a higher-level diagram with fewer nodes.
 - **The panel says a file is gone.** The page was moved or deleted from the working directory.
@@ -154,8 +167,13 @@ tt-a1i/archify:
 node scripts/sync-archify.mjs /path/to/archify
 ```
 
+`vendor/elkjs/` is `lib/elk.bundled.js` from [elkjs](https://github.com/kieler/elkjs) 0.12.1, the
+Eclipse Layout Kernel compiled to JavaScript, unmodified. It loads only in the layout worker, a
+separate process the plugin starts for each architecture layout.
+
 ## License
 
 The plugin is MIT. `archify/` is Apache-2.0 with historical MIT grants, by tt-a1i: see its
 `LICENSE`, `LICENSE-MIT`, `NOTICE` and `THIRD_PARTY_NOTICES.md`, and this plugin's
-[NOTICE](NOTICE).
+[NOTICE](NOTICE). `vendor/elkjs/` is used under the Eclipse Public License 2.0 (elkjs is offered
+under EPL-2.0 or GPL-3.0-or-later): see `vendor/elkjs/LICENSE.md`.

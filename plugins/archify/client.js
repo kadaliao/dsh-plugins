@@ -241,12 +241,34 @@ window.__ModuleLoader__.load({
 
     // --- the page itself ---------------------------------------------------------------
 
-    /** Height of the inline preview for a box `width` wide. */
-    function previewHeight(item, width) {
+    /** Tallest inline preview; a taller drawing is shown narrower, whole. */
+    const PREVIEW_MAX = 720;
+    /** The embed's padding on each side of the drawing (Archify's 0.5rem), and slack below it. */
+    const EMBED_PAD = 8;
+    const EMBED_SLACK = 4;
+
+    /**
+     * Size of the inline preview in a box `width` wide. The embed fits the
+     * drawing to its width, so a drawing too tall for the box gets a narrower
+     * frame instead of losing its bottom.
+     */
+    function previewBox(item, width) {
       const w = Math.max(280, width || 680);
-      if (item.type === 'explainer' || !(item.aspect > 0)) return Math.round(Math.min(620, Math.max(420, w * 0.72)));
-      // The embed adds a little padding around the drawing.
-      return Math.round(Math.min(720, Math.max(220, w * item.aspect + 22)));
+      if (item.type === 'explainer' || !(item.aspect > 0)) return { width: w, height: Math.round(Math.min(620, Math.max(420, w * 0.72))) };
+      // The drawing is the frame's width less the side padding, scaled by its aspect.
+      const extra = 2 * EMBED_PAD + EMBED_SLACK;
+      const fit = Math.min(w, Math.floor((PREVIEW_MAX - extra) / item.aspect + 2 * EMBED_PAD));
+      return { width: fit, height: Math.round(Math.max(220, (fit - 2 * EMBED_PAD) * item.aspect + extra)) };
+    }
+
+    /** The preview frame, centered in its box when narrower. */
+    function FittedFrame({ item, width, title }) {
+      const box = previewBox(item, width);
+      return h(
+        'div',
+        { style: { display: 'flex', justifyContent: 'center' } },
+        h('div', { style: { width: box.width, maxWidth: '100%' } }, h(PageFrame, { item, height: box.height, title })),
+      );
     }
 
     function PageFrame({ item, embed = true, height, title }) {
@@ -291,7 +313,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { ref: box, style: { position: 'relative', cursor: 'zoom-in' }, onDoubleClick: () => setFull(true) },
-          width > 0 ? h(PageFrame, { item, height: previewHeight(item, width), title: item.title }) : h('div', { style: { height: previewHeight(item, 680) } }),
+          width > 0 ? h(FittedFrame, { item, width, title: item.title }) : h('div', { style: { height: previewBox(item, 680).height } }),
         ),
         full ? h(FullScreen, { t, item, onClose: () => setFull(false) }) : null,
       );
@@ -731,7 +753,7 @@ window.__ModuleLoader__.load({
                 { ref: pane, style: { flex: 1, minHeight: 0, overflow: 'auto', padding: 16 } },
                 current.missing
                   ? h('div', { style: { color: C.faint, padding: 12 } }, t('missingLong', { path: current.path }))
-                  : h('div', { style: { border: `1px solid ${C.border1}`, borderRadius: 12, overflow: 'hidden', background: C.layer1 } }, h(PageFrame, { item: current, height: previewHeight(current, paneW - 34), title: current.title })),
+                  : h('div', { style: { border: `1px solid ${C.border1}`, borderRadius: 12, overflow: 'hidden', background: C.layer1 } }, h(FittedFrame, { item: current, width: paneW - 34, title: current.title })),
                 h('div', { style: { marginTop: 8, fontSize: 11.5, color: C.faint, wordBreak: 'break-all', userSelect: 'text' } }, current.path),
               ),
             )

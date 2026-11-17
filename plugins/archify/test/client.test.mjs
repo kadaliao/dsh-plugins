@@ -20,6 +20,10 @@ function fakeReact() {
       slots = [];
       cursor = 0;
     },
+    /** Render again with the state kept. */
+    rerender() {
+      cursor = 0;
+    },
     useRef(initial) {
       const index = cursor++;
       if (!(index in slots)) slots[index] = { current: initial };
@@ -169,6 +173,36 @@ test('a delivered page becomes a turn-level row; failures and other tools do not
   const tree = row({ node: { data: state } });
   assert.equal(findAll(tree, (n) => n.props?.['data-dsh-archify-card'] === 'abc123').length, 1);
   assert.match(text(tree).join(' '), /Checkout/);
+});
+
+test('a tall drawing fits the card at a narrower width instead of losing its bottom', () => {
+  const { exports, hooks } = loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const [def] = seen.definitions;
+  const row = seen.slots.find((s) => s.options.name === 'conversation.chat.node').component;
+  const preview = (aspect, cardWidth = 900) => {
+    hooks.reset();
+    const event = { type: 'tool/result', surfaceOp: 'append', seq: 7, data: { message: { source: { callId: 'c1' } }, meta: { ...okMeta, aspect } } };
+    const state = def.start({}, { event });
+    let tree = row({ node: { data: state } });
+    const [box] = findAll(tree, (n) => n.props?.ref && n.props.style?.cursor === 'zoom-in');
+    box.props.ref.current = { clientWidth: cardWidth };
+    // One render to measure, one to draw at the measured width.
+    for (let i = 0; i < 2; i += 1) {
+      hooks.rerender();
+      tree = row({ node: { data: state } });
+    }
+    const [holder] = findAll(tree, (n) => (n.children ?? []).some((c) => c?.type === 'iframe'));
+    return { width: holder.props.style.width, height: holder.children[0].props.style.height };
+  };
+  // A wide drawing fills the card.
+  assert.deepEqual(preview(0.5), { width: 900, height: 462 });
+  // A tall one (1060×1670) is shown whole at a narrower width, within the cap.
+  const tall = preview(1.5755);
+  assert.ok(tall.height <= 720, String(tall.height));
+  assert.ok(tall.width < 900 && tall.width > 400, String(tall.width));
+  assert.ok(Math.abs((tall.width - 16) * 1.5755 + 20 - tall.height) < 1);
 });
 
 test('the render tool card shows progress, the gates, and a failure\'s diagnostics', () => {
