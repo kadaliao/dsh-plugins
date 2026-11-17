@@ -251,6 +251,43 @@ export function reflectionPrompt({ bot, notes, team, transcript, trigger }) {
   };
 }
 
+/**
+ * Tickets (tasks) whose title or one of whose reports contains every word of
+ * `query` (case-insensitive, as `search` matches notes), most recently changed
+ * first. A title hit wins over a report hit; a report hit carries the newest
+ * matching report's status and a short snippet around the first word.
+ * @param {string} query
+ * @param {object[]} tickets - tickets in the shape of docs/PLAN-0.8.md §10
+ * @param {{limit?: number}} [opts]
+ * @returns {Array<{ticket: object, where: 'title'|'report', status?: string, snippet?: string}>}
+ */
+export function searchTickets(query, tickets, { limit = 10 } = {}) {
+  const words = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const hit = (text) => {
+    const s = String(text ?? '').toLowerCase();
+    return words.every((w) => s.includes(w));
+  };
+  const snippet = (text) => {
+    const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+    const at = Math.max(0, s.toLowerCase().indexOf(words[0]) - 60);
+    const cut = s.slice(at, at + 200);
+    return `${at > 0 ? '…' : ''}${cut}${at + 200 < s.length ? '…' : ''}`;
+  };
+  const out = [];
+  for (const t of [...(tickets ?? [])].sort((a, b) => (Number(b?.updatedAt) || 0) - (Number(a?.updatedAt) || 0))) {
+    if (!t?.id) continue;
+    if (hit(t.title)) {
+      out.push({ ticket: t, where: 'title' });
+    } else {
+      const report = [...(Array.isArray(t.reports) ? t.reports : [])].reverse().find((r) => hit(r?.text));
+      if (report) out.push({ ticket: t, where: 'report', status: report.status, snippet: snippet(report.text) });
+    }
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 /** Once a day per bot: tidy the notes with the last days of its journal. */
 export function dreamBotPrompt({ bot, notes, journal, tz = 0 }) {
   return {

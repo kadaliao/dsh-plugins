@@ -163,6 +163,19 @@ export function isLiveSubscriber(ticket) {
   return Boolean(ticket) && !ticket.archivedAt && ticket.ended?.outcome !== 'stopped';
 }
 
+/**
+ * Whether an open ticket's last report is a question nobody answered yet
+ * (the `question` stage of `stageOf` in tickets.mjs).
+ */
+export function awaitsAnswer(ticket) {
+  const t = ticket ?? {};
+  if (t.ended || t.archivedAt) return false;
+  const last = Array.isArray(t.reports) ? t.reports.at(-1) : undefined;
+  if (last?.status !== 'question') return false;
+  const ms = (v) => (Number.isFinite(Number(v)) ? Number(v) : Date.parse(v) || 0);
+  return Math.max(ms(t.lastHumanAt), ms(t.lastRequesterAt)) <= ms(last.at);
+}
+
 const sameBot = (a, b) => Boolean(a && b) && (a === b || (a.id != null && a.id === b.id));
 
 /**
@@ -173,7 +186,10 @@ const sameBot = (a, b) => Boolean(a && b) && (a === b || (a.id != null && a.id =
  *    `addressed: true`: the owner's home is the Router, and the person asked
  *    for it rather than the tickets.
  * 2. Live tickets subscribed to the thread: `tickets`, and the Router gets a
- *    notice that does not wake it (`notifyRouter`).
+ *    notice that does not wake it (`notifyRouter`). A thread that is a whole
+ *    chat (a private chat, a group without threads) is where every new
+ *    request arrives too, so there only a ticket waiting on an answer to its
+ *    question takes the message; anything else is the Router's to place.
  * 3. Otherwise the owner's home: `router`.
  *
  * `text` is the message without the handle; an empty one is dropped by the
@@ -206,8 +222,11 @@ export function routeInbound(msg, ctx = {}) {
     const list = typeof subscribers === 'function' ? subscribers(key) : subscribers;
     const seen = new Set();
     const tickets = [];
+    const parsed = parseThreadKey(key);
+    const wholeChat = Boolean(parsed) && parsed.kind !== PANEL && parsed.rootId === undefined;
     for (const t of Array.isArray(list) ? list : []) {
       if (!t || seen.has(t.id ?? t) || !live(t)) continue;
+      if (wholeChat && ctx.live === undefined && !awaitsAnswer(t)) continue;
       if (!Array.isArray(t.threads) || !t.threads.some((k) => sameThread(k, key))) continue;
       seen.add(t.id ?? t);
       tickets.push(t);

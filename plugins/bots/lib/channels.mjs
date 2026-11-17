@@ -10,17 +10,27 @@
  * - who may talk to the team: only people paired with a one-time code from
  *   the panel; everyone else is ignored (at most one "this bot is private"
  *   note per chat per day);
- * - which bot a message is for: the bot owning the channel, or the one named
- *   by a leading `@handle`;
- * - where a bot's replies go: back to the chat its latest human input came
- *   from, including the dispatcher's report after teammates answer by DM; a
- *   message typed in the panel takes the conversation back to the panel.
+ * - which Thread a message belongs to (PLAN-0.8 §12): the connector's
+ *   `threadId`; else, for a Slack, Discord or Feishu group message, the
+ *   message itself (the bot's answer hangs under it); else the whole chat;
+ * - where a message goes (lib/threads.mjs `routeInbound`): a leading
+ *   `@handle` reaches that bot's home; a Thread with live subscribed tickets
+ *   hands it to them (`deps.toTickets`); otherwise the bot owning the channel
+ *   (`deps.deliver`);
+ * - where a conversation's plain replies go (lib/threads.mjs `createOrigins`):
+ *   each turn collects the Threads its inputs came from; with exactly one
+ *   chat Thread the reply goes there, otherwise it stays in the panel and the
+ *   bot names a target (`replyTo`, behind `bot_reply`). A scheduled run
+ *   reports to the channel's first paired person, and a teammate's DM answers
+ *   where the conversation's last human input came from (0.7).
  *
  * A connector gets the app's field values (`values`; `token` is its first
  * secret) and reports messages as {chatId, userId, userName, text, isDirect,
- * mentioned, messageId, order?, chatTitle?, source?}. Optional module exports:
- * `TEXT_LIMIT`, `MARKDOWN` (true when the chat app renders Markdown replies)
- * and `links({account, code, values})` → {link?, invite?} for the panel.
+ * mentioned, messageId, threadId?, order?, chatTitle?, source?}; `send` and
+ * `typing` take `{threadId, replyTo}`. Optional module exports: `TEXT_LIMIT`,
+ * `MARKDOWN` (true when the chat app renders Markdown replies), `THREADS`
+ * (every part of a reply keeps `replyTo`) and `links({account, code, values})`
+ * → {link?, invite?} for the panel.
  *
  * @module @kadaliao/dsh-bots/lib/channels
  */
@@ -28,6 +38,8 @@
 import { createHash, randomInt } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+
+import { addressedBot, createOrigins, isPanelThread, parseThreadKey, routeInbound, threadKey, toThreadKey } from './threads.mjs';
 
 /** Connector modules by channel kind, loaded on first use. */
 const CONNECTORS = {
@@ -58,6 +70,10 @@ const TYPING_EVERY_MS = 5000;
 const TYPING_MAX_MS = 10 * 60_000;
 /** A delivered channel message not seen in its conversation by then is forgotten. */
 const PENDING_TTL_MS = 30 * 60_000;
+/** Chat apps where the bot answers a group message under that message: it is the root of its Thread. */
+const ROOT_IN_GROUPS = new Set(['slack', 'discord', 'feishu']);
+/** Threads the hub remembers details of (who wrote there, which message to answer). */
+const KNOWN_THREADS = 500;
 
 /** Load the connector module of `kind`. */
 export async function loadConnector(kind) {
@@ -222,13 +238,30 @@ export function isGreeting(text) {
 /** The bot a message is for: the one named by a leading `@handle`, else `owner`. */
 export function routeMessage(text, owner, roster) {
   const t = String(text ?? '').trim();
-  const m = /^@([a-z0-9][a-z0-9-]{0,31})(?=$|[\s,，:：.。!?！？;；])[\s,，:：;；]*/i.exec(t);
-  if (m) {
-    const bot = (roster ?? []).find((b) => b.handle === m[1].toLowerCase());
-    if (bot) return { bot, text: t.slice(m[0].length).trim() };
-  }
-  return { bot: owner, text: t };
+  const hit = addressedBot(t, roster);
+  return hit ? { bot: hit.bot, text: hit.text } : { bot: owner, text: t };
 }
+
+/**
+ * The root of the Thread an inbound message belongs to (PLAN-0.8 §12): the
+ * connector's `threadId`; else, for a Slack, Discord or Feishu group message,
+ * the message's own id (the bot's answer hangs under it, so follow-ups there
+ * report it as their thread); else '' (the whole chat: a private chat, a
+ * Telegram group without topics).
+ * @param {string} kind - the channel kind
+ * @param {{threadId?: string|number|null, messageId?: string|number, isDirect?: boolean}} msg
+ */
+export function threadRootOf(kind, msg) {
+  const own = msg?.threadId == null ? '' : String(msg.threadId).trim();
+  if (own) return own;
+  const id = msg?.messageId == null ? '' : String(msg.messageId).trim();
+  return !msg?.isDirect && ROOT_IN_GROUPS.has(kind) && id ? id : '';
+}
+
+/** The Thread key a message names in the header line a bot reads, after the source: ` (thread <key>)`. */
+export const threadNote = (key) => (key ? ` (thread ${key})` : '');
+/** A header line without its thread note, so a message reads the same with or without it. */
+const withoutThreadNote = (s) => String(s ?? '').replace(/^(\[[^\n]*\]) \(thread [^\n)]*\)/, '$1');
 
 const cleanName = (s, max = 60) =>
   String(s ?? '')
@@ -296,11 +329,24 @@ export function hintOf(detail) {
 /**
  * Every channel of every bot: connectors, pairing, routing and reply targets.
  *
+ * A message's `meta` (the third argument of `deliver` and `toTickets`):
+ * `{threadKey, origin, key?}` — the Thread it belongs to, where it came from
+ * (`{threadKey, kind, key, chatId, rootId?, replyTo?, who, chatTitle?, direct?,
+ * body}`) and, when the chat app gave the message an id, a stable delivery key
+ * (`chat:<appKey>:<chatId>:<messageId>`) the host can make its message id from,
+ * so a message handed out again after a restart is not run twice.
+ *
  * @param {{
  *   file: string,                                   // channels.json: paired people and options per channel
  *   bots: () => object[],                           // the roster
  *   entries: () => object[],                        // the app catalog
- *   deliver: (bot: object, msg: {header: string, body: string}) => Promise<string>,  // hand a prompt to a bot; resolves to its session id
+ *   deliver: (bot: object, msg: {header: string, body: string}, meta: object) =>
+ *     Promise<string | {sessionId: string, messageId?: string, skipped?: boolean}>,  // hand a prompt to a bot's home
+ *   toTickets?: (tickets: object[], msg: {header: string, body: string}, meta: object & {owner: object}) =>
+ *     Promise<string[]>,                            // hand a follow-up to the tickets on its Thread; their session ids
+ *   subscribers?: (threadKey: string) => object[],  // tickets subscribed to a Thread
+ *   knownThread?: (threadKey: string) => object|undefined,  // a stored Thread record (bot_reply targets beyond this turn)
+ *   ticketThread?: (ticketId: string) => string|undefined,  // the origin Thread key of a ticket
  *   running?: (sessionId: string) => boolean,       // whether that conversation is working
  *   loadConnector?: (kind: string) => Promise<{createConnector: Function, TEXT_LIMIT?: number}>,
  *   log?: (line: string) => void,
@@ -359,12 +405,22 @@ export function createChannels(deps) {
   const notices = new Map();
   /** key → {count, lastName, lastAt} */
   const ignored = new Map();
-  /** botId → [{text, origin, at}] channel messages handed to a bot, not yet seen in its conversation */
+  /** botId → [{text, origin, at, id?}] channel messages handed to a bot's home, not yet seen in its conversation */
   const pending = new Map();
-  /** sessionId → where its replies go */
-  const targets = new Map();
-  /** sessionId → {timer, key, chatId, claimed} */
+  /** `${sessionId}|${threadKey}` → {timer, sessionId, threadKey, key, chatId, rootId, claimed}: a typing loop per Thread */
   const typing = new Map();
+  /** threadKey → what the latest message there told of it (who, the message to answer, the chat's title) */
+  const known = new Map();
+  /** Per conversation, the Threads of this turn's inputs (lib/threads.mjs). */
+  const origins = createOrigins({ now, running: (sessionId) => running(sessionId), lookup: (ref) => lookupThread(ref) });
+  /** Conversations that noted a chat Thread (dropped on unpair). */
+  const noted = new Set();
+  /** Conversations whose current turn had a person's input (a chat or panel message, a scheduled run). */
+  const humanTurns = new Set();
+  /** sessionId → the Threads of its last turn with a person's input: a teammate's DM in a later turn answers there (0.7). */
+  const lastThreads = new Map();
+  /** sessionId → `${threadKey}|${text}` sent with `replyTo` this turn: the same words are not sent there twice. */
+  const sentThisTurn = new Map();
   /** `${key}|${chatId}` → the tail of its send queue, so parts arrive in order */
   const queues = new Map();
   let disposed = false;
@@ -513,7 +569,7 @@ export function createChannels(deps) {
   async function stopRecord(rec) {
     rec.gen = null;
     if (rec.retryTimer) clearTimeout(rec.retryTimer);
-    for (const [sessionId, loop] of [...typing]) if (loop.key === rec.key) stopTyping(sessionId);
+    for (const [id, loop] of [...typing]) if (loop.key === rec.key) stopLoop(id);
     const conn = rec.conn;
     rec.conn = null;
     if (conn) {
@@ -654,76 +710,146 @@ export function createChannels(deps) {
       await reply(rec, chatId, welcomeText(owner, deps.bots()));
       return;
     }
-    const routed = routeMessage(text, owner, deps.bots());
+    const roster = deps.bots();
+    const rootId = threadRootOf(rec.kind, msg);
+    const thread = threadKey(rec.kind, rec.key, { chatId, ...(rootId ? { threadId: rootId } : {}) });
+    const routed = routeInbound({ text, threadKey: thread }, { owner, roster, subscribers: subscribersOf });
     if (!routed.text) return;
-    // `/new` starts the bot's next topic; text after it goes to the new one.
-    const cmd = typeof deps.newTopic === 'function' ? topicCommand(routed.text) : null;
+    // A home conversation takes it (the named bot's, or the owner's); null: the tickets on the Thread do.
+    let home = routed.to === 'tickets' ? null : routed.bot;
+    let body = routed.text;
+    // `/new` starts the bot's next topic; text after it goes to the new one (its home, never a task's).
+    const cmd = typeof deps.newTopic === 'function' ? topicCommand(body) : null;
     if (cmd) {
+      home ??= owner;
       try {
-        await deps.newTopic(routed.bot);
+        await deps.newTopic(home);
       } catch (error) {
         await reply(rec, chatId, redact(error?.message ?? error, rec.secrets).slice(0, 200));
         return;
       }
       if (!cmd.rest) {
-        await reply(rec, chatId, newTopicText(routed.bot));
+        await reply(rec, chatId, newTopicText(home));
         return;
       }
-      routed.text = cmd.rest;
+      body = cmd.rest;
     }
     const header = sourceHeader(rec.kind, msg);
+    const messageId = String(msg.messageId ?? '');
+    const title = msg.isDirect ? '' : cleanName(msg.chatTitle);
     const origin = {
+      threadKey: thread,
       key: rec.key,
       kind: rec.kind,
       chatId,
-      ...(msg.isDirect ? {} : { replyTo: String(msg.messageId ?? '') }),
+      ...(rootId ? { rootId } : {}),
+      ...(msg.isDirect || !messageId ? {} : { replyTo: messageId }),
       who: name || person.name,
-      body: routed.text,
+      ...(title ? { chatTitle: title } : {}),
+      ...(msg.isDirect ? { direct: true } : {}),
+      origin: 'chat',
+      body,
     };
+    remember(thread, origin);
+    const meta = { threadKey: thread, origin, ...(messageId ? { key: `chat:${rec.key}:${chatId}:${messageId}` } : {}) };
+
+    if (!home && typeof deps.toTickets === 'function') {
+      // A follow-up on a Thread with live tickets goes to them; the Router hears of it without waking.
+      try {
+        const sessions = (await deps.toTickets(routed.tickets, { header, body }, { ...meta, owner })) ?? [];
+        if (sessions[0]) startTyping(sessions[0], rec, chatId, thread, rootId, true);
+        return;
+      } catch (error) {
+        log(`channels: a ${rec.kind} follow-up did not reach its task (${error?.message ?? error}); @${owner.handle} takes it`);
+      }
+    }
+    home ??= owner;
     // Noted before the hand-over: the conversation may show the message before deliver returns.
-    const list = (pending.get(routed.bot.id) ?? []).filter((p) => now() - p.at < PENDING_TTL_MS);
-    const item = { text: `${header}\n${routed.text}`, origin, at: now() };
+    const list = (pending.get(home.id) ?? []).filter((p) => now() - p.at < PENDING_TTL_MS);
+    const item = { text: `${header}\n${body}`, origin, at: now() };
     list.push(item);
-    pending.set(routed.bot.id, list);
-    let sessionId;
-    try {
-      sessionId = await deps.deliver(routed.bot, { header, body: routed.text });
-    } catch (error) {
-      const left = pending.get(routed.bot.id) ?? [];
+    pending.set(home.id, list);
+    const unpend = () => {
+      const left = pending.get(home.id) ?? [];
       if (left.includes(item)) left.splice(left.indexOf(item), 1);
-      log(`channels: could not hand a ${rec.kind} message to @${routed.bot.handle}: ${error?.message ?? error}`);
-      await reply(rec, chatId, `Could not reach ${routed.bot.name}: ${redact(error?.message ?? error, rec.secrets).slice(0, 200)}`);
+    };
+    let result;
+    try {
+      result = await deps.deliver(home, { header, body }, meta);
+    } catch (error) {
+      unpend();
+      log(`channels: could not hand a ${rec.kind} message to @${home.handle}: ${error?.message ?? error}`);
+      await reply(rec, chatId, `Could not reach ${home.name}: ${redact(error?.message ?? error, rec.secrets).slice(0, 200)}`);
       return;
     }
-    if (sessionId) startTyping(sessionId, rec.key, chatId);
+    const sessionId = typeof result === 'string' ? result : result?.sessionId;
+    if (result && typeof result === 'object' && result.skipped) {
+      // Handed over once already (a replay after a restart): nothing new to work on.
+      unpend();
+      return;
+    }
+    if (result && typeof result === 'object' && typeof result.messageId === 'string') item.id = result.messageId;
+    if (sessionId) startTyping(sessionId, rec, chatId, thread, rootId);
   }
+
+  /** Tickets subscribed to a Thread, as the host lists them; none when it cannot. */
+  function subscribersOf(key) {
+    try {
+      return deps.subscribers?.(key) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Keep what an inbound message told of its Thread (the newest wins; the oldest go past the limit). */
+  function remember(key, origin) {
+    if (!key) return;
+    const { body: _body, ...rest } = origin;
+    known.delete(key);
+    known.set(key, rest);
+    if (known.size > KNOWN_THREADS) known.delete(known.keys().next().value);
+  }
+  /** An origin with what is known of its Thread filled in (who wrote there, the message to answer). */
+  const withKnown = (o) => (o && o.threadKey && known.has(o.threadKey) ? { ...known.get(o.threadKey), ...o } : o);
 
   // --- typing -------------------------------------------------------------------------
 
-  function startTyping(sessionId, key, chatId) {
-    stopTyping(sessionId);
+  /** "Typing…" in a Thread while `sessionId` works on its message; `claimed` loops stop when its turn ends. */
+  function startTyping(sessionId, rec, chatId, threadKeyOf, rootId, claimed = false) {
+    const id = `${sessionId}|${threadKeyOf ?? chatId}`;
+    stopLoop(id);
+    const key = rec.key;
     const started = now();
     const tick = () => {
       const conn = live.get(key)?.conn;
-      if (!conn) return void stopTyping(sessionId);
+      if (!conn) return void stopLoop(id);
       Promise.resolve()
-        .then(() => conn.typing(chatId))
+        .then(() => (rootId ? conn.typing(chatId, { threadId: rootId }) : conn.typing(chatId)))
         .catch(() => {});
     };
     const timer = setInterval(() => {
       const elapsed = now() - started;
-      if (elapsed > TYPING_MAX_MS || (elapsed > typingEvery * 2 && !running(sessionId))) return void stopTyping(sessionId);
+      if (elapsed > TYPING_MAX_MS || (elapsed > typingEvery * 2 && !running(sessionId))) return void stopLoop(id);
       tick();
     }, typingEvery);
     timer.unref?.();
-    typing.set(sessionId, { timer, key, chatId, claimed: false });
+    typing.set(id, { timer, sessionId, threadKey: threadKeyOf, key, chatId, rootId, claimed });
     tick();
   }
-  function stopTyping(sessionId) {
-    const loop = typing.get(sessionId);
+  function stopLoop(id) {
+    const loop = typing.get(id);
     if (!loop) return;
     clearInterval(loop.timer);
-    typing.delete(sessionId);
+    typing.delete(id);
+  }
+  /** Stop the typing of `sessionId`: in one Thread, or everywhere; `claimedOnly`: only loops whose message it has seen. */
+  function stopTyping(sessionId, threadKeyOf, { claimedOnly = false } = {}) {
+    for (const [id, loop] of [...typing]) {
+      if (loop.sessionId !== sessionId) continue;
+      if (threadKeyOf && loop.threadKey !== threadKeyOf) continue;
+      if (claimedOnly && !loop.claimed) continue;
+      stopLoop(id);
+    }
   }
 
   // --- reply targets --------------------------------------------------------------------
@@ -743,9 +869,11 @@ export function createChannels(deps) {
     return null;
   }
 
-  function claim(botId, text) {
+  /** The channel message a user message in `botId`'s conversation is: by its id when the host gave one, else by its text. */
+  function claim(botId, text, id) {
     const list = (pending.get(botId) ?? []).filter((p) => now() - p.at < PENDING_TTL_MS);
-    const i = list.findIndex((p) => norm(p.text) === norm(text));
+    let i = id ? list.findIndex((p) => p.id === id) : -1;
+    if (i === -1) i = list.findIndex((p) => norm(p.text) === norm(withoutThreadNote(text)));
     if (i === -1) {
       pending.set(botId, list);
       return null;
@@ -755,6 +883,74 @@ export function createChannels(deps) {
     else pending.delete(botId);
     return hit.origin;
   }
+
+  /** Note an input's Thread in `sessionId`'s turn, with what is known of it. */
+  function noteInput(sessionId, input) {
+    const key = toThreadKey(input?.threadKey) ?? toThreadKey(input?.origin);
+    const origin = key ? { ...(known.get(key) ?? {}), ...(input?.origin ?? {}) } : input?.origin;
+    const stored = origins.noteInput(sessionId, { ...input, ...(key ? { threadKey: key } : {}), ...(origin ? { origin } : {}) });
+    if (stored && stored.kind !== 'panel') noted.add(sessionId);
+    return stored;
+  }
+
+  /**
+   * A Thread `bot_reply` may name outside this turn: one stored (a ticket's, or seen
+   * here lately) whose channel is connected and has someone paired. A panel
+   * conversation, a made-up key or a chat of a removed channel is none.
+   */
+  function lookupThread(ref) {
+    let key = null;
+    try {
+      key = ref?.thread != null ? toThreadKey(ref.thread) : toThreadKey(deps.ticketThread?.(ref?.ticket) ?? null);
+    } catch {
+      key = null;
+    }
+    if (!key || isPanelThread(key)) return null;
+    let stored = known.get(key);
+    if (!stored) {
+      try {
+        stored = deps.knownThread?.(key);
+      } catch {
+        stored = undefined;
+      }
+    }
+    if (!stored) return null;
+    const p = parseThreadKey(key);
+    if (!p?.appKey || !live.get(p.appKey)?.conn) return null;
+    if (!(data.channels[p.appKey]?.paired ?? []).length) return null;
+    return { ...(known.get(key) ?? {}), threadKey: key };
+  }
+
+  /** Send a reply to a chat Thread, in its thread (topic, reply chain) and parts in order; false when its channel is down. */
+  function sendText(sessionId, target, text) {
+    const rec = live.get(target.key ?? target.appKey);
+    stopTyping(sessionId, target.threadKey);
+    if (!rec?.conn) {
+      log(`channels: a reply for ${target.kind} was not sent: the channel is not connected`);
+      return false;
+    }
+    const plain = rec.mod?.MARKDOWN === true || RENDERS_MARKDOWN.has(target.kind) ? String(text).trim() : toPlainText(text);
+    const root = target.rootId ? String(target.rootId) : '';
+    const replyTo = target.replyTo ? String(target.replyTo) : '';
+    void enqueue(rec, target.chatId, async () => {
+      let first = true;
+      for (const part of splitText(plain, rec.limit)) {
+        if (!rec.conn) break;
+        // A chat app that threads replies (Slack) keeps `replyTo` on every part; elsewhere only the first part quotes.
+        const opts = { ...(root ? { threadId: root } : {}), ...(replyTo && (first || rec.mod?.THREADS === true) ? { replyTo } : {}) };
+        await rec.conn.send(target.chatId, part, Object.keys(opts).length ? opts : undefined);
+        first = false;
+      }
+    });
+    return true;
+  }
+
+  /** Who a chat target is, for the timeline: `{key, kind, chatId, threadKey, who, …}` without the message body. */
+  const targetView = (o) => {
+    if (!o) return null;
+    const { body: _body, tickets: _tickets, ...rest } = o;
+    return rest;
+  };
 
   /** Links a connector module offers the panel (a deep link to pair, an invite). */
   function linksOf(rec, account, code) {
@@ -771,71 +967,125 @@ export function createChannels(deps) {
     sync,
 
     /**
-     * A message entered `bot`'s conversation. A channel message makes that chat
-     * the reply target (and returns where it came from); any other user message
-     * (the panel) takes replies back to the panel. A scheduled run reports to
-     * the channel's first paired person when the channel allows it.
+     * A message entered `bot`'s home conversation; its Thread joins the turn's
+     * (lib/threads.mjs `createOrigins`). A channel message adds its chat Thread
+     * (and returns where it came from, with `body`); any other user message adds
+     * the panel. A scheduled run adds the DM of the channel's first paired
+     * person when the channel allows it. A teammate's DM (`agent-message`, not a
+     * ticket's report: `report`) in a turn with no other input answers where the
+     * last turn with a person's input did, as in 0.7. Reports and notices about
+     * tickets are noted by the host with `noteInput` (the ticket's origin Thread).
      * @param {string} sessionId
      * @param {object} bot
      * @param {string} kind - the message source kind ('user', 'schedule', 'agent-message', …)
      * @param {string} text - the message text
+     * @param {{id?: string, report?: boolean}} [opts] - `id`: the message id (a delivery made with a key)
      */
-    noteUserMessage(sessionId, bot, kind, text) {
+    noteUserMessage(sessionId, bot, kind, text, opts = {}) {
       if (!sessionId || !bot) return null;
       if (kind === 'user') {
-        const origin = claim(bot.id, text);
+        humanTurns.add(sessionId);
+        const origin = claim(bot.id, text, opts.id);
         if (origin) {
-          targets.set(sessionId, { key: origin.key, kind: origin.kind, chatId: origin.chatId, ...(origin.replyTo ? { replyTo: origin.replyTo } : {}), who: origin.who, origin: 'chat' });
-          const loop = typing.get(sessionId);
-          if (loop) loop.claimed = true;
+          noteInput(sessionId, { threadKey: origin.threadKey, origin: targetView(origin) });
+          for (const loop of typing.values()) if (loop.sessionId === sessionId && loop.threadKey === origin.threadKey) loop.claimed = true;
           return origin;
         }
-        targets.delete(sessionId);
+        noteInput(sessionId, {});
         return null;
       }
       if (kind === 'schedule') {
+        humanTurns.add(sessionId);
         const t = scheduleTarget(bot);
-        if (t) targets.set(sessionId, t);
-        else targets.delete(sessionId);
+        const key = t ? threadKey(t.kind, t.key, { chatId: t.chatId }) : null;
+        if (key) noteInput(sessionId, { threadKey: key, origin: { ...t, threadKey: key } });
+        return null;
+      }
+      if (kind === 'agent-message' && !opts.report && origins.current(sessionId).length === 0) {
+        for (const o of lastThreads.get(sessionId) ?? []) noteInput(sessionId, { threadKey: o.threadKey, origin: targetView(o) });
       }
       return null;
     },
 
     /**
-     * A user-facing reply of the conversation `sessionId`: sent to its chat when
-     * its latest human input came from one. Returns the target (or null) at once;
-     * sending continues in the background.
+     * Another input of `sessionId`'s turn: a ticket's report or notice (pass the
+     * ticket's origin Thread as `threadKey`, and `ticket`). Returns the origin as stored.
+     */
+    noteInput,
+
+    /** `{mode: 'panel' | 'thread' | 'choose', target, origins}` for `sessionId`'s plain replies now (lib/threads.mjs). */
+    replyPlan(sessionId) {
+      const plan = origins.replyPlan(sessionId);
+      return { ...plan, target: withKnown(plan.target), origins: plan.origins.map(withKnown) };
+    },
+
+    /** The distinct Threads of `sessionId`'s turn, in the order they arrived. */
+    current(sessionId) {
+      return origins.current(sessionId).map(withKnown);
+    },
+
+    /**
+     * A plain reply of the conversation `sessionId`: sent to its turn's one chat
+     * Thread (`replyPlan` mode `thread`), in that Thread. Returns the target (or
+     * null: the panel) at once; sending continues in the background. Words
+     * `replyTo` already sent there this turn are not sent again.
      */
     noteReply(sessionId, text) {
-      const target = targets.get(sessionId);
-      if (!target || !String(text ?? '').trim()) return null;
-      const rec = live.get(target.key);
-      stopTyping(sessionId);
-      if (!rec?.conn) {
-        log(`channels: a reply for ${target.kind} was not sent: the channel is not connected`);
-        return null;
-      }
-      const plain = rec.mod?.MARKDOWN === true || RENDERS_MARKDOWN.has(target.kind) ? String(text).trim() : toPlainText(text);
-      void enqueue(rec, target.chatId, async () => {
-        let first = true;
-        for (const part of splitText(plain, rec.limit)) {
-          if (!rec.conn) break;
-          // A chat app that threads replies (Slack) keeps every part in the thread; elsewhere only the first part quotes.
-          await rec.conn.send(target.chatId, part, target.replyTo && (first || rec.mod?.THREADS === true) ? { replyTo: target.replyTo } : undefined);
-          first = false;
-        }
-      });
-      return target;
+      if (!String(text ?? '').trim()) return null;
+      const plan = origins.replyPlan(sessionId);
+      if (plan.mode !== 'thread') return null;
+      const target = withKnown(plan.target);
+      if (sentThisTurn.get(sessionId)?.has(`${target.threadKey}|${norm(text)}`)) return targetView(target);
+      return sendText(sessionId, target, text) ? targetView(target) : null;
     },
 
-    /** A turn of `sessionId` ended: the typing indicator of the message it answered stops. */
+    /**
+     * The Thread `bot_reply` names from `sessionId` (a thread key or a ticket id,
+     * see lib/threads.mjs `resolve`): this turn's Threads first, then stored ones
+     * with a connected channel and someone paired. Null when unknown.
+     */
+    resolveReply(sessionId, ref) {
+      return targetView(withKnown(origins.resolve(sessionId, ref)));
+    },
+
+    /**
+     * Send `text` from `sessionId` to a chat Thread (`resolveReply`'s answer).
+     * Throws when the channel is not connected. Returns the target.
+     */
+    replyTo(sessionId, target, text) {
+      if (!target || target.kind === 'panel' || !target.chatId) throw new Error('no chat to send to');
+      if (!String(text ?? '').trim()) throw new Error('text must not be empty');
+      if (!sendText(sessionId, target, text)) throw new Error(`${CHANNEL_LABELS[target.kind] ?? target.kind} is not connected right now; the reply was not sent`);
+      const sent = sentThisTurn.get(sessionId) ?? new Set();
+      sent.add(`${target.threadKey}|${norm(text)}`);
+      sentThisTurn.set(sessionId, sent);
+      return targetView(target);
+    },
+
+    /** What is known of a chat Thread from its latest message (who, chat title, …), or undefined. */
+    threadInfo(key) {
+      return known.has(key) ? { ...known.get(key) } : undefined;
+    },
+
+    /**
+     * A turn of `sessionId` ended: the typing indicators of the messages it saw
+     * stop, and its Threads are forgotten (a teammate's DM in a later turn still
+     * answers where its last human input came from).
+     */
     noteTurnEnd(sessionId) {
-      if (typing.get(sessionId)?.claimed) stopTyping(sessionId);
+      stopTyping(sessionId, undefined, { claimedOnly: true });
+      const ended = origins.endTurn(sessionId);
+      if (humanTurns.delete(sessionId)) {
+        if (ended.length) lastThreads.set(sessionId, ended);
+        else lastThreads.delete(sessionId);
+      }
+      sentThisTurn.delete(sessionId);
+      if (origins.current(sessionId).length === 0) noted.delete(sessionId);
     },
 
-    /** Where `sessionId`'s replies go now, if to a chat. */
+    /** Where `sessionId`'s plain replies go now, if to one chat. */
     targetOf(sessionId) {
-      return targets.get(sessionId) ?? null;
+      return targetView(withKnown(origins.replyTarget(sessionId)));
     },
 
     /** What the panel shows of `bot`'s channels: {[appId]: ChannelView}. */
@@ -885,7 +1135,17 @@ export function createChannels(deps) {
       record.paired = record.paired.filter((p) => p.id !== String(userId));
       if (record.paired.length === before) return false;
       save();
-      for (const [sessionId, t] of [...targets]) if (t.key === keyOf(botId, appId)) targets.delete(sessionId);
+      // Replies stop going to this channel's chats: a turn's Threads are dropped whole (never one of several).
+      const app = keyOf(botId, appId);
+      const ofApp = (o) => o?.kind !== 'panel' && (o?.key ?? o?.appKey) === app;
+      for (const sessionId of [...noted]) {
+        if (origins.current(sessionId).some(ofApp)) {
+          origins.endTurn(sessionId);
+          noted.delete(sessionId);
+        }
+      }
+      for (const [sessionId, list] of [...lastThreads]) if (list.some(ofApp)) lastThreads.delete(sessionId);
+      for (const [key, o] of [...known]) if (ofApp(o)) known.delete(key);
       return true;
     },
 
@@ -913,7 +1173,7 @@ export function createChannels(deps) {
     /** Stop every connector; nothing restarts afterwards. */
     async stopAll() {
       disposed = true;
-      for (const sessionId of [...typing.keys()]) stopTyping(sessionId);
+      for (const id of [...typing.keys()]) stopLoop(id);
       const recs = [...live.values()];
       live.clear();
       await Promise.all(recs.map((rec) => stopRecord(rec)));

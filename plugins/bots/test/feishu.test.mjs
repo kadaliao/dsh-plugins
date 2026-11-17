@@ -940,6 +940,8 @@ test('with the hub: pairing in a DM, a stranger ignored, Markdown replies, a gro
   await flush(30);
   assert.deepEqual(sentTo('oc_dm_kada').at(-1), { path: '/open-apis/im/v1/messages', chat: 'oc_dm_kada', type: 'post', text: '## Plan\n\n- **Forge** builds it' });
   assert.equal(platform.of('DELETE', /om_plan\/reactions\//).length, 1);
+  // That turn is over: the next one answers its own chat (0.8 keeps a turn's chats until it ends).
+  hub.noteTurnEnd('session-atlas');
 
   // a group: only when the bot is @-mentioned, and the reply answers that message
   ws.push(eventFrame(receive({ chatId: 'oc_grp', chatType: 'group', text: 'talking among ourselves' })));

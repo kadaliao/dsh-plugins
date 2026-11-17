@@ -323,7 +323,8 @@ test('a paired person reaches the owning bot, or the one named by @handle; typin
   await flush();
   assert.deepEqual(s.delivered.at(-1), { bot: 'atlas', header: '[Telegram · Kada · Team]', body: 'status?' });
   s.hub.noteUserMessage('session-atlas', s.roster[0], 'user', '[Telegram · Kada · Team]\nstatus?');
-  assert.deepEqual(s.hub.targetOf('session-atlas'), { key: 'atlas/tg', kind: 'telegram', chatId: '-100', replyTo: status.messageId, who: 'Kada', origin: 'chat' });
+  // A Telegram group without topics is one Thread: the whole chat.
+  assert.deepEqual(s.hub.targetOf('session-atlas'), { threadKey: 'telegram:atlas/tg:-100', key: 'atlas/tg', appKey: 'atlas/tg', kind: 'telegram', chatId: '-100', replyTo: status.messageId, who: 'Kada', chatTitle: 'Team', origin: 'chat' });
   // /start from a paired person is a greeting, not a task.
   s.c.emit(dm('/start'));
   await flush();
@@ -368,6 +369,8 @@ test('scheduled runs report to the first paired person, unless the channel says 
   assert.deepEqual(s.c.sent, [{ chatId: '42', text: 'Good morning: two things today.' }]);
   s.hub.setOptions('atlas', 'tg', { scheduleReplies: false });
   assert.equal(s.hub.view(atlas).tg.scheduleReplies, false);
+  // A turn's Threads last until it ends (0.8); the next run is a turn of its own.
+  s.hub.noteTurnEnd('session-atlas');
   s.hub.noteUserMessage('session-atlas', atlas, 'schedule', 'Morning brief');
   assert.equal(s.hub.noteReply('session-atlas', 'Good morning again'), null);
   // A bot without a channel keeps its scheduled replies in the panel.
@@ -535,5 +538,219 @@ test('/new from a chat app starts the bot’s next topic; text after it is deliv
   s.c.emit(dm('/newsletter draft'));
   await flush();
   assert.equal(s.delivered.at(-1).body, '/newsletter draft');
+  await s.hub.stopAll();
+});
+
+// --- Threads (0.8) ----------------------------------------------------------------------
+
+/** A hub with one bot on four chat apps, a person paired on each, and every hand-over recorded with its meta. */
+async function threaded({ subscribers, toTickets } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'bots-threads-'));
+  const entries = catalog();
+  const roster = [
+    {
+      id: 'atlas', handle: 'atlas', name: 'Atlas', role: 'primary', persona: '',
+      apps: [
+        { id: 'tg', template: 'telegram', serverName: 'telegram', enabled: true, values: { token: TOKEN } },
+        { id: 'dc', template: 'discord', serverName: 'discord', enabled: true, values: { token: 'discord-token-value-1234567890' } },
+        { id: 'sl', template: 'slack-chat', serverName: 'slack', enabled: true, values: { token: 'xoxb-slack-token-value', appToken: 'xapp-slack-app-token' } },
+        { id: 'fs', template: 'feishu-chat', serverName: 'feishu', enabled: true, values: { appId: 'cli_a', appSecret: 'feishu-secret-value' } },
+      ],
+    },
+    { id: 'forge', handle: 'forge', name: 'Forge', role: 'bot', persona: '', apps: [] },
+  ];
+  const made = [];
+  const load = async (kind) => ({
+    kind,
+    TEXT_LIMIT: 30,
+    ...(kind === 'slack' ? { THREADS: true, MARKDOWN: true } : {}),
+    createConnector(opts) {
+      const c = {
+        kind, opts, stopped: false, sent: [], typed: [],
+        async start() {
+          return { id: `${kind}-bot`, username: `${kind}_bot`, name: 'Team' };
+        },
+        async stop() {
+          c.stopped = true;
+        },
+        async send(chatId, text, o) {
+          c.sent.push({ chatId, text, ...(o ?? {}) });
+        },
+        async typing(chatId, o) {
+          c.typed.push({ chatId, ...(o ?? {}) });
+        },
+        emit: (msg) => opts.onMessage(msg),
+      };
+      made.push(c);
+      return c;
+    },
+  });
+  const delivered = [];
+  const handed = [];
+  const hub = createChannels({
+    file: join(dir, 'channels.json'),
+    bots: () => roster,
+    entries: () => entries,
+    deliver: async (bot, msg, meta) => {
+      delivered.push({ bot: bot.id, ...msg, meta });
+      return { sessionId: `session-${bot.id}`, messageId: `bots:${meta.key}` };
+    },
+    ...(subscribers ? { subscribers } : {}),
+    ...(toTickets ? { toTickets: async (tickets, msg, meta) => (handed.push({ tickets: tickets.map((t) => t.id), ...msg, meta }), toTickets(tickets, msg, meta)) } : {}),
+    knownThread: () => undefined,
+    ticketThread: (id) => (id === 'tstored01' ? 'discord:atlas/dc:G1:5001' : undefined),
+    running: () => true,
+    loadConnector: load,
+    typingEveryMs: 10_000,
+  });
+  hub.sync();
+  await flush();
+  const conn = (kind) => made.find((c) => c.kind === kind && !c.stopped);
+  const appOf = { telegram: 'tg', discord: 'dc', slack: 'sl', feishu: 'fs' };
+  for (const kind of Object.keys(appOf)) {
+    conn(kind).emit({ chatId: `dm-${kind}`, messageId: '1', userId: 'u1', userName: 'Kada', text: hub.view(roster[0])[appOf[kind]].code.code, isDirect: true, mentioned: true });
+  }
+  await flush();
+  for (const c of made) c.sent.length = 0;
+  return { hub, roster, delivered, handed, conn };
+}
+
+const group = (chatId, messageId, text, extra = {}) => ({ chatId, messageId, userId: 'u1', userName: 'Kada', text, isDirect: false, mentioned: true, chatTitle: 'Team', ...extra });
+
+test('Threads: a Slack, Discord or Feishu group message is the root of its Thread; Telegram groups and DMs are the whole chat', async () => {
+  const s = await threaded();
+  s.conn('slack').emit(group('C1', '1700000000.000100', 'release status?'));
+  s.conn('discord').emit(group('G1', '5001', 'deploy it'));
+  s.conn('feishu').emit(group('oc1', 'om_root1', '查一下日志'));
+  s.conn('telegram').emit(group('-100', '7001', 'status?'));
+  s.conn('telegram').emit(group('-100', '7002', 'in a topic', { threadId: '55' }));
+  s.conn('discord').emit(group('G1', '5002', 'and the docs', { threadId: '5001' }));
+  s.conn('telegram').emit({ chatId: 'dm-telegram', messageId: '9', userId: 'u1', userName: 'Kada', text: 'privately', isDirect: true, mentioned: true });
+  await flush();
+  assert.deepEqual(s.delivered.map((d) => d.meta.threadKey), [
+    'slack:atlas/sl:C1:1700000000.000100',
+    'discord:atlas/dc:G1:5001',
+    'feishu:atlas/fs:oc1:om_root1',
+    'telegram:atlas/tg:-100',
+    'telegram:atlas/tg:-100:55',
+    'discord:atlas/dc:G1:5001',
+    'telegram:atlas/tg:dm-telegram',
+  ]);
+  // The header stays as 0.7 wrote it; the delivery key names the chat message, so a replay is recognisable.
+  assert.equal(s.delivered[1].header, '[Discord · Kada · Team]');
+  assert.equal(s.delivered[1].meta.key, 'chat:atlas/dc:G1:5001');
+  assert.equal(s.delivered[1].meta.origin.rootId, '5001');
+  assert.equal(s.delivered[1].meta.origin.replyTo, '5001');
+  assert.equal(s.delivered[6].meta.origin.direct, true);
+  await s.hub.stopAll();
+});
+
+test('Threads: a reply goes back into its Thread (topic, reply chain, Slack thread) and typing shows there', async () => {
+  const s = await threaded();
+  s.conn('discord').emit(group('G1', '5001', 'deploy it'));
+  s.conn('slack').emit(group('C1', '1700000000.000100', 'release status?'));
+  s.conn('telegram').emit(group('-100', '7002', 'in a topic', { threadId: '55' }));
+  await flush();
+  assert.deepEqual(s.conn('discord').typed.at(-1), { chatId: 'G1', threadId: '5001' });
+  assert.deepEqual(s.conn('telegram').typed.at(-1), { chatId: '-100', threadId: '55' });
+  // Claimed by the message id the host made from the delivery key.
+  const atlas = s.roster[0];
+  const seen = s.hub.noteUserMessage('session-a', atlas, 'user', 'whatever the text', { id: 'bots:chat:atlas/dc:G1:5001' });
+  assert.equal(seen.threadKey, 'discord:atlas/dc:G1:5001');
+  assert.equal(s.hub.replyPlan('session-a').mode, 'thread');
+  s.hub.noteReply('session-a', 'Deployed v2.4.1 to production, all green.');
+  await flush();
+  const dc = s.conn('discord').sent;
+  assert.ok(dc.length >= 2, 'split at the connector limit');
+  assert.deepEqual(dc[0], { chatId: 'G1', text: dc[0].text, threadId: '5001', replyTo: '5001' });
+  assert.deepEqual(Object.keys(dc[1]).sort(), ['chatId', 'text', 'threadId'], 'later parts join the chain without quoting');
+  // Slack threads every part; the text claim still works with the 0.7 header.
+  s.hub.noteUserMessage('session-b', atlas, 'user', '[Slack · Kada · Team] (thread slack:atlas/sl:C1:1700000000.000100)\nrelease status?');
+  s.hub.noteReply('session-b', 'Release 2.4 ships tomorrow morning after QA.');
+  await flush();
+  const sl = s.conn('slack').sent;
+  assert.ok(sl.length >= 2);
+  assert.ok(sl.every((m) => m.threadId === '1700000000.000100' && m.replyTo === '1700000000.000100'));
+  // A Telegram topic: every part in the topic, the first quoting the message.
+  s.hub.noteUserMessage('session-c', atlas, 'user', 'x', { id: 'bots:chat:atlas/tg:-100:7002' });
+  s.hub.noteReply('session-c', 'Topic reply');
+  await flush();
+  assert.deepEqual(s.conn('telegram').sent.at(-1), { chatId: '-100', text: 'Topic reply', threadId: '55', replyTo: '7002' });
+  await s.hub.stopAll();
+});
+
+test('Threads: a follow-up on a Thread with live tickets goes to them; @handle still reaches a home; a failed hand-off falls back to the owner', async () => {
+  const ticket = { id: 'tfollow01', threads: ['discord:atlas/dc:G1:5001'] };
+  const stopped = { id: 'tstopped1', threads: ['discord:atlas/dc:G1:5001'], ended: { outcome: 'stopped' } };
+  let fail = false;
+  const s = await threaded({
+    subscribers: (key) => (key === 'discord:atlas/dc:G1:5001' ? [ticket, stopped] : []),
+    toTickets: async (tickets) => {
+      if (fail) throw new Error('archived');
+      return tickets.map((t) => `ticket-${t.id}`);
+    },
+  });
+  s.conn('discord').emit(group('G1', '5002', 'also bump the version', { threadId: '5001' }));
+  await flush();
+  assert.equal(s.delivered.length, 0, 'no home conversation took it');
+  assert.equal(s.handed.length, 1);
+  assert.deepEqual(s.handed[0].tickets, ['tfollow01'], 'a stopped ticket takes nothing');
+  assert.equal(s.handed[0].body, 'also bump the version');
+  assert.equal(s.handed[0].meta.owner.id, 'atlas');
+  assert.equal(s.handed[0].meta.threadKey, 'discord:atlas/dc:G1:5001');
+  assert.deepEqual(s.conn('discord').typed.at(-1), { chatId: 'G1', threadId: '5001' }, 'typing while the task works');
+  s.conn('discord').emit(group('G1', '5003', '@forge what do you think?', { threadId: '5001' }));
+  await flush();
+  assert.deepEqual(s.delivered.map((d) => [d.bot, d.body]), [['forge', 'what do you think?']]);
+  fail = true;
+  s.conn('discord').emit(group('G1', '5004', 'one more thing', { threadId: '5001' }));
+  await flush();
+  assert.deepEqual([s.delivered.at(-1).bot, s.delivered.at(-1).body], ['atlas', 'one more thing'], 'the Router takes it when the tasks cannot');
+  await s.hub.stopAll();
+});
+
+test('Threads: two chats in one turn keep plain text in the panel; bot_reply targets resolve and send; unknown ones do not', async () => {
+  const s = await threaded();
+  const atlas = s.roster[0];
+  s.conn('discord').emit(group('G1', '5001', 'deploy it'));
+  s.conn('telegram').emit({ chatId: 'dm-telegram', messageId: '9', userId: 'u1', userName: 'Kada', text: 'status?', isDirect: true, mentioned: true });
+  await flush();
+  s.hub.noteUserMessage('session-a', atlas, 'user', 'x', { id: 'bots:chat:atlas/dc:G1:5001' });
+  s.hub.noteUserMessage('session-a', atlas, 'user', 'y', { id: 'bots:chat:atlas/tg:dm-telegram:9' });
+  const plan = s.hub.replyPlan('session-a');
+  assert.equal(plan.mode, 'choose');
+  assert.deepEqual(plan.origins.map((o) => o.threadKey), ['discord:atlas/dc:G1:5001', 'telegram:atlas/tg:dm-telegram']);
+  assert.equal(s.hub.noteReply('session-a', 'Plain text'), null);
+  assert.equal(s.hub.targetOf('session-a'), null);
+  await flush();
+  assert.equal(s.conn('discord').sent.length + s.conn('telegram').sent.length, 0);
+  const tg = s.hub.resolveReply('session-a', { thread: 'telegram:atlas/tg:dm-telegram' });
+  s.hub.replyTo('session-a', tg, 'All good here.');
+  await flush();
+  assert.deepEqual(s.conn('telegram').sent, [{ chatId: 'dm-telegram', text: 'All good here.' }]);
+  // Made-up keys and unknown tasks are no target; a stored task's chat with a live, paired channel is.
+  assert.equal(s.hub.resolveReply('session-a', { thread: 'telegram:atlas/tg:999' }), null);
+  assert.equal(s.hub.resolveReply('session-a', { ticket: 'tnope0000' }), null);
+  s.hub.noteTurnEnd('session-a');
+  assert.deepEqual(s.hub.current('session-a'), []);
+  const stored = s.hub.resolveReply('session-a', { ticket: 'tstored01' });
+  assert.equal(stored.threadKey, 'discord:atlas/dc:G1:5001');
+  assert.equal(stored.replyTo, '5001', 'what the Thread\'s last message told is filled in');
+  await s.hub.stopAll();
+  assert.throws(() => s.hub.replyTo('session-a', stored, 'too late'), /not connected/);
+});
+
+test('Threads: a teammate\'s DM in a later turn answers where the last human input came from; a report does not', async () => {
+  const s = await threaded();
+  const atlas = s.roster[0];
+  s.conn('telegram').emit({ chatId: 'dm-telegram', messageId: '9', userId: 'u1', userName: 'Kada', text: 'organise it', isDirect: true, mentioned: true });
+  await flush();
+  s.hub.noteUserMessage('session-a', atlas, 'user', 'x', { id: 'bots:chat:atlas/tg:dm-telegram:9' });
+  s.hub.noteTurnEnd('session-a');
+  s.hub.noteUserMessage('session-a', atlas, 'agent-message', 'Bot message from @forge: done');
+  assert.equal(s.hub.noteReply('session-a', 'Forge is done.').kind, 'telegram');
+  s.hub.noteTurnEnd('session-a');
+  s.hub.noteUserMessage('session-a', atlas, 'agent-message', 'Report from @forge on task t…', { report: true });
+  assert.equal(s.hub.replyPlan('session-a').mode, 'panel');
   await s.hub.stopAll();
 });

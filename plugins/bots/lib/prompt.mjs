@@ -40,6 +40,16 @@ const ROUTER_TEAM = [
   MANAGE_LINE,
 ];
 
+/** "Working with other bots" as a bot's own home reads it when delegating opens tasks (router mode), the dispatcher aside. */
+const HOME_TICKETS_TEAM = [
+  '- Message another bot with `bot_send_message` (to: its @handle). That opens a task (ticket) for it, which it works on in a conversation of its own; the call returns at once, and its answer comes back to you as a "Report from @… on task …" message. Never wait or poll for it. To add to a task you opened, pass `ticket` (its id) instead of `to`.',
+  '- A message that starts with "Report from @…" or "Bot message from @…" was sent by that bot, not by the user. Pass a report\'s result on to whoever asked; a `question` or `blocked` report needs an answer with `bot_send_message` (ticket: its id).',
+  '- Keep messages self-contained: the other bot cannot see your conversation.',
+  SCHEDULE_NOTICE_LINE,
+  LANGUAGE_LINE,
+  MANAGE_LINE,
+];
+
 /** "Working with other bots" as a worker in a ticket session reads it. */
 const TICKET_TEAM = [
   '- Ask another bot for help with `bot_send_message` (to: its @handle). That opens a sub-task for it, and its report comes back to this conversation by itself; do not wait or poll for it.',
@@ -73,14 +83,16 @@ function originPhrase(ticket) {
  * bot's conversation only.
  * @param {object} bot
  * @param {object[]} roster - every bot, the bot itself included.
- * @param {{skillsInline?: boolean, apps?: string[], skillNames?: object, channels?: string[], dispatcher?: 'router'|'hands-on', ticket?: object}} [extra]
+ * @param {{skillsInline?: boolean, apps?: string[], skillNames?: object, channels?: string[], dispatcher?: 'router'|'hands-on', tickets?: boolean, ticket?: object}} [extra]
  *   `channels`: chat apps the team is reachable from ('Telegram').
  *   `dispatcher`: how the dispatcher (role 'primary') works in its home conversation; 'hands-on' (default) is the 0.7 text, 'router' only understands, hands out and reports. Ignored for other bots.
+ *   `tickets`: delegating from a home opens a task whose answer arrives as a report (router mode); a non-dispatcher bot's home then says so. Without it (hands-on) the 0.7 text stands.
  *   `ticket`: the ticket (see PLAN-0.8 §10) when this conversation is that ticket's session; the text then frames the conversation as one task, whatever the bot's role.
  */
 export function personaText(bot, roster, extra = {}) {
   const ticket = extra.ticket ?? null;
   const router = !ticket && bot.role === 'primary' && extra.dispatcher === 'router';
+  const homeTickets = !ticket && !router && bot.role !== 'primary' && extra.tickets === true;
   const lines = [];
   lines.push(`You are ${bot.name} (@${bot.handle}), one of the user's bots in DeepSeek Harness.`);
   if (bot.persona.trim()) lines.push('', '## Your persona', bot.persona.trim());
@@ -88,7 +100,7 @@ export function personaText(bot, roster, extra = {}) {
   lines.push('', '## The bot team');
   lines.push(roster.length > 1 ? 'These bots work for the same user and can message each other:' : 'You are the only bot so far.');
   if (roster.length > 1) for (const b of roster) lines.push(rosterLine(b, bot.id));
-  lines.push('', '## Working with other bots', ...(ticket ? TICKET_TEAM : router ? ROUTER_TEAM : HANDS_ON_TEAM));
+  lines.push('', '## Working with other bots', ...(ticket ? TICKET_TEAM : router ? ROUTER_TEAM : homeTickets ? HOME_TICKETS_TEAM : HANDS_ON_TEAM));
   if (ticket) {
     lines.push(
       '',
