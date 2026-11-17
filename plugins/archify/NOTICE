@@ -1,0 +1,16 @@
+@kadaliao/dsh-archify
+Copyright (c) 2026 Kada Liao. The plugin's own files (index.js, client.js, lib/,
+skill/, locale/, icon.svg, scripts/, test/) are MIT-licensed; see the
+repository's LICENSE.
+
+archify/ is a copy of the Archify skill by tt-a1i
+(https://github.com/tt-a1i/archify, commit in archify/UPSTREAM.json), licensed
+under the Apache License 2.0 with historical MIT grants: see archify/LICENSE,
+archify/LICENSE-MIT, archify/NOTICE and archify/THIRD_PARTY_NOTICES.md. It is
+included unmodified, except that test files, pre-rendered example pages,
+generator scripts and the lockfile are left out.
+
+skill/SKILL.md is a modified version of archify/SKILL.md (Apache-2.0): its
+shell commands are replaced by the plugin's archify_render and archify_cli
+tools, and its update-check and setup sections are removed, for DeepSeek
+Harness.
