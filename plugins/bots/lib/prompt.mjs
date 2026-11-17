@@ -276,17 +276,26 @@ export function textOf(content) {
 const abilityTools = (id) => ABILITIES.find((a) => a.id === id)?.tools ?? [];
 
 /**
+ * Harness tools that run commands or change files outside the abilities'
+ * lists: PowerShell, the persistent terminals, and the other file editors.
+ */
+const OTHER_WORK_TOOLS = ['pwsh', 'terminal_open', 'terminal_send', 'terminal_read', 'terminal_signal', 'terminal_close', 'terminal_list', 'apply_patch', 'str_replace_editor'];
+
+/**
  * Tools a router dispatcher is denied by default: running commands (and the
- * job tools that go with them), writing and editing files, sub-agents and
+ * job tools that go with them; `pwsh` and the terminals too), writing and
+ * editing files (`apply_patch` and `str_replace_editor` too), sub-agents and
  * workflows, image generation and Office tools. It keeps `read`,
  * `read_image`, `glob`, `grep`, `skill`, `web_search` and `web_fetch`.
  */
 export const ROUTER_DENY = Object.freeze([
-  ...new Set([...abilityTools('code'), 'write', 'edit', ...abilityTools('delegate'), ...abilityTools('images'), ...abilityTools('office')]),
+  ...new Set([...abilityTools('code'), 'write', 'edit', ...abilityTools('delegate'), ...abilityTools('images'), ...abilityTools('office'), ...OTHER_WORK_TOOLS]),
 ]);
 
-/** Longest `bash` timeout a router may ask for, in ms. */
+/** Longest `bash` / `pwsh` timeout a router may ask for, in ms. */
 export const ROUTER_MAX_COMMAND_MS = 30_000;
+/** The timeout Harness gives a command that names none (`dsh-bash-local`), in ms. */
+export const DEFAULT_COMMAND_MS = 120_000;
 /** Longest `job_output` wait a router may ask for, in ms (Harness waits 30 s when `wait` has no `timeout_ms`). */
 export const ROUTER_MAX_JOB_WAIT_MS = 5_000;
 
@@ -321,18 +330,25 @@ export function runsSleep(command) {
 /**
  * A guard for a router's tool calls (the shape of Harness `tools.guard`):
  * the refusal reason for a call that would make the dispatcher wait, else
- * undefined. Refused: `bash` running `sleep` or asking for a timeout above
- * 30 s, and `job_output` waits above 5 s.
+ * undefined. Refused: `bash` or `pwsh` running `sleep`, or in the foreground
+ * without a `timeoutMs` of at most 30 s (none given means Harness's 120 s: the
+ * cap, not the shell text, is what bounds a wait such as `read -t` or
+ * `tail -f`); `run_in_background` returns at once and is allowed. And
+ * `job_output` waits above 5 s.
  * @param {{name: string, arguments?: object}} call
  * @returns {string|undefined}
  */
 export function noWaitReason(call) {
   const name = call?.name;
   const args = call?.arguments && typeof call.arguments === 'object' ? call.arguments : {};
-  if (name === 'bash') {
+  if (name === 'bash' || name === 'pwsh') {
     if (runsSleep(args.command)) return `Refused: no sleep. ${NO_WAIT}`;
-    const timeout = Number(args.timeoutMs ?? args.timeout_ms ?? 0);
-    if (timeout > ROUTER_MAX_COMMAND_MS) return `Refused: timeouts above ${ROUTER_MAX_COMMAND_MS / 1000} s are not allowed here. Hand long work to a bot with bot_send_message, or run it with run_in_background. ${NO_WAIT}`;
+    if (args.run_in_background === true) return undefined;
+    const given = args.timeoutMs ?? args.timeout_ms;
+    const timeout = given === undefined || given === null || given === '' ? DEFAULT_COMMAND_MS : Number(given);
+    if (!(timeout > 0 && timeout <= ROUTER_MAX_COMMAND_MS)) {
+      return `Refused: a command here must finish within ${ROUTER_MAX_COMMAND_MS / 1000} s. Pass timeoutMs (at most ${ROUTER_MAX_COMMAND_MS}; left out it is ${DEFAULT_COMMAND_MS / 1000} s), hand long work to a bot with bot_send_message, or run it with run_in_background. ${NO_WAIT}`;
+    }
   }
   if (name === 'job_output' && args.wait === true) {
     const timeout = args.timeout_ms === undefined ? Infinity : Number(args.timeout_ms);

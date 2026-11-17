@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ABILITIES } from '../lib/abilities.mjs';
-import { ROUTER_DENY, noWaitReason, personaText, runsSleep } from '../lib/prompt.mjs';
+import { DEFAULT_COMMAND_MS, ROUTER_DENY, noWaitReason, personaText, runsSleep } from '../lib/prompt.mjs';
 
 const atlas = { id: 'b-atlas', name: 'Atlas', handle: 'atlas', role: 'primary', persona: 'Chief of staff.', bio: 'Runs the team', skills: [] };
 const coder = { id: 'b-coder', name: 'Coder', handle: 'coder', role: 'bot', persona: '', bio: 'Writes code', skills: [] };
@@ -81,8 +81,11 @@ test('the router is denied commands, writes, sub-agents, images and Office, and 
   for (const name of ['read', 'read_image', 'skill', 'web_search', 'web_fetch', 'glob', 'grep', 'bot_send_message', 'bot_reply', 'bot_recall']) {
     assert.ok(!ROUTER_DENY.includes(name), name);
   }
+  // Harness's other ways to run commands or change files, which no ability lists, are denied too.
+  const others = ['pwsh', 'terminal_open', 'terminal_send', 'terminal_read', 'terminal_signal', 'terminal_close', 'terminal_list', 'apply_patch', 'str_replace_editor'];
   const known = new Set(ABILITIES.flatMap((a) => a.tools));
-  for (const name of ROUTER_DENY) assert.ok(known.has(name), `${name} is an ability tool`);
+  for (const name of ROUTER_DENY) assert.ok(known.has(name) || others.includes(name), `${name} is an ability tool or a listed work tool`);
+  for (const name of others) assert.ok(ROUTER_DENY.includes(name), name);
   assert.equal(new Set(ROUTER_DENY).size, ROUTER_DENY.length);
   assert.ok(Object.isFrozen(ROUTER_DENY));
 });
@@ -131,18 +134,33 @@ test('sleep at a command position is found; sleep as an argument is not', () => 
 
 test('noWaitReason refuses sleeps, long command timeouts and long job waits', () => {
   assert.match(noWaitReason({ name: 'bash', arguments: { command: 'sleep 30', description: 'Wait' } }), /^Refused: no sleep\. The dispatcher does not wait/);
-  assert.match(noWaitReason({ name: 'bash', arguments: { command: 'npm test', timeoutMs: 60_000 } }), /timeouts above 30 s/);
+  assert.match(noWaitReason({ name: 'bash', arguments: { command: 'npm test', timeoutMs: 60_000 } }), /must finish within 30 s\. Pass timeoutMs \(at most 30000/);
   assert.equal(noWaitReason({ name: 'bash', arguments: { command: 'npm test', timeoutMs: 30_000 } }), undefined);
-  assert.equal(noWaitReason({ name: 'bash', arguments: { command: 'ls' } }), undefined);
+  assert.equal(noWaitReason({ name: 'bash', arguments: { command: 'ls', timeoutMs: 5000 } }), undefined);
   assert.equal(noWaitReason({ name: 'bash', arguments: { command: 'npm run build', run_in_background: true } }), undefined);
   assert.match(noWaitReason({ name: 'job_output', arguments: { job_id: 'j1', wait: true } }), /job waits above 5 s/, 'Harness waits 30 s by default');
   assert.match(noWaitReason({ name: 'job_output', arguments: { job_id: 'j1', wait: true, timeout_ms: 6000 } }), /job waits above 5 s/);
   assert.equal(noWaitReason({ name: 'job_output', arguments: { job_id: 'j1', wait: true, timeout_ms: 5000 } }), undefined);
   assert.equal(noWaitReason({ name: 'job_output', arguments: { job_id: 'j1' } }), undefined);
   assert.equal(noWaitReason({ name: 'read', arguments: { path: 'sleep.txt' } }), undefined);
-  assert.equal(noWaitReason({ name: 'bash' }), undefined);
   assert.equal(noWaitReason(undefined), undefined);
   // The Harness ToolExecution passes straight through as a guard.
   const guard = noWaitReason;
   assert.equal(typeof guard({ callId: 'c1', name: 'bash', arguments: { command: 'sleep 1' }, signal: new AbortController().signal }), 'string');
+});
+
+test('a router command without a timeout counts as 120 s: waits the shell text hides are capped, pwsh too', () => {
+  assert.equal(DEFAULT_COMMAND_MS, 120_000);
+  // None of these runs `sleep` at a command position; the missing timeout is what refuses them.
+  for (const command of ["sh -c 'sleep 100'", 'python3 -c "import time; time.sleep(100)"', 'read -t 100 x', 'tail -f app.log', 'ls']) {
+    assert.match(noWaitReason({ name: 'bash', arguments: { command } }), /must finish within 30 s\. Pass timeoutMs .*left out it is 120 s/, command);
+    assert.equal(noWaitReason({ name: 'bash', arguments: { command, timeoutMs: 30_000 } }), undefined, `${command} with a 30 s cap`);
+  }
+  assert.match(noWaitReason({ name: 'bash' }), /must finish within 30 s/);
+  for (const bad of [0, -1, 'soon', 30_001]) assert.match(noWaitReason({ name: 'bash', arguments: { command: 'ls', timeoutMs: bad } }), /must finish within 30 s/, String(bad));
+  // PowerShell is held to the same rules.
+  assert.match(noWaitReason({ name: 'pwsh', arguments: { command: 'Start-Process x' } }), /must finish within 30 s/);
+  assert.match(noWaitReason({ name: 'pwsh', arguments: { command: 'sleep 5', timeoutMs: 1000 } }), /no sleep/);
+  assert.equal(noWaitReason({ name: 'pwsh', arguments: { command: 'Get-ChildItem', timeoutMs: 10_000 } }), undefined);
+  assert.equal(noWaitReason({ name: 'pwsh', arguments: { command: 'npm run build', run_in_background: true } }), undefined);
 });

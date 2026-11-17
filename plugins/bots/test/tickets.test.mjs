@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -275,6 +275,25 @@ test('touch: Session events wait for the next write; a person’s message is wri
   assert.equal(tickets.touch('tnope0000'), undefined);
 });
 
+test('messages parked for a slot make a started ticket queued; an origin keeps the chat message that started it', () => {
+  const t = { ...base, startedAt: 2 };
+  assert.equal(stageOf(t), 'working');
+  assert.equal(stageOf({ ...t, parked: [{ key: 'msg:1', content: [] }] }), 'queued');
+  assert.equal(stageOf({ ...t, parked: [] }), 'working');
+  // A question or a stall still shows first; an ended ticket is its outcome.
+  assert.equal(stageOf({ ...t, parked: [{ key: 'k' }], reports: [rep('question', 3)] }), 'question');
+  assert.equal(stageOf({ ...t, parked: [{ key: 'k' }], ended: { at: 4, by: 'user', outcome: 'stopped' } }), 'stopped');
+
+  const { dir, tickets } = fresh();
+  const made = tickets.create({ text: 'Fix it', botId: 'bot-a', origin: { threadKey: 'telegram:b/a:-100', via: 'telegram', who: 'Kada', replyTo: 50 } });
+  assert.deepEqual(made.origin, { threadKey: 'telegram:b/a:-100', via: 'telegram', who: 'Kada', replyTo: '50' });
+  tickets.patch(made.id, { startedAt: 5, parked: [{ key: 'msg:a', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' }, human: true }] });
+  const back = createTickets(dir).get(made.id);
+  assert.equal(back.origin.replyTo, '50');
+  assert.deepEqual(back.parked, [{ key: 'msg:a', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' }, human: true }], 'parked messages outlast a restart');
+  assert.equal(stageOf(back), 'queued');
+});
+
 test('subscriptions are many-to-many, and live ones leave out archived and person-stopped tickets', () => {
   const { tickets } = fresh();
   const chat = 'feishu:app1:oc_1:om_root';
@@ -449,7 +468,9 @@ test('a missing or corrupt file starts empty; a corrupt one is set aside, not lo
     const tickets = createTickets(dir);
     assert.deepEqual(tickets.list(), []);
     assert.deepEqual(tickets.open(), []);
-    assert.equal(readFileSync(join(dir, 'tickets.json.corrupt'), 'utf8'), junk);
+    const aside = readdirSync(dir).filter((f) => f.startsWith('tickets.json.corrupt-'));
+    assert.equal(aside.length, 1);
+    assert.equal(readFileSync(join(dir, aside[0]), 'utf8'), junk);
     tickets.create({ text: 'After the crash', botId: 'bot-b' });
     assert.equal(onDisk(dir).tickets.length, 1);
     assert.equal(onDisk(dir).version, 1);
@@ -457,7 +478,36 @@ test('a missing or corrupt file starts empty; a corrupt one is set aside, not lo
   const dir = tmp();
   writeFileSync(join(dir, 'tickets.json'), JSON.stringify({ version: 1, tickets: [], threads: 'nope' }));
   createTickets(dir).list();
-  assert.equal(existsSync(join(dir, 'tickets.json.corrupt')), false, 'a bad Thread list alone is not a corrupt file');
+  assert.deepEqual(readdirSync(dir).filter((f) => f.includes('corrupt')), [], 'a bad Thread list alone is not a corrupt file');
+});
+
+test('a second corrupt file keeps the first one set aside; a file that cannot be read is never written over', () => {
+  const dir = tmp();
+  for (const junk of ['{"first', '{"second']) {
+    writeFileSync(join(dir, 'tickets.json'), junk);
+    assert.deepEqual(createTickets(dir).list(), []);
+  }
+  const aside = readdirSync(dir).filter((f) => f.startsWith('tickets.json.corrupt-')).map((f) => readFileSync(join(dir, f), 'utf8')).sort();
+  assert.deepEqual(aside, ['{"first', '{"second']);
+
+  // Something other than a missing file (here a folder in its place) is no first run: it throws, and nothing is written.
+  const odd = tmp();
+  mkdirSync(join(odd, 'tickets.json'));
+  const broken = createTickets(odd);
+  assert.throws(() => broken.list(), /cannot read .*tickets\.json \(EISDIR\)/);
+  assert.throws(() => broken.create({ text: 'x', botId: 'b' }), /cannot read/);
+  assert.deepEqual(readdirSync(odd), ['tickets.json']);
+  if (process.getuid?.() !== 0) {
+    const locked = tmp();
+    writeFileSync(join(locked, 'tickets.json'), JSON.stringify({ version: 1, tickets: [{ ...base }], threads: [] }));
+    chmodSync(join(locked, 'tickets.json'), 0o000);
+    try {
+      assert.throws(() => createTickets(locked).open(), /EACCES/);
+    } finally {
+      chmodSync(join(locked, 'tickets.json'), 0o600);
+    }
+    assert.equal(onDisk(locked).tickets[0].id, base.id, 'the unreadable file is untouched');
+  }
 });
 
 test('onChange hears each write with the ticket, survives a throwing listener, and unsubscribes', () => {

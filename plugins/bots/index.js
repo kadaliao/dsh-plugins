@@ -53,7 +53,7 @@ import { describeTiming, dmBody, dmHeader, noWaitReason, personaText, ROUTER_DEN
 import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
 import { createLedger, promptTokens, report, ticketUsage, todayByBot, usageRow } from './lib/usage.mjs';
-import { createSlots, createTickets, REPORT_STATUSES, sessionIdOf, stageOf } from './lib/tickets.mjs';
+import { createSlots, createTickets, parkedOf, REPORT_STATUSES, sessionIdOf, stageOf } from './lib/tickets.mjs';
 import { assignmentText, clip, failedNoticeText, followUpNoticeText, nudgeText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, stalledNoticeText } from './lib/cards.mjs';
 import { checkTickets, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
 import { isPanelThread, panelThreadKey, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
@@ -238,6 +238,13 @@ export function apply(ctx, config, deps = {}) {
   const memory = createMemory(join(dir, 'memory'));
   const topics = createTopics(dir);
   const tickets = createTickets(dir, { now: nowMs });
+  // A tasks file that is there but cannot be read stops the plugin now, before anything writes over it.
+  try {
+    tickets.open();
+  } catch (error) {
+    (ctx.logger?.error ?? ctx.logger?.warn)?.call(ctx.logger, `bots: not starting: ${error?.message ?? error}`);
+    throw error;
+  }
   const slots = createSlots(settings.get().tickets.maxWorking);
   const prices = createPriceCatalog(dir, { enabled: deps.prices !== false, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
   const home = deps.home ?? homedir();
@@ -950,8 +957,7 @@ export function apply(ctx, config, deps = {}) {
           throw new Error(`could not move the scheduled tasks of @${bot.handle} to a new topic (${failed?.message ?? failed}); it stays in the current one`);
         }
         uninstall(prev);
-        memoText.delete(prev);
-        memoStale.delete(prev);
+        forgetSession(prev);
         try {
           await service(ctx, 'workspaceRegistry')?.archiveSession?.(prev);
         } catch (error) {
@@ -1010,8 +1016,8 @@ export function apply(ctx, config, deps = {}) {
   const deliveredIds = new Map();
   /**
    * The tail of a Session's stored log (Harness `sessionPersistence`, a read handle beside the live
-   * writer), or null when there is no such service, no such Session or the log is too large to read
-   * cheaply. `deps.history(sessionId)` stands in for tests.
+   * writer), or null when there is no such service, no such Session, the log is too large to read
+   * cheaply, or the read comes back in a shape not known here. `deps.history(sessionId)` stands in for tests.
    * @returns {Promise<object[]|null>}
    */
   async function readHistory(sessionId) {
@@ -1034,7 +1040,8 @@ export function apply(ctx, config, deps = {}) {
       const offset = Number.isSafeInteger(count) && count > HISTORY_TAIL ? count - HISTORY_TAIL : 0;
       let read = await handle.read(offset, HISTORY_TAIL);
       if (offset > 0 && !(read?.events?.length > 0)) read = await handle.read(0);
-      return Array.isArray(read?.events) ? read.events : [];
+      // A read in a shape not known here tells nothing (null), rather than an empty log.
+      return Array.isArray(read?.events) ? read.events : null;
     } catch {
       return null;
     } finally {
@@ -1082,19 +1089,22 @@ export function apply(ctx, config, deps = {}) {
    * Hand one message to an Agent.
    * - `mode`: 'steer' (the current turn's next step, or a new turn when idle: messages that arrive
    *   while it works are taken together), 'followup' (a turn of its own; 0.7's only way) or 'inject'
-   *   (into the conversation without waking it). Harnesses without `steer` / `inject` get a followup.
+   *   (into the conversation without waking it). A Harness without `steer` gets a followup; one
+   *   without `inject` gets nothing for an 'inject' (`dropped`): such a note never wakes a turn.
    * - `key`: makes the message id `bots:<key>`; a message with that id already pending or delivered
    *   is not delivered again, so a retried request is harmless.
-   * @returns {{message: object, mode: string, skipped: boolean}}
+   * @returns {{message: object, mode: string, skipped: boolean, dropped?: true}}
    */
   async function sendTo(agent, { content: blocks, source, mode = 'followup', key }) {
     // Providers that take a message as one string join its blocks with nothing in between:
     // a header block ends its line itself, so the text under it starts on a new one.
     const content = blocks.map((b, i) => (i < blocks.length - 1 && b?.type === 'text' && !b.text.endsWith('\n') ? { ...b, text: `${b.text}\n` } : b));
     const message = key ? freezeMessage({ id: `${MESSAGE_PREFIX}${key}`, role: 'user', content, source }) : createUserMessage({ content, source });
+    // A note that must not wake anyone is dropped where Harness cannot inject: it is "good to know", never worth a turn.
+    if (mode === 'inject' && typeof agent.inject !== 'function') return { message, mode, skipped: true, dropped: true };
     if (key) await loadHistory(agent.session?.id);
     if (key && holds(agent, message.id)) return { message, mode, skipped: true };
-    const how = mode === 'inject' && typeof agent.inject === 'function' ? 'inject' : mode !== 'followup' && typeof agent.steer === 'function' ? 'steer' : 'followup';
+    const how = mode === 'inject' ? 'inject' : mode !== 'followup' && typeof agent.steer === 'function' ? 'steer' : 'followup';
     agent[how](message);
     if (key) noteDelivered(agent.session?.id, message.id);
     await flush(agent);
@@ -1198,11 +1208,11 @@ export function apply(ctx, config, deps = {}) {
 
   /** A Thread as a ticket subscribes to it: its key and label (`Slack · Acme #general · thread`). */
   const threadRecordOf = (o) => ({ key: o.threadKey, label: threadLabel(o) });
-  /** A ticket's `origin` from one of the turn's Threads. */
+  /** A ticket's `origin` from one of the turn's Threads; `replyTo`: the chat message that started it, which its answer quotes. */
   const originFrom = (o) =>
     o.kind === 'panel'
       ? { origin: { threadKey: o.threadKey, who: 'the user' }, thread: threadRecordOf(o) }
-      : { origin: { threadKey: o.threadKey, via: o.kind, ...(o.who ? { who: o.who } : {}) }, thread: threadRecordOf(o) };
+      : { origin: { threadKey: o.threadKey, via: o.kind, ...(o.who ? { who: o.who } : {}), ...(o.replyTo ? { replyTo: String(o.replyTo) } : {}) }, thread: threadRecordOf(o) };
   /** The choices a delegating call may name with `thread`, for an error. */
   const threadChoices = (list) => list.map((o) => `${o.threadKey} (${threadLabel(o)})`).join(', ');
 
@@ -1297,26 +1307,77 @@ export function apply(ctx, config, deps = {}) {
   /** Failures of tickets the caller is opening right now: its tool result says so, no notice is sent. */
   const quietFailures = new Set();
 
-  /** Start a queued ticket that holds a slot: its Session, then the assignment as the first message. */
+  /**
+   * Start a queued ticket that holds a slot: its Session, then the assignment as the first message.
+   * One ended while its Session was being made (a person stopped it) does not start, and frees the slot.
+   */
   async function launch(t) {
     try {
       const agent = await ticketAgent(t);
+      const now = tickets.get(t.id);
+      if (!now || now.ended || now.startedAt) {
+        // Its Session stays known to it, so upkeep archives it with the ticket.
+        if (now && !now.startedAt && !now.sessionId) tickets.patch(now.id, { sessionId: agent.session.id });
+        if (!now?.startedAt) slots.release(t.id);
+        return false;
+      }
       const started = tickets.start(t.id, { sessionId: agent.session.id });
       await sendTo(agent, { content: [{ type: 'text', text: assignmentText(started, cardCtx()) }], source: sourceFrom(started.requester), mode: 'steer', key: `assign:${t.id}` });
       return true;
     } catch (error) {
       const reason = String(error?.message ?? error);
       ctx.logger?.warn?.(`bots: task ${t.id} for ${handleOf(t.botId)} did not start: ${reason}`);
-      const failed = tickets.end(t.id, { by: 'system', outcome: 'failed', error: `did not start: ${reason}` });
       slots.release(t.id);
+      // Stopped while it was starting: it stays as the person left it.
+      if (tickets.get(t.id)?.ended) return false;
+      const failed = tickets.end(t.id, { by: 'system', outcome: 'failed', error: `did not start: ${reason}` });
       if (failed && !quietFailures.has(t.id)) void notifyRequester(failed, `[Failed] Task ${t.id} (${handleOf(t.botId)}: ${t.title}) could not start: ${reason}`, { key: `failed:${t.id}:${failed.ended.at}` });
       return false;
     }
   }
 
+  /**
+   * Hand a message to a started ticket's Session once it holds a worker slot: at once when it has one
+   * or one is free (`human`: a person's message may take the extra slot), else parked on the ticket
+   * (`parked`, kept in tickets.json, so it outlasts a restart) for the pump to deliver in order when a
+   * slot frees. Messages already parked go first. Returns `{parked}`.
+   */
+  async function toTicket(t, { content, source, key, human = false }) {
+    const waiting = parkedOf(tickets.get(t.id) ?? t);
+    if (waiting.some((m) => m.key === key)) return { parked: true };
+    if (waiting.length === 0 && slots.acquire(t.id, { human })) {
+      const agent = await ticketAgent(t);
+      await sendTo(agent, { content, source, mode: 'steer', key });
+      return { parked: false };
+    }
+    tickets.patch(t.id, { parked: [...waiting, { key, content, source, at: nowMs(), ...(human ? { human: true } : {}) }] });
+    void pump();
+    return { parked: true };
+  }
+
+  /** Deliver the messages parked on a ticket that now holds a slot, oldest first; stops if it ends meanwhile. */
+  async function deliverParked(t) {
+    try {
+      const agent = await ticketAgent(t);
+      for (;;) {
+        const cur = tickets.get(t.id);
+        const [next, ...rest] = parkedOf(cur);
+        if (!cur || cur.ended || !next) break;
+        await sendTo(agent, { content: next.content, source: next.source, mode: 'steer', key: next.key });
+        tickets.patch(cur.id, { parked: rest.length ? rest : undefined });
+      }
+    } catch (error) {
+      ctx.logger?.warn?.(`bots: messages for task ${t.id} wait for the next try: ${error?.message ?? error}`);
+      slots.release(t.id);
+    }
+  }
+
   let pumping = null;
   let pumpAgain = false;
-  /** Launch queued tickets, oldest first, while slots are free. */
+  /**
+   * While slots are free, oldest first: launch queued tickets, and hand started ones the messages parked
+   * for them. A full pass still lets a person's parked message take the extra slot.
+   */
   function pump() {
     if (pumping) {
       pumpAgain = true;
@@ -1327,14 +1388,25 @@ export function apply(ctx, config, deps = {}) {
         pumpAgain = false;
         // No Session controller (yet, or in this profile): queued tickets wait for the next pump.
         if (!service(ctx, 'sessionController')) break;
-        for (const t of tickets.open()) {
-          if (t.startedAt) continue;
-          if (!store.get(t.botId)) {
+        let full = false;
+        for (const listed of tickets.open()) {
+          // Read again: an earlier launch awaited, and a person may have stopped this one meanwhile.
+          const t = tickets.get(listed.id);
+          if (!t || t.ended) continue;
+          const waiting = parkedOf(t);
+          if (t.startedAt && waiting.length === 0) continue;
+          if (!t.startedAt && !store.get(t.botId)) {
             tickets.end(t.id, { by: 'system', outcome: 'stopped', error: 'the bot was removed' });
             continue;
           }
-          if (!slots.acquire(t.id)) break;
-          await launch(t);
+          const human = waiting.some((m) => m.human);
+          if (full && !human) continue;
+          if (!slots.acquire(t.id, { human })) {
+            if (!human) full = true;
+            continue;
+          }
+          if (t.startedAt) await deliverParked(t);
+          else await launch(t);
         }
       } while (pumpAgain);
     })().finally(() => {
@@ -1348,8 +1420,10 @@ export function apply(ctx, config, deps = {}) {
     const r = t.requester ?? {};
     if (r.kind !== 'session' || !r.sessionId) return null;
     const controller = service(ctx, 'sessionController');
+    // An archived conversation (a removed bot's, an old topic's) is nobody's to wake.
+    const archived = service(ctx, 'workspaceRegistry')?.archivedSessionIds ?? [];
     const resolveId = async (id) => {
-      const found = id ? await controller?.resolveAgent?.(id).catch((error) => ({ error })) : null;
+      const found = id && !archived.includes(id) ? await controller?.resolveAgent?.(id).catch((error) => ({ error })) : null;
       return found && !('error' in found) ? found.agent : null;
     };
     if (r.ticketId) {
@@ -1382,6 +1456,8 @@ export function apply(ctx, config, deps = {}) {
    */
   function ticketEnded(t) {
     slots.release(t.id);
+    // Messages still waiting for a slot were for work that is over now.
+    if (parkedOf(t).length) tickets.patch(t.id, { parked: undefined });
     void pump();
     if (!(t.sessionId && openTasks.has(t.sessionId))) reflectTicket(t);
   }
@@ -1399,12 +1475,19 @@ export function apply(ctx, config, deps = {}) {
    * follow-up on one of its chat Threads, which brings its `header` line and `chat` details for the
    * timeline, and a delivery `key`). An ended ticket is opened again unless it is archived, or a
    * person stopped it and this is not a person asking (`force`). A ticket still queued keeps the
-   * text for its assignment.
+   * text for its assignment. A started one gets it once it holds a worker slot (a person's message may
+   * take the extra one); until then it waits on the ticket. A message whose `key` was delivered (or
+   * parked) already changes nothing: a replay after a restart neither reopens nor wakes the ticket.
    */
   async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', chat = null, key = '' } = {}) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     if (t.archivedAt) throw new Error(`task ${t.id} is archived; open a new task instead`);
+    if (key && t.sessionId) {
+      await loadHistory(t.sessionId);
+      const live = agents()?.get?.(t.sessionId) ?? { session: { id: t.sessionId } };
+      if (holds(live, `${MESSAGE_PREFIX}${key}`) || parkedOf(tickets.get(t.id) ?? t).some((m) => m.key === key)) return tickets.get(t.id) ?? t;
+    }
     if (sender && t.botId !== sender.id) {
       const target = store.get(t.botId);
       if (target && !admitPair(sender.id, target.id)) throw pairRefusal(sender, target);
@@ -1422,9 +1505,6 @@ export function apply(ctx, config, deps = {}) {
       void pump();
       return cur;
     }
-    // Follow-ups to a started ticket may take the extra slot: new work cannot crowd them out.
-    slots.acquire(cur.id, { human: true });
-    const agent = await ticketAgent(cur);
     const content = sender
       ? [
           { type: 'text', text: `Bot message from ${who} about task ${cur.id}:` },
@@ -1436,7 +1516,8 @@ export function apply(ctx, config, deps = {}) {
             { type: 'text', text: body },
           ]
         : [{ type: 'text', text: body }];
-    await sendTo(agent, { content, source: sender && senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' }, mode: 'steer', key: key || `msg:${cur.id}:${randomUUID()}` });
+    // A person's follow-up may take the extra slot (new work cannot crowd it out); a bot's may not.
+    await toTicket(cur, { content, source: sender && senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' }, key: key || `msg:${cur.id}:${randomUUID()}`, human: human && !sender });
     store.log(
       chat
         ? { from: 'user', to: cur.botId, text: body, kind: 'user', via: chat.kind, ...(chat.who ? { who: chat.who } : {}), ...(chat.threadKey ? { thread: chat.threadKey } : {}), ticket: cur.id }
@@ -1486,7 +1567,11 @@ export function apply(ctx, config, deps = {}) {
     const index = next.reports.length - 1;
     const report = next.reports[index];
     let relayed = false;
-    if (status !== 'progress') {
+    // An ended task's late words, or a sub-task's report to a task that has ended since, wake no one:
+    // they are kept on the task (its reports) and the panel shows them.
+    const parent = next.requester?.ticketId ? tickets.get(next.requester.ticketId) : undefined;
+    const unread = !wasOpen ? 'ended' : next.requester?.ticketId && (!parent || parent.ended) ? 'parent' : '';
+    if (status !== 'progress' && !unread) {
       store.log({ from: next.botId, to: next.requester?.botId ?? 'user', text: body, kind: 'dm', ticket: next.id, status });
       // A ticket the user asked for has no Session to tell: the panel shows it (attention).
       if (next.requester?.kind === 'session') {
@@ -1496,16 +1581,16 @@ export function apply(ctx, config, deps = {}) {
       }
     }
     if (status === 'done' && wasOpen) ticketEnded(next);
-    return { ticket: next, relayed };
+    return { ticket: next, relayed, ...(unread ? { unread, ...(parent ? { parent: parent.id } : {}) } : {}) };
   }
 
-  /** A person (the panel) or the requester ends a ticket; a stop also cancels its running turn. */
-  function endTicket(t, { by, outcome }) {
+  /** A person (the panel) or the requester ends a ticket (stop, or close as done); either cancels its running turn. */
+  function endTicket(t, { by, outcome, error }) {
     const wasOpen = !t.ended;
-    const next = tickets.end(t.id, { by, outcome });
-    if (outcome === 'stopped' && next.sessionId) {
+    const next = tickets.end(t.id, { by, outcome, ...(error ? { error } : {}) });
+    if (next.sessionId) {
       try {
-        agents()?.get?.(next.sessionId)?.cancel?.(by === 'user' ? { kind: 'user' } : { kind: 'hook', reason: `bots: task ${t.id} stopped` });
+        agents()?.get?.(next.sessionId)?.cancel?.(by === 'user' ? { kind: 'user' } : { kind: 'hook', reason: `bots: task ${t.id} ${outcome === 'done' ? 'closed' : 'stopped'}` });
       } catch {
         // Nothing running.
       }
@@ -1533,12 +1618,11 @@ export function apply(ctx, config, deps = {}) {
       await pump();
       return tickets.get(back.id) ?? back;
     }
-    slots.acquire(back.id, { human: true });
-    const agent = await ticketAgent(back);
     const who = sender ? `@${sender.handle}` : 'The user';
     const note = `[Retry] ${who} asked you to take task ${back.id} up again. Check what is already done before you repeat anything, then go on and report as usual.\n\n${assignmentText(back, cardCtx())}`;
     const source = sender && senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' };
-    await sendTo(agent, { content: [{ type: 'text', text: note }], source, mode: 'steer', key: `retry:${back.id}:${back.updatedAt}` });
+    // A person's retry may take the extra slot; the requester's waits for a free one like new work.
+    await toTicket(back, { content: [{ type: 'text', text: note }], source, key: `retry:${back.id}:${back.updatedAt}`, human: !sender });
     return tickets.get(back.id) ?? back;
   }
 
@@ -1578,7 +1662,8 @@ export function apply(ctx, config, deps = {}) {
   /** The time a bot's home last spoke to a person (a reply in the timeline), for reminders. */
   function lastReplyAt(botId) {
     const rows = store.messages({ bot: botId, limit: 2000 });
-    for (let i = rows.length - 1; i >= 0; i -= 1) if (rows[i].from === botId && rows[i].kind === 'reply') return Number(rows[i].at) || 0;
+    // Plain text that reached no chat (`notSent`: the turn had several) told nobody.
+    for (let i = rows.length - 1; i >= 0; i -= 1) if (rows[i].from === botId && rows[i].kind === 'reply' && !rows[i].notSent) return Number(rows[i].at) || 0;
     return 0;
   }
 
@@ -1588,6 +1673,7 @@ export function apply(ctx, config, deps = {}) {
     const open = tickets.open();
     const items = [];
     for (const t of open) {
+      // A ticket whose messages wait for a slot is `queued`: it is not judged until it has one.
       const stage = stageOf(t);
       if (stage !== 'working') continue;
       const status = agentStatusOf(t.sessionId);
@@ -1600,9 +1686,8 @@ export function apply(ctx, config, deps = {}) {
       if (!t || t.ended) continue;
       try {
         if (action.kind === 'nudge') {
-          const agent = await ticketAgent(t);
           tickets.patch(t.id, { nudgedAt: now });
-          await sendTo(agent, { content: [{ type: 'text', text: nudgeText(t) }], source: sourceFrom(t.requester), mode: 'steer', key: `nudge:${t.id}:${now}` });
+          await toTicket(t, { content: [{ type: 'text', text: nudgeText(t) }], source: sourceFrom(t.requester), key: `nudge:${t.id}:${now}` });
         } else {
           const stalled = tickets.patch(t.id, { stalledAt: now });
           store.log({ from: t.botId, to: t.requester?.botId ?? 'user', text: `Task ${t.id} stalled: no report after a status check.`, kind: 'dm', ticket: t.id, status: 'stalled' });
@@ -1618,6 +1703,8 @@ export function apply(ctx, config, deps = {}) {
     const all = tickets.list({ archived: false });
     const facts = (sessionId) => {
       const asTicket = ticketOf(sessionId);
+      // A task that has ended asks nothing more of anyone: it is not reminded.
+      if (asTicket?.ended) return { status: 'idle', ended: true };
       const bot = botOfSession(sessionId);
       const mine = all.filter((x) => x.requester?.sessionId === sessionId);
       const remindedAt = Math.max(0, ...mine.map((x) => Number(x.remindedAt) || 0));
@@ -1666,9 +1753,9 @@ export function apply(ctx, config, deps = {}) {
         const cur = tickets.get(t.id);
         if (!cur || cur.ended || agentStatusOf(cur.sessionId) === 'running') return;
         tickets.patch(cur.id, { retries: attempt, error: reason });
-        void ticketAgent(cur)
-          .then((agent) => sendTo(agent, { content: [{ type: 'text', text: retryText(cur, { attempt, error: reason }) }], source: sourceFrom(cur.requester), mode: 'steer', key: `continue:${cur.id}:${attempt}:${nowMs()}` }))
-          .catch((e) => ctx.logger?.warn?.(`bots: retrying task ${cur.id}: ${e?.message ?? e}`));
+        void toTicket(cur, { content: [{ type: 'text', text: retryText(cur, { attempt, error: reason }) }], source: sourceFrom(cur.requester), key: `continue:${cur.id}:${attempt}:${nowMs()}` }).catch((e) =>
+          ctx.logger?.warn?.(`bots: retrying task ${cur.id}: ${e?.message ?? e}`),
+        );
       }, delay);
       timer?.unref?.();
       retryTimers.set(t.id, timer);
@@ -1705,9 +1792,10 @@ export function apply(ctx, config, deps = {}) {
    * After a restart (PLAN-0.8 §4.5): a working ticket whose Session was in the middle of a turn
    * (its stored log ends inside a turn, or with the turn Harness closed as `interrupted` when it
    * resumed it), or holds input it never took, gets one recovery note: look before repeating
-   * anything, then go on. A Session that had to be made anew gets its assignment again. Idle
-   * tickets that had reported stay as they are. The note's id names the interrupted turn, so a
-   * second restart before it is read sends nothing new.
+   * anything, then go on. A Session that had to be made anew gets its assignment again, and so does
+   * one whose stored log holds no message at all (the assignment never landed). Idle tickets that
+   * had reported stay as they are. The note's id names the interrupted turn, so a second restart
+   * before it is read sends nothing new, while a recovery turn cut off again gets its own note.
    */
   async function recoverTickets() {
     if (!service(ctx, 'sessionController')) return;
@@ -1719,20 +1807,31 @@ export function apply(ctx, config, deps = {}) {
         const agent = await ticketAgent(t, info);
         const cur = tickets.get(t.id) ?? t;
         const pending = pendingOf(agent).length > 0;
-        // The first event of a turn that never ended cleanly (none: the log ends between turns).
+        // The first event of the latest turn that did not end cleanly: one the log ends inside, or one
+        // Harness closed as `interrupted` with no turn after it (none: the log ends after a clean turn).
+        // A recovery turn cut off by a second restart is a turn of its own, so it gets a note of its own.
         let interrupted = null;
+        let inTurn = false;
         let lastEnd = 0;
         (events ?? []).forEach((e, i) => {
           const seq = e?.seq ?? i;
           if (e?.type === 'turn/end') {
             lastEnd = seq;
+            inTurn = false;
             if (e.data?.reason?.kind !== 'interrupted') interrupted = null;
-          } else if (interrupted === null && ['turn/start', 'user/message', 'assistant/message', 'tool/call', 'tool/result'].includes(e?.type)) {
+          } else if (!inTurn && ['turn/start', 'user/message', 'assistant/message', 'tool/call', 'tool/result'].includes(e?.type)) {
+            inTurn = true;
             interrupted = seq;
           }
         });
+        // A stored log, read whole (shorter than the tail read), without a single message: the Session was
+        // made and the start recorded, but the assignment never landed (Harness went down in between). Its
+        // own id keeps one still in the inbox from doubling.
+        const neverTook = Array.isArray(events) && events.length < HISTORY_TAIL && !events.some((e) => e?.type === 'user/message');
         if (info.created) {
           await sendTo(agent, { content: [{ type: 'text', text: `${recoveryNoteText(cur)}\n\n${assignmentText(cur, cardCtx())}` }], source: sourceFrom(cur.requester), mode: 'steer', key: `recover:${cur.id}:new` });
+        } else if (neverTook) {
+          await sendTo(agent, { content: [{ type: 'text', text: assignmentText(cur, cardCtx()) }], source: sourceFrom(cur.requester), mode: 'steer', key: `assign:${cur.id}` });
         } else if (interrupted !== null || pending) {
           const mark = interrupted !== null ? `t${interrupted}` : `p${lastEnd}`;
           await sendTo(agent, { content: [{ type: 'text', text: recoveryNoteText(cur) }], source: sourceFrom(cur.requester), mode: 'steer', key: `recover:${cur.id}:${mark}` });
@@ -1751,10 +1850,7 @@ export function apply(ctx, config, deps = {}) {
       if (t.sessionId && (openTasks.has(t.sessionId) || agents()?.get?.(t.sessionId)?.status === 'running')) continue;
       if (t.sessionId) {
         uninstall(t.sessionId);
-        memoText.delete(t.sessionId);
-        memoStale.delete(t.sessionId);
-        deliveredIds.delete(t.sessionId);
-        historyRead.delete(t.sessionId);
+        forgetSession(t.sessionId);
         try {
           await service(ctx, 'workspaceRegistry')?.archiveSession?.(t.sessionId);
         } catch (error) {
@@ -1874,6 +1970,44 @@ export function apply(ctx, config, deps = {}) {
   const trigger = new Map();
   /** Sessions whose current turn already sent a bot_send_message. */
   const answered = new Set();
+  /**
+   * Per home Session, its turn so far (dropped at the turn's end): `other`, an input that was no report
+   * or note about a task (a person's message, a schedule run, a teammate's DM); `reports`, the tasks
+   * whose reports or notes came in; and since the latest input, `answers`, those of them it messaged
+   * with bot_send_message (`ticket`), and `acted`, any other bot_send_message (a new task, say).
+   */
+  const turnState = new Map();
+  /**
+   * Closing words that reach no one: the turn's only inputs were reports, and all the bot did about
+   * them was answer those tasks. Anything more (a person in the turn, a new task) and its text is a
+   * message to the person.
+   */
+  const closingOnly = (sessionId) => {
+    const st = turnState.get(sessionId);
+    return Boolean(st) && !st.other && st.reports.size > 0 && st.answers.size > 0 && !st.acted;
+  };
+  /** A tool call's arguments as an object (`argsRaw` or Harness's `arguments`, a JSON string). */
+  const callArgs = (b) => {
+    const raw = b?.argsRaw ?? b?.arguments ?? b?.args ?? b?.input;
+    if (raw && typeof raw === 'object') return raw;
+    try {
+      const v = JSON.parse(String(raw ?? ''));
+      return v && typeof v === 'object' ? v : {};
+    } catch {
+      return {};
+    }
+  };
+  /** Drop what is kept per Session for one that is gone: an archived task's, a topic left behind, a removed bot's. */
+  function forgetSession(sessionId) {
+    if (!sessionId) return;
+    memoText.delete(sessionId);
+    memoStale.delete(sessionId);
+    deliveredIds.delete(sessionId);
+    historyRead.delete(sessionId);
+    trigger.delete(sessionId);
+    answered.delete(sessionId);
+    turnState.delete(sessionId);
+  }
   /** Kinds of user message that start (or join) a task. */
   const TASK_KINDS = new Set(['user', 'schedule', 'agent-message']);
   /** The tickets a relay is about, from its message id (`bots:report:<id>:…`) or its sender (a ticket Session). */
@@ -1924,6 +2058,12 @@ export function apply(ctx, config, deps = {}) {
           const isReport = kind === 'agent-message' && (about.length > 0 || /^bots:(?:report|failed|ended|stalled|remind):/.test(id));
           trigger.set(session.id, isReport ? 'report' : kind);
           answered.delete(session.id);
+          const st = turnState.get(session.id) ?? { other: false, reports: new Set() };
+          if (isReport) for (const t of about) st.reports.add(t.id);
+          else if (kind !== 'schedule-notice') st.other = true;
+          st.answers = new Set();
+          st.acted = false;
+          turnState.set(session.id, st);
           const said = textOf(event.data.content);
           // A chat message adds its Thread to the turn's; a panel message adds the panel (lib/threads.mjs).
           via = channels.noteUserMessage(session.id, bot, kind, said, { id, report: isReport });
@@ -1932,7 +2072,8 @@ export function apply(ctx, config, deps = {}) {
             const key = t.origin?.threadKey;
             if (!key) continue;
             const th = tickets.thread(key);
-            channels.noteInput(session.id, { threadKey: key, origin: { ...(t.origin?.who ? { who: t.origin.who } : {}), ...(th?.label ? { label: th.label } : {}) }, ticket: t.id });
+            // The answer quotes the message that started the task, not whatever was said there last.
+            channels.noteInput(session.id, { threadKey: key, origin: { ...(t.origin?.who ? { who: t.origin.who } : {}), ...(th?.label ? { label: th.label } : {}), ...(t.origin?.replyTo ? { replyTo: t.origin.replyTo } : {}) }, ticket: t.id });
           }
           const thread = via ? via.threadKey : panelThreadKey(session.id);
           if (kind === 'user') store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who, ...(thread ? { thread } : {}) } : { from: 'user', to: bot.id, text: said, kind: 'user', ...(thread ? { thread } : {}) });
@@ -1942,13 +2083,21 @@ export function apply(ctx, config, deps = {}) {
         const content = event.data?.message?.content ?? [];
         const calls = content.filter((b) => b?.type === 'tool-call');
         if (calls.some((b) => (b.name ?? b.toolName) === 'bot_send_message')) answered.add(session.id);
+        const st = turnState.get(session.id);
+        for (const b of calls) {
+          if (!st || (b.name ?? b.toolName) !== 'bot_send_message') continue;
+          const id = String(callArgs(b).ticket ?? '').trim().replace(/^(?:ticket|task)\//, '');
+          if (id && st.reports.has(id)) st.answers.add(id);
+          else st.acted = true;
+        }
         const text = calls.length > 0 ? '' : textOf(content);
         const why = trigger.get(session.id);
         // Shown in the bot's chat: what it says to the user. Hidden: acknowledging a schedule notice,
-        // and the closing words of a turn that answered a bot by DM (they reach no one). The
-        // dispatcher reporting back after its teammates answered is a message to the user, and so is
-        // any bot passing on a report from a task it asked for.
-        const hidden = why === 'schedule-notice' || (why === 'agent-message' && (bot.role !== 'primary' || answered.has(session.id))) || (why === 'report' && answered.has(session.id));
+        // the closing words of a turn that answered a bot by DM, and those of a turn whose only inputs
+        // were reports and that only answered those tasks (they reach no one). The dispatcher reporting
+        // back after its teammates answered is a message to the user, and so is any bot passing on a
+        // report from a task it asked for, also in a turn where it hands out more work.
+        const hidden = why === 'schedule-notice' || (why === 'agent-message' && (bot.role !== 'primary' || answered.has(session.id))) || (why === 'report' && closingOnly(session.id));
         if (text && !hidden) {
           // To the turn's one chat Thread; with several (or the panel and a chat) it stays in the panel,
           // and bot_reply says where each answer goes.
@@ -1960,6 +2109,7 @@ export function apply(ctx, config, deps = {}) {
         }
       } else if (event.type === 'turn/end') {
         channels.noteTurnEnd(session.id);
+        turnState.delete(session.id);
       }
     } catch {
       // The timeline must never disturb a conversation.
@@ -2075,6 +2225,7 @@ export function apply(ctx, config, deps = {}) {
     }
     if (bot.sessionId) {
       uninstall(bot.sessionId);
+      forgetSession(bot.sessionId);
       try {
         service(ctx, 'workspaceRegistry')?.archiveSession?.(bot.sessionId);
       } catch {
@@ -2086,6 +2237,7 @@ export function apply(ctx, config, deps = {}) {
       if (!t.ended) endTicket(t, { by: 'system', outcome: 'stopped' });
       if (t.sessionId) {
         uninstall(t.sessionId);
+        forgetSession(t.sessionId);
         try {
           await service(ctx, 'workspaceRegistry')?.archiveSession?.(t.sessionId);
         } catch {
@@ -2093,6 +2245,11 @@ export function apply(ctx, config, deps = {}) {
         }
       }
       tickets.archive(t.id);
+    }
+    // The tasks it asked for (from its home or its tasks) end too: nobody is left to read their reports.
+    // They stay in the panel, stopped, where the user can still retry one.
+    for (const t of tickets.list({ open: true })) {
+      if (t.requester?.botId === bot.id) endTicket(t, { by: 'system', outcome: 'stopped', error: `@${bot.handle}, who asked for it, was removed` });
     }
     store.remove(bot.id);
     memory.dropBot(bot.id);
@@ -2173,9 +2330,51 @@ export function apply(ctx, config, deps = {}) {
     return store.patch(bot.id, { avatar: { kind: 'image', source: 'ai', url: `${R}/avatar/${bot.id}?v=${Date.now().toString(36)}`, color: bot.avatar.color } });
   }
 
+  // --- who calls a tool ----------------------------------------------------------------------
+  /**
+   * Who calls a tool: the conversation it runs in; or, for a Harness subagent or fork (its Session
+   * header says `origin: 'subagent'` and names the `parentSession` that made it), the bot home or task
+   * Session it descends from, which it then acts as (a helper inside task t1 is task t1, with its
+   * limits). `bot`: that conversation's bot; none for a person's own conversation (a top-level Session
+   * no bot owns, or a helper of one). `restricted`: a helper whose line cannot be traced to a
+   * conversation (a creator that is gone was no bot's, or a loop); it acts for no one.
+   * @returns {{sessionId: string|undefined, bot?: object, restricted?: true}}
+   */
+  function actorOf(exec) {
+    const own = exec?.agent?.session?.id;
+    const ownBot = botOfSession(own);
+    if (!own || ownBot) return { sessionId: own, ...(ownBot ? { bot: ownBot } : {}) };
+    const live = agents();
+    let header = exec.agent.session.header ?? live?.get?.(own)?.session?.header;
+    const seen = new Set([own]);
+    while (header?.origin === 'subagent' && typeof header.parentSession === 'string' && header.parentSession !== '') {
+      const parent = header.parentSession;
+      if (seen.has(parent)) return { sessionId: own, restricted: true };
+      seen.add(parent);
+      const bot = botOfSession(parent);
+      if (bot) return { sessionId: parent, bot };
+      const up = live?.get?.(parent);
+      if (!up) return { sessionId: own, restricted: true };
+      // A live creator without a header cannot be a helper itself: a top-level conversation.
+      header = up.session?.header ?? {};
+    }
+    return { sessionId: own };
+  }
+  /** The caller (`actorOf`); one that acts for no one is refused. */
+  function actor(exec) {
+    const a = actorOf(exec);
+    if (a.restricted) throw new Error('this conversation is a helper whose starting conversation cannot be traced (it is gone), so it cannot act on bots or tasks; report what you found to whoever started you instead');
+    return a;
+  }
+
   // --- what bot_recall reads ---------------------------------------------------------------
-  /** Who reads with bot_recall: a ticket Session (limited to its task), the router home, another home; else unlimited (the user). */
-  function viewerOf(sessionId) {
+  /**
+   * Who reads with bot_recall (an `actorOf` caller): a ticket Session (limited to its task), the router
+   * home, another home; a helper that cannot be traced reads nothing; else unlimited (the user).
+   */
+  function viewerOf(caller) {
+    if (caller?.restricted) return { kind: 'restricted' };
+    const sessionId = caller?.sessionId;
     const t = ticketOf(sessionId);
     if (t) return { kind: 'ticket', ticketId: t.id };
     const bot = store.bySession(sessionId);
@@ -2238,7 +2437,7 @@ export function apply(ctx, config, deps = {}) {
   }
 
   // --- the model's tools ------------------------------------------------------------------
-  const callerBot = (exec) => botOfSession(exec?.agent?.session?.id);
+  const callerBot = (exec) => actor(exec).bot;
   const resolve = (ref, what = 'bot') => {
     const bot = store.find(ref);
     if (!bot) throw new Error(`no ${what} "${ref}". Known bots: ${store.list().map((b) => `@${b.handle}`).join(', ') || 'none'}`);
@@ -2379,8 +2578,7 @@ export function apply(ctx, config, deps = {}) {
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ to: v.to, from: v.from, ...(v.ticket ? { ticket: v.ticket } : {}) }) },
       isConcurrencySafe: () => true,
       execute: async (args, exec) => {
-        const sessionId = exec?.agent?.session?.id;
-        const sender = callerBot(exec);
+        const { sessionId, bot: sender } = actor(exec);
         const mine = ticketOf(sessionId);
         const named = args.to !== undefined && String(args.to).trim() !== '' ? resolve(args.to) : null;
         const wantTicket = typeof args.ticket === 'string' && args.ticket.trim() !== '' ? args.ticket.trim().replace(/^ticket\//, '') : '';
@@ -2393,12 +2591,14 @@ export function apply(ctx, config, deps = {}) {
           const isReport = wantTicket ? wantTicket === mine.id : !named || (named.id === requesterBot && named.id !== sender.id);
           if (isReport) {
             if (!status) throw new Error(`a report on task ${mine.id} needs a status: progress (an update), done (with the result), blocked or question`);
-            const { ticket, relayed } = await reportTicket(mine, status, args.text);
+            const { ticket, relayed, unread, parent } = await reportTicket(mine, status, args.text);
             const to = requesterBot ? store.get(requesterBot) : null;
             const said =
               status === 'progress'
                 ? `Recorded on task ${ticket.id}; progress does not interrupt whoever asked. Go on with the work.`
-                : `Reported "${status}" on task ${ticket.id} to ${to ? `@${to.handle}` : 'the user'}${relayed || !to ? '' : ' (it could not be reached just now; the report is kept on the task)'}.${status === 'done' ? ' The task is done: end your turn without a summary.' : ' An answer will arrive here by itself; end your turn now.'}`;
+                : unread
+                  ? `Recorded "${status}" on task ${ticket.id}, but nobody is told: ${unread === 'ended' ? `the task has ended (${stageOf(ticket)})` : `the task that asked for it${parent ? `, ${parent},` : ''} has ended`}. The report is kept on the task; end your turn now.`
+                  : `Reported "${status}" on task ${ticket.id} to ${to ? `@${to.handle}` : 'the user'}${relayed || !to ? '' : ' (it could not be reached just now; the report is kept on the task)'}.${status === 'done' ? ' The task is done: end your turn without a summary.' : ' An answer will arrive here by itself; end your turn now.'}`;
             return { ok: true, text: said, ticket: row(ticket), to: face(to), from: face(sender) };
           }
         }
@@ -2412,7 +2612,8 @@ export function apply(ctx, config, deps = {}) {
           if (!mayAppend(t, sender, sessionId)) throw new Error(`task ${t.id} was not asked for from this conversation; message its bot with a new task instead`);
           const next = await appendToTicket(t, args.text, { sender: sender ?? null, senderSessionId: sessionId });
           const target = store.get(next.botId);
-          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}). ${handleOf(next.botId)}'s report will arrive here by itself; do not wait for it.`, ticket: row(next), to: face(target), from: face(sender) };
+          const waits = next.startedAt && parkedOf(next).length > 0 ? ': every worker slot is taken, so it is handed over when one frees' : '';
+          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${handleOf(next.botId)}'s report will arrive here by itself; do not wait for it.`, ticket: row(next), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
 
@@ -2444,9 +2645,8 @@ export function apply(ctx, config, deps = {}) {
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ via: v.via, thread: v.thread }) },
       execute: async (args, exec) => {
-        const sessionId = exec?.agent?.session?.id;
+        const { sessionId, bot } = actor(exec);
         if (ticketOf(sessionId)) throw new Error('a task conversation talks to no chat: report with bot_send_message (leave out "to"), and whoever asked passes it on');
-        const bot = callerBot(exec);
         if (!bot) throw new Error("bot_reply answers from a bot's own conversation; this conversation has no chats");
         const body = String(args.text ?? '').trim();
         if (body === '') throw new Error('text must not be empty');
@@ -2481,9 +2681,8 @@ export function apply(ctx, config, deps = {}) {
       output: { schema: anyValue, render: (_a, v) => text(v.text) },
       isConcurrencySafe: () => true,
       execute: async (args, exec) => {
-        const sessionId = exec?.agent?.session?.id;
         const result = await readResource(String(args.ref ?? ''), {
-          viewer: viewerOf(sessionId),
+          viewer: viewerOf(actorOf(exec)),
           tickets,
           threads: recallThreads,
           bots: store.list(),
@@ -2505,8 +2704,9 @@ export function apply(ctx, config, deps = {}) {
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ ticket: v.ticket }) },
       execute: async (args, exec) => {
-        const sessionId = exec?.agent?.session?.id;
-        const sender = callerBot(exec) ?? null;
+        const caller = actor(exec);
+        const sessionId = caller.sessionId;
+        const sender = caller.bot ?? null;
         const id = String(args.id ?? '').trim().replace(/^(?:ticket|task)\//, '');
         const action = String(args.action ?? '').trim().toLowerCase();
         if (!['stop', 'close', 'retry', 'status'].includes(action)) throw new Error('action is one of stop, close, retry, status');
@@ -2533,14 +2733,16 @@ export function apply(ctx, config, deps = {}) {
           said = `Task ${t.id} (${bot}) is ${stageOf(t)}; there is no work to report on. bot_recall reads its reports.`;
         } else if (!t.startedAt) {
           said = `Task ${t.id} (${bot}) is queued: it has not started yet.`;
+        } else if (parkedOf(t).length > 0) {
+          said = `Task ${t.id} (${bot}) waits for a free worker slot; the messages for it are handed over then, and its report arrives here by itself.`;
         } else if (agentStatusOf(t.sessionId) === 'running') {
           said = `${bot} is working on task ${t.id} right now; its next report arrives here by itself.`;
         } else {
-          const agent = await ticketAgent(t);
           const who = sender ? `@${sender.handle}` : 'The user';
           const ask = `[Status request] ${who} asks how task ${t.id} ("${t.title}") stands. Report now with bot_send_message: "progress" with what is done and what is left, "done" with the result if it is finished, "blocked" or "question" if you are stuck.`;
-          await sendTo(agent, { content: [{ type: 'text', text: ask }], source: sender && sessionId ? { kind: 'agent-message', form: 'relay', senderSessionId: sessionId } : { kind: 'user' }, mode: 'steer', key: `status:${t.id}:${nowMs()}` });
-          said = `Asked ${bot} for a status report on task ${t.id}; it arrives here by itself, do not wait for it.`;
+          // A person's question may take the extra slot; a bot's waits for a free one.
+          const { parked } = await toTicket(t, { content: [{ type: 'text', text: ask }], source: sender && sessionId ? { kind: 'agent-message', form: 'relay', senderSessionId: sessionId } : { kind: 'user' }, key: `status:${t.id}:${nowMs()}`, human: !sender });
+          said = parked ? `Every worker slot is taken: ${bot} gets the status request on task ${t.id} when one frees; the report arrives here by itself, do not wait for it.` : `Asked ${bot} for a status report on task ${t.id}; it arrives here by itself, do not wait for it.`;
         }
         return { ok: true, text: said, ticket: ticketRow(tickets.get(next.id) ?? next) };
       },
@@ -2565,7 +2767,7 @@ export function apply(ctx, config, deps = {}) {
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ bot: v.bot, task: v.task }) },
       execute: async (args, exec) => {
-        const actor = exec?.agent?.session?.id;
+        const actorId = exec?.agent?.session?.id;
         const bot = args.bot ? resolve(args.bot) : callerBot(exec) ?? store.primary();
         if (!bot && (args.action === 'create' || args.action === 'list')) throw new Error('say which bot with `bot`');
         switch (args.action) {
@@ -2576,15 +2778,15 @@ export function apply(ctx, config, deps = {}) {
           case 'create':
           case 'update': {
             const timing = args.kind ? timingFrom(args, zone) : undefined;
-            const task = await scheduleSave(bot, { id: args.action === 'update' ? args.id : undefined, title: args.title, prompt: args.prompt, timing }, actor);
+            const task = await scheduleSave(bot, { id: args.action === 'update' ? args.id : undefined, title: args.title, prompt: args.prompt, timing }, actorId);
             return { ok: true, bot: face(bot), task, text: `${args.action === 'create' ? 'Scheduled' : 'Updated'} "${task.title}" for @${bot.handle}: ${task.describe}; next at ${task.scheduledAt} (id ${task.id}).` };
           }
           case 'delete':
-            checkEntry(await schedule().edit({ id: String(args.id ?? ''), action: 'delete' }, actor));
+            checkEntry(await schedule().edit({ id: String(args.id ?? ''), action: 'delete' }, actorId));
             return { ok: true, text: `Deleted task ${args.id}.` };
           case 'pause':
           case 'resume': {
-            const task = entryView(checkEntry(await schedule().edit({ id: String(args.id ?? ''), action: 'update', patch: { active: args.action === 'resume' } }, actor)));
+            const task = entryView(checkEntry(await schedule().edit({ id: String(args.id ?? ''), action: 'update', patch: { active: args.action === 'resume' } }, actorId)));
             return { ok: true, task, text: `${args.action === 'pause' ? 'Paused' : 'Resumed'} "${task.title}".` };
           }
           case 'run':
@@ -2647,19 +2849,21 @@ export function apply(ctx, config, deps = {}) {
       output: { schema: anyValue, render: (_a, v) => text(v.text) },
       isConcurrencySafe: () => true,
       execute: async (args, exec) => {
-        const sessionId = exec?.agent?.session?.id;
-        const me = callerBot(exec);
+        const { sessionId, bot: me } = actor(exec);
         const r = memory.search(args.query, { bot: me?.id ?? '' });
         const tz = tzMinutes();
         const when = (ms) => new Date(ms + tz * 60_000).toISOString().slice(0, 16).replace('T', ' ');
-        // A task conversation finds only what it may read with bot_recall: its task, the parent, the sub-tasks.
+        // A task conversation finds only what it may read with bot_recall: its task, the parent, the sub-tasks;
+        // journal lines of those tasks, none of other work (lines without a task, digests of everyone's day).
         const mine = ticketOf(sessionId);
         const scope = mine ? new Set([mine.id, mine.parentId, ...tickets.children(mine.id).map((c) => c.id)].filter(Boolean)) : null;
         const found = searchTickets(args.query, tickets.list().filter((t) => !scope || scope.has(t.id)));
+        const journal = scope ? r.journal.filter((j) => j.ticket && scope.has(j.ticket)) : r.journal;
+        const digests = scope ? [] : r.digests;
         const lines = [
           ...r.notes.map((n) => `[${n.id}] (${n.scope === 'team' ? 'team' : 'yours'}) ${n.text}`),
-          ...r.journal.map((j) => `${when(j.at)} @${store.get(j.bot)?.handle ?? 'removed'}: ${j.summary || j.title}${j.ticket ? ` (task ${j.ticket})` : ''}`),
-          ...r.digests.map((d) => `Digest ${d.date}: ${d.text.slice(0, 600)}`),
+          ...journal.map((j) => `${when(j.at)} @${store.get(j.bot)?.handle ?? 'removed'}: ${j.summary || j.title}${j.ticket ? ` (task ${j.ticket})` : ''}`),
+          ...digests.map((d) => `Digest ${d.date}: ${d.text.slice(0, 600)}`),
           ...found.map((f) => `Task ${f.ticket.id} (${handleOf(f.ticket.botId)}, ${stageOf(f.ticket)}): ${f.ticket.title}${f.where === 'report' ? ` — ${f.status} report: ${f.snippet}` : ''} [bot_recall "ticket/${f.ticket.id}"]`),
         ];
         return { ok: true, text: lines.length ? lines.join('\n') : `Nothing in memory matches "${args.query}".`, tickets: found.map((f) => f.ticket.id) };
@@ -3622,7 +3826,9 @@ export function apply(ctx, config, deps = {}) {
   if (typeof ctx.inject === 'function') ctx.inject(['webServer'], mountRoutes);
   else if (ctx.webServer) mountRoutes({ webServer: ctx.webServer, effect: (fn) => ctx.effect(fn) });
 
-  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend, openTasks, codexSync, finishTask, tickets, slots, pump, botOfSession, request, ticketView, ticketUpkeep, watch, startup, recoverTickets };
+  /** For tests: which per-Session records this process still keeps for `sessionId`. */
+  const tracked = (sessionId) => ({ trigger: trigger.has(sessionId), answered: answered.has(sessionId), turn: turnState.has(sessionId), delivered: deliveredIds.has(sessionId), history: historyRead.has(sessionId) });
+  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend, openTasks, codexSync, finishTask, tickets, slots, pump, botOfSession, request, ticketView, ticketUpkeep, watch, startup, recoverTickets, tracked };
 }
 
 function serveAvatar(dir, req, res) {

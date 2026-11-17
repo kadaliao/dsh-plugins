@@ -170,12 +170,15 @@ function settledAt(t) {
  * after reminding, which keeps it to once per batch.
  *
  * Tickets requested by the user (requester.kind 'user') have no session to
- * remind and are skipped. A grace period (default 1 minute) leaves time for
- * the relay of the last report to wake the requester first.
+ * remind and are skipped, and so is a requester that is itself a ticket that
+ * has ended (`ended` in its facts, or its ticket among `items` is ended): its
+ * work is over and nobody reads what it would say. A grace period (default 1
+ * minute) leaves time for the relay of the last report to wake the requester
+ * first.
  *
  * @param {Array<{ticket: object, stage: string}>} items - tickets with their stages; archived ones are ignored.
  * @param {Map<string, object>|Record<string, object>|((sessionId: string) => object|undefined)} requesters -
- *   per requester session: `{status: 'running'|'idle'|'offline', reportedAt?, remindedAt?}`.
+ *   per requester session: `{status: 'running'|'idle'|'offline', reportedAt?, remindedAt?, ended?}`.
  * @param {number} [now]
  * @param {{graceMs?: number}} [rules]
  * @returns {Array<{sessionId: string, botId?: string, ticketIds: string[]}>}
@@ -185,8 +188,10 @@ export function requesterReminders(items, requesters, now = Date.now(), rules = 
   const factsOf = (id) =>
     typeof requesters === 'function' ? requesters(id) : requesters instanceof Map ? requesters.get(id) : requesters?.[id];
   const groups = new Map();
+  const byId = new Map();
   for (const item of items ?? []) {
     const t = item?.ticket;
+    if (t?.id) byId.set(t.id, t);
     const r = t?.requester;
     if (!t?.id || t.archivedAt || r?.kind !== 'session' || !r.sessionId) continue;
     if (!groups.has(r.sessionId)) groups.set(r.sessionId, []);
@@ -196,7 +201,9 @@ export function requesterReminders(items, requesters, now = Date.now(), rules = 
   for (const [sessionId, list] of groups) {
     if (!list.every((it) => SETTLED_STAGES.includes(it.stage))) continue;
     const facts = factsOf(sessionId);
-    if (facts?.status !== 'idle') continue;
+    if (facts?.status !== 'idle' || facts.ended) continue;
+    const parentId = list[0].ticket.requester.ticketId;
+    if (parentId && byId.get(parentId)?.ended) continue;
     const told = latest(facts.reportedAt, facts.remindedAt);
     const fresh = list.filter((it) => !(settledAt(it.ticket) <= told));
     if (fresh.length === 0) continue;

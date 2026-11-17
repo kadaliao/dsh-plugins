@@ -216,3 +216,17 @@ test('reminders are per requester; user and archived tickets are skipped', () =>
   assert.deepEqual(requesterReminders(items, facts, NOW), [{ sessionId: 'home-atlas', botId: 'b-atlas', ticketIds: ['t1'] }]);
   assert.deepEqual(requesterReminders(undefined, facts, NOW), []);
 });
+
+test('a requester that is an ended task is not reminded: its work is over', () => {
+  const now = 10_000_000;
+  const parent = { id: 'tparent01', requester: { kind: 'session', sessionId: 'home-a', botId: 'a' }, reports: [], ended: { at: now - 600_000, by: 'worker', outcome: 'done' } };
+  const child = { id: 'tchild001', requester: { kind: 'session', sessionId: 'ticket-tparent01', botId: 'f', ticketId: 'tparent01' }, reports: [], ended: { at: now - 300_000, by: 'worker', outcome: 'done' } };
+  const idle = () => ({ status: 'idle' });
+  const items = [{ ticket: parent, stage: 'done' }, { ticket: child, stage: 'done' }];
+  // The ended parent (found among the items) is skipped; its own requester, a home, is still reminded.
+  assert.deepEqual(requesterReminders(items, idle, now).map((r) => r.sessionId), ['home-a']);
+  // The host may say so itself (`ended`), for a parent not among the items.
+  assert.deepEqual(requesterReminders([{ ticket: child, stage: 'done' }], (sid) => (sid === 'ticket-tparent01' ? { status: 'idle', ended: true } : idle()), now), []);
+  // An open parent is reminded as before.
+  assert.deepEqual(requesterReminders([{ ticket: { ...parent, ended: undefined }, stage: 'working' }, { ticket: child, stage: 'done' }], idle, now).map((r) => r.sessionId), ['ticket-tparent01']);
+});

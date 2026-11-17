@@ -42,7 +42,7 @@ export const RECENT_MESSAGES = 10;
 
 /**
  * Who reads: the router (dispatcher home), any bot's home, or a ticket session.
- * @typedef {{kind: 'router'|'home'|'ticket', ticketId?: string}} Viewer
+ * @typedef {{kind: 'router'|'home'|'ticket'|'restricted', ticketId?: string}} Viewer
  */
 
 /**
@@ -390,8 +390,12 @@ function parseRef(ref) {
 
 const REFS = 'tickets, ticket/<id>, ticket/<id>/text, ticket/<id>/reports, ticket/<id>/transcript, thread/<key> or bot/<handle>';
 
-/** What a ticket viewer may read: its ticket, the parent, the children, and its threads. Others read everything (null). */
+/**
+ * What a ticket viewer may read: its ticket, the parent, the children, and its threads. A `restricted`
+ * viewer (a helper conversation whose owner cannot be traced) reads nothing. Others read everything (null).
+ */
 function scopeOf(viewer, view) {
+  if (viewer?.kind === 'restricted') throw new Error('bot_recall: this conversation cannot be traced to a bot or a task, so it reads no tasks.');
   if (viewer?.kind !== 'ticket') return null;
   const self = viewer.ticketId ? view.get(viewer.ticketId) : undefined;
   if (!self) throw new Error(`bot_recall: this conversation's task${viewer.ticketId ? ` ${viewer.ticketId}` : ''} is not on record.`);
@@ -454,7 +458,7 @@ function transcriptText(raw) {
  *
  * @param {string} ref
  * @param {object} opts
- * @param {Viewer} [opts.viewer] - who reads; a ticket viewer is limited to its own ticket, the parent, the children and its threads, and the cards it gets leave out ids beyond those. Absent means unrestricted.
+ * @param {Viewer} [opts.viewer] - who reads; a ticket viewer is limited to its own ticket, the parent, the children and its threads, and the cards it gets leave out ids beyond those; a restricted viewer reads nothing. Absent means unrestricted.
  * @param {TicketsView|object[]} opts.tickets
  * @param {ThreadsView} [opts.threads]
  * @param {object[]|Map|Function} [opts.bots]

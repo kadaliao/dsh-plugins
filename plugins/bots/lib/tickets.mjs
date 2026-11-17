@@ -8,9 +8,11 @@
  * `tickets.json` under the bots cache holds `{version: 1, tickets, threads}` in
  * the shapes of docs/PLAN-0.8.md §10, plus `lastRequesterAt` (below). It is read
  * on first use and written whole through a temp file and a rename; a missing
- * file starts empty, and an unreadable one is set aside as `tickets.json.corrupt`
- * before the first write replaces it. Fields this module does not know (set
- * through `patch`) are kept.
+ * file (ENOENT) starts empty, one that is not JSON in the expected shape is set
+ * aside as `tickets.json.corrupt-<time>` before the first write replaces it, and
+ * any other read error (permissions, a directory in its place) throws, so the
+ * caller fails instead of writing over a file it could not read. Fields this
+ * module does not know (set through `patch`) are kept.
  *
  * Stages ({@link stageOf}): the first row that matches wins. "Answered" means a
  * message from outside the worker reached the ticket after that report: a
@@ -23,7 +25,7 @@
  * | `failed`   | `ended.outcome === 'failed'`, or open and the latest report is an unanswered `blocked` |
  * | `question` | open and the latest report is an unanswered `question`                           |
  * | `stalled`  | open and `stalledAt` is set (the watchdog stores it; a report, an answer or `resume` clears it) |
- * | `queued`   | open and no `startedAt` (a started ticket put back in the queue has `startedAt` cleared) |
+ * | `queued`   | open and no `startedAt` (a started ticket put back in the queue has `startedAt` cleared), or messages wait in `parked` for a slot |
  * | `working`  | open: started and nothing above (running, a background job, or not judged yet)    |
  * | `done`     | `ended.outcome === 'done'`: a `done` report, or closed by the requester or user  |
  * | `stopped`  | `ended.outcome === 'stopped'`: stopped by a person, the requester or the system  |
@@ -32,13 +34,15 @@
  * a ticket; only {@link createTickets}'s `resume` does.
  *
  * Worker slots ({@link createSlots}) are in memory only: after a restart the
- * caller acquires them again for the tickets it restarts.
+ * caller acquires them again for the tickets it restarts. Messages for a
+ * started ticket that has no slot wait on the ticket itself (`parked`, an
+ * array the caller sets through `patch`), so they outlast a restart.
  *
  * @module @kadaliao/dsh-bots/lib/tickets
  */
 
 import { randomInt } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const STAGES = ['failed', 'question', 'stalled', 'queued', 'working', 'done', 'stopped'];
@@ -101,6 +105,9 @@ const time = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0
 /** Not ended. */
 export const isOpen = (ticket) => !ticket?.ended;
 
+/** Messages waiting on a started ticket for a worker slot (`parked`), oldest first. */
+export const parkedOf = (ticket) => (Array.isArray(ticket?.parked) ? ticket.parked : []);
+
 /** Still takes messages from its Threads: not archived, and not stopped by a person. */
 export const isLive = (ticket) => Boolean(ticket) && !ticket.archivedAt && !(ticket.ended?.by === 'user' && ticket.ended.outcome === 'stopped');
 
@@ -119,7 +126,7 @@ export function stageOf(ticket, _at) {
   if (t.ended?.outcome === 'failed' || (open && last?.status === 'blocked' && unanswered(last))) return 'failed';
   if (open && last?.status === 'question' && unanswered(last)) return 'question';
   if (open && t.stalledAt) return 'stalled';
-  if (open && !t.startedAt) return 'queued';
+  if (open && (!t.startedAt || parkedOf(t).length > 0)) return 'queued';
   if (open) return 'working';
   if (t.ended.outcome === 'done') return 'done';
   return 'stopped';
@@ -187,6 +194,8 @@ function normalizeOrigin(o) {
   const out = {};
   if (validKey(o?.threadKey)) out.threadKey = o.threadKey;
   for (const k of ['via', 'who']) if (typeof o?.[k] === 'string' && o[k] !== '') out[k] = o[k].slice(0, MAX_LABEL);
+  // The chat message that started it, which an answer in its Thread quotes.
+  if ((typeof o?.replyTo === 'string' && o.replyTo !== '') || Number.isFinite(o?.replyTo)) out.replyTo = String(o.replyTo).slice(0, MAX_KEY);
   return out;
 }
 
@@ -258,9 +267,12 @@ export function createTickets(dir, { now = Date.now } = {}) {
   const listeners = new Set();
   let dirty = false;
 
+  /** Keep an unparseable file as `tickets.json.corrupt-<time>`; an earlier one is never replaced. */
   const setAside = () => {
     try {
-      renameSync(file, `${file}.corrupt`);
+      let to = `${file}.corrupt-${now()}`;
+      for (let n = 1; existsSync(to); n += 1) to = `${file}.corrupt-${now()}-${n}`;
+      renameSync(file, to);
     } catch {
       // It goes when the next write replaces it.
     }
@@ -272,8 +284,9 @@ export function createTickets(dir, { now = Date.now } = {}) {
     let text = null;
     try {
       text = readFileSync(file, 'utf8');
-    } catch {
-      // First run.
+    } catch (error) {
+      // No file is a first run; one that cannot be read must not be written over.
+      if (error?.code !== 'ENOENT') throw new Error(`cannot read ${file} (${error?.code ?? error?.message ?? error}); fix or move it, tasks are not loaded until then`, { cause: error });
     }
     if (text !== null) {
       try {

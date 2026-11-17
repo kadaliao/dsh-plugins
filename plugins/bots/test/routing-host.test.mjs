@@ -748,3 +748,449 @@ test('the watchdog leaves a task alone while a sub-task it waits for still works
   assert.equal(checked(c), true, 'the quiet sub-task gets its status check');
   env.dispose();
 });
+
+// --- regressions from the 0.8 review ------------------------------------------------------------
+
+test('a queued task stopped while the queue starts others never starts, and keeps no slot (also when stopped mid-start)', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Scout' });
+  await api.routes.settings.post({ patch: { tickets: { maxWorking: 1 } } });
+  const sid = await api.userSend(api.store.find('atlas'), 'Three things');
+  await h.step(sid);
+  const open = async (to, text) => (await call('bot_send_message', { to, text }, sid)).ticket.id;
+  const t1 = await open('@forge', 'one');
+  const t2 = await open('@scout', 'two');
+  const t3 = await open('@scout', 'three');
+  assert.deepEqual([t2, t3].map((id) => api.tickets.get(id).startedAt), [undefined, undefined]);
+  // Making a Session takes a while: hold it until both stops are in.
+  let go;
+  const gate = new Promise((r) => (go = r));
+  const create = h.services.sessionController.create;
+  h.services.sessionController.create = async (o) => (await gate, create(o));
+  // More room: the queue starts t2 ...
+  await api.routes.settings.post({ patch: { tickets: { maxWorking: 3 } } });
+  // ... and while its Session is being made, the user stops it, and the still-queued t3.
+  await api.request('POST', `/__dsh_bots/tickets/${t2}/stop`);
+  await api.request('POST', `/__dsh_bots/tickets/${t3}/stop`);
+  go();
+  await api.pump();
+  await settle();
+  for (const id of [t2, t3]) {
+    const t = api.tickets.get(id);
+    assert.equal(t.startedAt, undefined, `${id} did not start`);
+    assert.equal(t.ended.by, 'user');
+    assert.equal(api.slots.holds(id), false, `${id} keeps no slot`);
+    assert.equal(h.agentsById.get(`ticket-${id}`)?.deliveries.length ?? 0, 0, `${id} got no assignment`);
+  }
+  assert.deepEqual([api.slots.count(), api.slots.holds(t1)], [1, true]);
+  // The Session made for t2 is recorded, so upkeep archives it with the task.
+  assert.equal(api.tickets.get(t2).sessionId, `ticket-${t2}`);
+  env.dispose();
+});
+
+test('a full house: a bot\'s message to a started task waits for a slot (in order, kept over a restart); a person\'s takes the extra one', async () => {
+  const env = boot();
+  const { h, api, call, home } = env;
+  for (const name of ['Forge', 'Scout', 'Quill']) api.store.save({ name });
+  await api.routes.settings.post({ patch: { tickets: { maxWorking: 1 } } });
+  const sid = await api.userSend(api.store.find('atlas'), 'Do three things');
+  await h.step(sid);
+  const open = async (to, text) => (await call('bot_send_message', { to, text }, sid)).ticket.id;
+  const t1 = await open('@forge', 'Task one');
+  const t2 = await open('@scout', 'Task two');
+  const t3 = await open('@quill', 'Task three');
+  // t1 asks and goes idle: its slot goes to t2, which asks too: t3 starts.
+  const s1 = api.tickets.get(t1).sessionId;
+  await h.step(s1, { calls: [{ name: 'bot_send_message', args: { status: 'question', text: 'Which branch?' } }] });
+  await api.pump();
+  const s2 = api.tickets.get(t2).sessionId;
+  await h.step(s2, { calls: [{ name: 'bot_send_message', args: { status: 'question', text: 'Which source?' } }] });
+  await api.pump();
+  assert.ok(api.tickets.get(t3).sessionId);
+  assert.deepEqual([api.slots.count(), api.slots.holds(t3)], [1, true]);
+  const w1 = h.agentsById.get(s1);
+  const w2 = h.agentsById.get(s2);
+  const seen = [w1.deliveries.length, w2.deliveries.length];
+  // The Router answers both. A bot may not take the extra slot (it is for a person), so both answers wait.
+  const r1 = await call('bot_send_message', { ticket: t1, text: 'main' }, sid);
+  assert.match(r1.text, new RegExp(`Added to task ${t1} \\(queued: every worker slot is taken, so it is handed over when one frees\\)`));
+  await call('bot_send_message', { ticket: t2, text: 'docs' }, sid);
+  await call('bot_send_message', { ticket: t1, text: 'and rebase first' }, sid);
+  assert.deepEqual([w1.deliveries.length, w2.deliveries.length], seen, 'nothing delivered');
+  assert.equal(api.slots.count(), 1);
+  assert.equal((await api.request('GET', `/__dsh_bots/tickets/${t1}`)).stage, 'queued');
+  assert.deepEqual(api.tickets.get(t1).parked.map((m) => m.key.split(':')[0]), ['msg', 'msg']);
+  // A status request from the Router waits too; the watchdog leaves a waiting task alone.
+  assert.match((await call('bot_ticket', { id: t1, action: 'status' }, sid)).text, /waits for a free worker slot/);
+  // A person (the panel) may take the extra slot: what waited for t2 goes first, then the person's message.
+  await api.request('POST', `/__dsh_bots/tickets/${t2}/message`, { text: 'Use the v2 docs.' });
+  await api.pump();
+  assert.deepEqual(w2.deliveries.slice(seen[1]).map((d) => textOfMsg(d.message).split('\n').at(-1) || textOfMsg(d.message)), [
+    '(Answer in a report: bot_send_message with a status, without "to".)',
+    'Use the v2 docs.',
+  ]);
+  assert.match(textOfMsg(w2.deliveries[seen[1]].message), /\ndocs\n/);
+  assert.equal(api.tickets.get(t2).parked, undefined);
+  assert.equal(api.slots.count(), 2);
+  assert.equal(w1.deliveries.length, seen[0], 't1 still waits');
+  env.dispose();
+
+  // After a restart what waits is still on the task, and goes out, in order, once a slot frees.
+  const again = boot({ home, pre: (hh) => [sid, s1, s2, api.tickets.get(t3).sessionId].forEach((id) => hh.addAgent(id)) });
+  await again.api.startup();
+  await again.api.pump();
+  const n1 = again.h.agentsById.get(s1);
+  assert.equal(n1.deliveries.length, 0);
+  assert.equal(again.api.tickets.get(t1).parked.length, 2);
+  await again.call('bot_send_message', { status: 'done', text: 'Docs ready.' }, s2);
+  await again.api.pump();
+  assert.deepEqual(n1.deliveries.map((d) => /\n(main|and rebase first)\n/.exec(textOfMsg(d.message))?.[1]), ['main', 'and rebase first']);
+  assert.equal(again.api.tickets.get(t1).parked, undefined);
+  assert.equal((await again.api.request('GET', `/__dsh_bots/tickets/${t1}`)).stage, 'working');
+  again.dispose();
+});
+
+test('the Router passes a report on while it hands out the next step: its words reach the person; answering the task alone stays quiet', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Scout' });
+  const tg = await withTelegram(env);
+  tg.say('42', 10, 'Fix the bug, then have Scout write it up');
+  await settle();
+  const sid = api.store.find('atlas').sessionId;
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the bug.' } }] });
+  await call('bot_send_message', { status: 'done', text: 'Fixed in commit abc.' }, api.tickets.get(r.ticket.id).sessionId);
+  const [w] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write up the fix in abc.' } }], answer: 'Forge fixed the bug (commit abc). Scout is writing it up.' });
+  await settle();
+  const replies = () => api.store.messages({ bot: api.store.find('atlas').id }).filter((m) => m.kind === 'reply').map((m) => m.text);
+  assert.ok(replies().includes('Forge fixed the bug (commit abc). Scout is writing it up.'));
+  assert.deepEqual(tg.c.sent.at(-1), { chatId: '42', text: 'Forge fixed the bug (commit abc). Scout is writing it up.' });
+  // A report that arrives in a turn a person started: even when all the Router does is answer that
+  // task, its words are for the person.
+  const tw = api.tickets.get(w.ticket.id);
+  tg.say('42', 11, 'Also add a docs section');
+  await settle();
+  await call('bot_send_message', { status: 'done', text: 'Write-up in docs/fix.md.' }, tw.sessionId);
+  await h.step(sid, { calls: [{ name: 'bot_send_message', args: { ticket: tw.id, text: 'Add a docs section too.' } }], answer: 'Scout wrote it up and adds a docs section.' });
+  await settle();
+  assert.deepEqual(tg.c.sent.at(-1), { chatId: '42', text: 'Scout wrote it up and adds a docs section.' });
+  // Answering a task's question and nothing else: the closing words reach no one.
+  const tq = api.tickets.get(tw.id);
+  await call('bot_send_message', { status: 'question', text: 'Which docs, user or API?' }, tq.sessionId);
+  const sent = tg.c.sent.length;
+  await h.step(sid, { calls: [{ name: 'bot_send_message', args: { ticket: tq.id, text: 'The API docs.' } }], answer: 'Answered Scout.' });
+  await settle();
+  assert.ok(!replies().includes('Answered Scout.'));
+  assert.equal(tg.c.sent.length, sent);
+  env.dispose();
+});
+
+test('restarts: a recovery turn cut off again gets a note of its own; a start whose assignment never landed gets it again', async () => {
+  const first = boot();
+  first.api.store.save({ name: 'Forge' });
+  const sid = await first.api.userSend(first.api.store.find('atlas'), 'go');
+  await first.h.step(sid);
+  const [r] = await first.h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.' } }] });
+  const t = first.api.tickets.get(r.ticket.id);
+  first.dispose();
+  const logs = {
+    [t.sessionId]: [
+      { seq: 0, type: 'turn/start' },
+      { seq: 1, type: 'user/message', data: { id: `bots:assign:${t.id}`, content: [] } },
+      { seq: 2, type: 'tool/call' },
+    ],
+  };
+  const restart = (pre) => boot({ home: first.home, history: async (id) => logs[id] ?? [], pre: (h) => (h.addAgent(sid), h.addAgent(t.sessionId), pre?.(h)) });
+  const ids = (env) => env.h.agentsById.get(t.sessionId).deliveries.map((d) => d.message.id);
+  const second = restart();
+  await second.api.startup();
+  assert.deepEqual(ids(second), [`bots:recover:${t.id}:t0`]);
+  second.dispose();
+  // Harness closed that turn as interrupted; the worker took the note and was cut off again mid-turn.
+  logs[t.sessionId].push({ seq: 3, type: 'turn/end', data: { reason: { kind: 'interrupted' } } }, { seq: 4, type: 'turn/start' }, { seq: 5, type: 'user/message', data: { id: `bots:recover:${t.id}:t0`, content: [] } }, { seq: 6, type: 'tool/call' });
+  const third = restart();
+  await third.api.startup();
+  assert.deepEqual(ids(third), [`bots:recover:${t.id}:t4`]);
+  third.dispose();
+
+  // Harness went down after the start was recorded but before the assignment reached the Session.
+  logs[t.sessionId] = [];
+  const fourth = restart();
+  await fourth.api.startup();
+  assert.deepEqual(ids(fourth), [`bots:assign:${t.id}`]);
+  assert.match(textOfMsg(fourth.h.agentsById.get(t.sessionId).deliveries[0].message), new RegExp(`^New task ${t.id} from @atlas: Fix the login bug\\.`));
+  const resent = fourth.h.agentsById.get(t.sessionId).deliveries[0].message;
+  fourth.dispose();
+  // Still in the inbox at the next start: not sent twice.
+  const fifth = restart((h) => h.agentsById.get(t.sessionId).inbox.nextStep.push(resent));
+  await fifth.api.startup();
+  assert.deepEqual(ids(fifth), []);
+  fifth.dispose();
+});
+
+test('a Harness helper (subagent) acts as the task or home it descends from; one that cannot be traced acts for no one; a person\'s own conversation is the user', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Scout' });
+  const sid = await api.userSend(api.store.find('atlas'), 'go');
+  await h.step(sid);
+  const tA = (await call('bot_send_message', { to: '@forge', text: 'Secret project A' }, sid)).ticket.id;
+  const tB = api.tickets.get((await call('bot_send_message', { to: '@scout', text: 'Project B' }, sid)).ticket.id);
+  const helper = (id, parent) => {
+    const a = h.addAgent(id);
+    a.session.header = { id, origin: 'subagent', parentSession: parent, delegationDepth: 1 };
+    return a;
+  };
+  // A helper inside task B, and a helper of that helper: both are task B.
+  helper('session-sub-b', tB.sessionId);
+  helper('session-sub-b2', 'session-sub-b');
+  for (const s of ['session-sub-b', 'session-sub-b2']) {
+    await assert.rejects(call('bot_recall', { ref: `ticket/${tA}/text` }, s), /outside this task/, s);
+    await assert.rejects(call('bot_ticket', { id: tA, action: 'retry' }, s), /only on the sub-tasks it opened/, s);
+    assert.deepEqual((await call('memory_search', { query: 'project' }, s)).tickets, [tB.id], s);
+  }
+  const rep = await call('bot_send_message', { status: 'progress', text: 'Half way.' }, 'session-sub-b2');
+  assert.match(rep.text, new RegExp(`Recorded on task ${tB.id}`));
+  // A helper whose maker is gone and was no bot's acts for no one.
+  helper('session-orphan', 'session-gone');
+  await assert.rejects(call('bot_recall', { ref: 'tickets' }, 'session-orphan'), /cannot be traced/);
+  await assert.rejects(call('bot_ticket', { id: tA, action: 'stop' }, 'session-orphan'), /cannot be traced/);
+  await assert.rejects(call('bot_send_message', { to: '@forge', text: 'hello' }, 'session-orphan'), /cannot be traced/);
+  assert.equal(api.tickets.get(tA).ended, undefined);
+  // A person's own top-level conversation, and a helper it started, read everything as the user.
+  h.addAgent('session-plain').session.header = { id: 'session-plain' };
+  helper('session-plain-sub', 'session-plain');
+  for (const s of ['session-plain', 'session-plain-sub']) assert.equal((await call('bot_recall', { ref: 'tickets' }, s)).total, 2, s);
+  env.dispose();
+});
+
+test('ended tasks stay quiet: a sub-task reporting to a finished parent wakes no one; closing cancels the running turn; a closed task\'s late question is not relayed', async () => {
+  const clock = { t: Date.now() };
+  const env = boot({ now: () => clock.t });
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Scout' });
+  const sid = await api.userSend(api.store.find('atlas'), 'go');
+  await h.step(sid);
+  const p = api.tickets.get((await call('bot_send_message', { to: '@forge', text: 'Parent work' }, sid)).ticket.id);
+  await h.step(p.sessionId, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Sub work' } }] });
+  const sub = api.tickets.children(p.id)[0];
+  clock.t += 1000;
+  await call('bot_send_message', { status: 'done', text: 'Done (the sub-task still runs).' }, p.sessionId);
+  await h.step(sid, { answer: 'Forge is done.' });
+  const parent = h.agentsById.get(p.sessionId);
+  const before = parent.deliveries.length;
+  clock.t += 60_000;
+  const r = await call('bot_send_message', { status: 'done', text: 'Sub result.' }, sub.sessionId);
+  assert.match(r.text, new RegExp(`nobody is told: the task that asked for it, ${p.id}, has ended`));
+  assert.equal(parent.deliveries.length, before, 'the finished parent is not woken');
+  assert.equal(api.tickets.get(sub.id).reports.at(-1).text, 'Sub result.');
+  assert.equal(api.tickets.get(sub.id).ended.outcome, 'done');
+  clock.t += 5 * 60_000;
+  await api.watch(clock.t);
+  assert.equal(parent.deliveries.length, before, 'nor reminded');
+  // Closing a task cancels its running turn, as stopping does.
+  const t2 = api.tickets.get((await call('bot_send_message', { to: '@forge', text: 'Another thing' }, sid)).ticket.id);
+  const w = h.agentsById.get(t2.sessionId);
+  w.status = 'running';
+  await call('bot_ticket', { id: t2.id, action: 'close' }, sid);
+  assert.equal(w.cancels.length, 1);
+  w.status = 'idle';
+  // What its cut-short turn still says reaches no one.
+  const router = h.agentsById.get(sid);
+  const seen = router.deliveries.length;
+  const late = await call('bot_send_message', { status: 'question', text: 'Should I go on?' }, t2.sessionId);
+  assert.match(late.text, /nobody is told: the task has ended \(done\)/);
+  assert.equal(router.deliveries.length, seen);
+  assert.ok(!api.store.messages({ bot: api.store.find('forge').id }).some((m) => m.text === 'Should I go on?'));
+  env.dispose();
+});
+
+test('memory_search in a task conversation finds the journal of its own tasks only, and no digests', async () => {
+  const f = await family();
+  const { call, api, sid, p, c, s } = f;
+  const forge = api.store.find('forge');
+  api.memory.addJournal({ bot: forge.id, task: 'x1', trigger: 'ticket', ticket: p.id, title: 'Cookie fix', summary: 'Cookie flags for P.' });
+  api.memory.addJournal({ bot: forge.id, task: 'x2', trigger: 'ticket', ticket: s.id, title: 'Cookie research', summary: 'Cookie notes for S.' });
+  api.memory.addJournal({ bot: forge.id, task: 'x3', trigger: 'user', title: 'Cookie chat', summary: 'Cookie talk with the user.' });
+  api.memory.addDigest({ date: '2026-11-16', text: 'Cookie day for everyone.' });
+  const inTask = (await call('memory_search', { query: 'cookie' }, c.sessionId)).text;
+  assert.match(inTask, /Cookie flags for P\./);
+  assert.doesNotMatch(inTask, /Cookie notes for S\.|Cookie talk with the user\.|Digest/);
+  const fromRouter = (await call('memory_search', { query: 'cookie' }, sid)).text;
+  for (const x of [/Cookie flags for P\./, /Cookie notes for S\./, /Cookie talk with the user\./, /Digest 2026-11-16/]) assert.match(fromRouter, x);
+  f.dispose();
+});
+
+test('removing a bot stops the tasks it asked for (they stay in the panel), and nothing reaches its archived conversations', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Scout' });
+  const sid = await api.userSend(api.store.find('atlas'), 'go');
+  await h.step(sid);
+  const p = api.tickets.get((await call('bot_send_message', { to: '@forge', text: 'Fix the cookie bug.' }, sid)).ticket.id);
+  await h.step(p.sessionId, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Which flags does Safari need?' } }] });
+  const sub = api.tickets.children(p.id)[0];
+  // The user talks to Forge directly; Forge hands a part to Scout from its home.
+  const forgeHome = await api.userSend(api.store.find('forge'), 'Look into Firefox too');
+  const [fromHome] = await h.step(forgeHome, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Check Firefox cookies.' } }] });
+  const asked = api.tickets.get(fromHome.ticket.id);
+  assert.equal(asked.requester.sessionId, forgeHome);
+  assert.equal((await api.routes.delete.post({ id: api.store.find('forge').id })).ok, true);
+  for (const id of [sub.id, asked.id]) {
+    const t = api.tickets.get(id);
+    assert.equal(t.ended.outcome, 'stopped', id);
+    assert.equal(t.ended.by, 'system');
+    assert.match(t.error, /@forge, who asked for it, was removed/);
+    assert.equal(t.archivedAt, undefined, 'still in the panel');
+  }
+  assert.ok(api.tickets.get(p.id).archivedAt, "Forge's own task is archived");
+  // The user retries one from the panel; its report finds nobody to wake: not Forge's archived home,
+  // even where Harness still resolves an archived conversation.
+  h.services.sessionController.resolveAgent = async (id) => (h.agentsById.get(id) ? { agent: h.agentsById.get(id) } : { error: new Error('gone') });
+  assert.ok(h.archived.includes(forgeHome));
+  await api.request('POST', `/__dsh_bots/tickets/${asked.id}/retry`, {});
+  const home = h.agentsById.get(forgeHome);
+  const before = home.deliveries.length;
+  await call('bot_send_message', { status: 'done', text: 'Firefox needs SameSite too.' }, asked.sessionId);
+  assert.equal(home.deliveries.length, before);
+  env.dispose();
+});
+
+test('an answer in a group without threads quotes the message that started the task, not the latest one there', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  const tg = await withTelegram(env);
+  const group = (id, text) => tg.c.emit({ chatId: '-100', messageId: String(id), userId: '42', userName: 'Kada', text, isDirect: false, mentioned: true, chatTitle: 'Team' });
+  group(50, 'Fix the login bug');
+  await settle();
+  const sid = api.store.find('atlas').sessionId;
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.' } }] });
+  const t = api.tickets.get(r.ticket.id);
+  assert.equal(t.origin.replyTo, '50');
+  assert.equal(t.origin.threadKey, `${tg.key('-100')}`);
+  group(51, 'And what is the weather?');
+  await settle();
+  await h.step(sid, { answer: 'Sunny.' });
+  await settle();
+  assert.deepEqual(tg.c.sent.at(-1), { chatId: '-100', text: 'Sunny.', replyTo: '51' });
+  await call('bot_send_message', { status: 'done', text: 'Fixed.' }, t.sessionId);
+  await h.step(sid, { answer: 'The login bug is fixed.' });
+  await settle();
+  assert.deepEqual(tg.c.sent.at(-1), { chatId: '-100', text: 'The login bug is fixed.', replyTo: '50' });
+  env.dispose();
+});
+
+test('plain text that reached no chat does not count as telling the person: the reminder still comes', async () => {
+  const clock = { t: Date.now() };
+  const env = boot({ now: () => clock.t });
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Scout' });
+  const tg = await withTelegram(env);
+  tg.say('42', 10, 'Fix the login bug');
+  tg.say('43', 11, 'Write the release notes');
+  await settle();
+  const sid = api.store.find('atlas').sessionId;
+  const [a, b] = await h.step(sid, {
+    calls: [
+      { name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', thread: tg.key('42') } },
+      { name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes.', thread: tg.key('43') } },
+    ],
+  });
+  await call('bot_send_message', { status: 'done', text: 'Fixed.' }, api.tickets.get(a.ticket.id).sessionId);
+  await call('bot_send_message', { status: 'done', text: 'Written.' }, api.tickets.get(b.ticket.id).sessionId);
+  // Two chats in one turn and no bot_reply: the text stays in the panel, marked as sent nowhere.
+  await h.step(sid, { answer: 'Both are done.' });
+  const plain = api.store.messages({ bot: api.store.find('atlas').id }).filter((m) => m.kind === 'reply').at(-1);
+  assert.equal(plain.notSent, true);
+  const router = h.agentsById.get(sid);
+  const before = router.deliveries.length;
+  clock.t += 2 * 60_000;
+  await api.watch(clock.t);
+  const reminders = router.deliveries.slice(before).filter((d) => /^\[Reminder\]/.test(textOfMsg(d.message)));
+  assert.equal(reminders.length, 1);
+  env.dispose();
+});
+
+test('without agent.inject a note that must not wake the Router is dropped, not steered', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  const sid = await api.userSend(api.store.find('atlas'), 'go');
+  await h.step(sid);
+  const t = (await call('bot_send_message', { to: '@forge', text: 'Fix it.' }, sid)).ticket.id;
+  const router = h.agentsById.get(sid);
+  delete router.inject;
+  const before = router.deliveries.length;
+  await api.request('POST', `/__dsh_bots/tickets/${t}/stop`, {});
+  await settle();
+  assert.equal(router.deliveries.length, before);
+  assert.equal(router.inbox.nextStep.length + router.inbox.nextTurn.length, 0);
+  env.dispose();
+});
+
+test('a follow-up handed out again after a restart does not reopen the finished task it already reached', async () => {
+  const s = await twoChats({ topic: 't9' });
+  const { api, h, tg, sid, ta, tb } = s;
+  tg.say('43', 12, 'Mention the export button too', 't9');
+  await settle();
+  const worker = h.agentsById.get(tb.sessionId);
+  const followUpId = worker.deliveries.at(-1).message.id;
+  assert.match(followUpId, new RegExp(`^bots:chat:.*:12:${tb.id}$`));
+  const noticeId = h.agentsById.get(sid).injected.at(-1).id;
+  await s.call('bot_send_message', { status: 'done', text: 'Done.' }, tb.sessionId);
+  assert.equal(api.tickets.get(tb.id).ended.outcome, 'done');
+  s.dispose();
+  // The chat app's record of what it handed out is lost; the logs show the follow-up arrived.
+  const file = join(s.home, 'cache', 'bots', 'channels.json');
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  for (const rec of Object.values(saved.channels)) delete rec.seen;
+  writeFileSync(file, JSON.stringify(saved));
+  const logs = {
+    [ta.sessionId]: [{ seq: 0, type: 'user/message', data: { id: `bots:assign:${ta.id}`, content: [] } }, { seq: 1, type: 'turn/end', data: { reason: { kind: 'completed' } } }],
+    [tb.sessionId]: [{ seq: 0, type: 'user/message', data: { id: followUpId, content: [] } }, { seq: 1, type: 'turn/end', data: { reason: { kind: 'completed' } } }],
+    [sid]: [{ seq: 0, type: 'user/message', data: { id: noticeId, content: [] } }, { seq: 1, type: 'turn/end', data: { reason: { kind: 'completed' } } }],
+  };
+  const again = boot({ home: s.home, history: async (id) => logs[id] ?? [], pre: (hh) => [sid, ta.sessionId, tb.sessionId].forEach((id) => hh.addAgent(id)) });
+  await again.api.startup();
+  await settle();
+  again.fake.live()[0].emit({ chatId: '43', messageId: '12', userId: '43', userName: 'Lin', text: 'Mention the export button too', isDirect: true, mentioned: true, threadId: 't9' });
+  await settle();
+  const t = again.api.tickets.get(tb.id);
+  assert.equal(t.ended?.outcome, 'done', 'still done');
+  assert.equal(again.api.slots.holds(tb.id), false);
+  assert.equal(again.h.agentsById.get(tb.sessionId).deliveries.length, 0);
+  again.dispose();
+});
+
+test('per-Session records go with an archived task and with a topic left behind', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'go');
+  await h.step(sid, { answer: 'On it.' });
+  const t = api.tickets.get((await call('bot_send_message', { to: '@forge', text: 'Fix it.' }, sid)).ticket.id);
+  await h.step(t.sessionId, { answer: 'Looking.' });
+  assert.equal(api.tracked(t.sessionId).trigger, true);
+  assert.equal(api.tracked(sid).trigger, true);
+  await call('bot_send_message', { status: 'done', text: 'Fixed.' }, t.sessionId);
+  await h.step(sid, { answer: 'Fixed.' });
+  // The runs settle (their Sessions are idle) before upkeep archives the task.
+  for (const run of [...api.openTasks.values()]) api.finishTask(run);
+  await api.routes.settings.post({ patch: { tickets: { archiveHours: 0 } } });
+  await api.ticketUpkeep(Date.now() + 1000);
+  assert.ok(api.tickets.get(t.id).archivedAt);
+  assert.deepEqual(api.tracked(t.sessionId), { trigger: false, answered: false, turn: false, delivered: false, history: false });
+  const next = await api.newTopic(api.store.get(atlas.id));
+  assert.notEqual(next, sid);
+  assert.deepEqual(api.tracked(sid), { trigger: false, answered: false, turn: false, delivered: false, history: false });
+  env.dispose();
+});

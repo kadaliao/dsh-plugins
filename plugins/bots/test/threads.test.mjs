@@ -185,6 +185,22 @@ test('archived and stopped tickets no longer take their threads; a failed one st
   assert.deepEqual(d.tickets, [stopped]);
 });
 
+test('on a whole chat, a bare reply goes to the one task waiting for an answer; with two waiting, the Router places it', () => {
+  const asked = (id, at) => ticket(id, [WHOLE], { reports: [{ at, status: 'question', text: 'which one?' }] });
+  const one = routeInbound({ text: 'the second', threadKey: WHOLE }, { subscribers: [asked('t00000001', 5), ticket('t00000002', [WHOLE])], owner: atlas, roster });
+  assert.equal(one.to, 'tickets');
+  assert.deepEqual(one.tickets.map((t) => t.id), ['t00000001']);
+  // Two questions open on the same private chat: nothing says which one "the second" answers.
+  const two = routeInbound({ text: 'the second', threadKey: WHOLE }, { subscribers: [asked('t00000001', 5), asked('t00000003', 6)], owner: atlas, roster });
+  assert.deepEqual(two, { to: 'router', bot: atlas, text: 'the second', threadKey: WHOLE });
+  // One of them answered already: the other takes it again.
+  const answered = { ...asked('t00000003', 6), lastHumanAt: 7 };
+  assert.deepEqual(routeInbound({ text: 'x', threadKey: WHOLE }, { subscribers: [asked('t00000001', 5), answered], owner: atlas, roster }).tickets.map((t) => t.id), ['t00000001']);
+  // Inside a thread (with a root) every live subscriber still takes it.
+  const both = routeInbound({ text: 'x', threadKey: T }, { subscribers: [ticket('t00000001', [T]), ticket('t00000002', [T])], owner: atlas, roster });
+  assert.deepEqual(both.tickets.map((t) => t.id), ['t00000001', 't00000002']);
+});
+
 test('a ticket subscribed to the whole chat does not take a thread inside it, nor the reverse', () => {
   const onWhole = ticket('t00000001', [WHOLE]);
   const onThread = ticket('t00000002', [T]);

@@ -189,7 +189,9 @@ const sameBot = (a, b) => Boolean(a && b) && (a === b || (a.id != null && a.id =
  *    notice that does not wake it (`notifyRouter`). A thread that is a whole
  *    chat (a private chat, a group without threads) is where every new
  *    request arrives too, so there only a ticket waiting on an answer to its
- *    question takes the message; anything else is the Router's to place.
+ *    question takes the message, and only when it is the one such ticket
+ *    (with two or more, nothing says which the message answers); anything
+ *    else is the Router's to place.
  * 3. Otherwise the owner's home: `router`.
  *
  * `text` is the message without the handle; an empty one is dropped by the
@@ -231,6 +233,8 @@ export function routeInbound(msg, ctx = {}) {
       seen.add(t.id ?? t);
       tickets.push(t);
     }
+    // Two questions waiting on one whole chat: a bare reply cannot say which it answers; the Router places it.
+    if (wholeChat && ctx.live === undefined && tickets.length > 1) return { to: 'router', bot: owner, text, threadKey: key };
     if (tickets.length) return { to: 'tickets', tickets, notifyRouter: true, router: owner, text, threadKey: key };
   }
   return { to: 'router', bot: owner, text, threadKey: key };

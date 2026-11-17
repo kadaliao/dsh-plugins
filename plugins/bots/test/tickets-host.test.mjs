@@ -350,6 +350,8 @@ test('a sub-ticket opened from a ticket Session reports back to that Session, no
 });
 
 test('the requester adds to a ticket: a done one opens again; one the user stopped stays stopped', async () => {
+  // Three slots are taken (t2, t3, the sub-task that asked): a bot's message takes no extra one, so make room.
+  await api.routes.settings.post({ patch: { tickets: { maxWorking: 4 } } });
   const agent = agentOf(t1.sessionId);
   const r = await call('bot_send_message', { ticket: t1.id, text: 'Please also add a regression test.' }, atlasSid);
   assert.match(r.text, new RegExp(`Added to task ${t1.id} \\(working\\)`));
