@@ -48,7 +48,8 @@ import { TEAMS, teamTiming, teamView } from './lib/teams.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
-import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
+import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, credentialsOf, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
+import { createActivity } from './lib/activity.mjs';
 import { describeTiming, dmBody, dmHeader, noWaitReason, personaText, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
 import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
@@ -295,6 +296,21 @@ export function apply(ctx, config, deps = {}) {
   const otherTicketSessions = new Set();
   /** The ticket a Session runs, if it is a ticket Session. */
   const ticketOf = (sessionId) => (typeof sessionId === 'string' && (sessionId.startsWith('ticket-') || otherTicketSessions.has(sessionId)) ? tickets.bySession(sessionId) : undefined);
+  // --- what each bot does right now (the panel's live status) -----------------------------
+  /** The tokens of every chat app, kept out of what the page is shown of a running tool. */
+  function channelSecrets() {
+    const tpl = templates();
+    const out = [];
+    for (const b of store.list()) {
+      for (const app of b.apps) {
+        const entry = channelEntry(app, tpl);
+        if (entry) out.push(...credentialsOf(app, entry).secrets);
+      }
+    }
+    return out;
+  }
+  const activity = createActivity({ now: nowMs, secrets: channelSecrets, handleOf: (ref) => (store.find(String(ref)) ? `@${store.find(String(ref)).handle}` : '') });
+
   /** The bot of a home Session or of a ticket Session (its executing bot). */
   function botOfSession(sessionId) {
     if (!sessionId) return undefined;
@@ -1186,6 +1202,8 @@ export function apply(ctx, config, deps = {}) {
       ...(t.origin?.via ? { via: t.origin.via } : {}),
       // Its conversation waits for the person's answer to a question (state `asks`): it needs you.
       ...(askingIn(t.sessionId) ? { asking: true } : {}),
+      // What its conversation does right now (lib/activity.mjs), while it runs.
+      ...(!t.ended && activity.get(t.sessionId) ? { activity: activity.get(t.sessionId) } : {}),
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       ...(last ? { lastReport: { status: last.status, preview: clip(String(last.text ?? '').trim(), PREVIEW_CHARS).text } } : {}),
@@ -2027,6 +2045,7 @@ export function apply(ctx, config, deps = {}) {
     trigger.delete(sessionId);
     answered.delete(sessionId);
     turnState.delete(sessionId);
+    activity.clear(sessionId);
   }
   /** Kinds of user message that start (or join) a task. */
   const TASK_KINDS = new Set(['user', 'schedule', 'agent-message']);
@@ -2075,7 +2094,8 @@ export function apply(ctx, config, deps = {}) {
         } else {
           // A report (or notice) on a ticket this conversation asked for: answering it is speaking to the user.
           const about = kind === 'agent-message' ? relayTickets(event.data) : [];
-          const isReport = kind === 'agent-message' && (about.length > 0 || /^bots:(?:report|failed|ended|stalled|remind):/.test(id));
+          // A note that a drawing the bot asked for ended is news for the person too, like a report.
+          const isReport = kind === 'agent-message' && (about.length > 0 || /^bots:(?:report|failed|ended|stalled|remind|avatar):/.test(id));
           trigger.set(session.id, isReport ? 'report' : kind);
           answered.delete(session.id);
           const st = turnState.get(session.id) ?? { other: false, reports: new Set() };
@@ -2087,6 +2107,9 @@ export function apply(ctx, config, deps = {}) {
           const said = textOf(event.data.content);
           // A chat message adds its Thread to the turn's; a panel message adds the panel (lib/threads.mjs).
           via = channels.noteUserMessage(session.id, bot, kind, said, { id, report: isReport });
+          // A drawing's note: the answer goes to the chats the person asked for it in.
+          for (const o of drawingOrigins.get(id) ?? []) channels.noteInput(session.id, { threadKey: o.threadKey, origin: o });
+          drawingOrigins.delete(id);
           // A report's ticket came from a Thread: the answer to the person goes there (PLAN-0.8 §4.3).
           for (const t of about) {
             const key = t.origin?.threadKey;
@@ -2178,10 +2201,19 @@ export function apply(ctx, config, deps = {}) {
       ctx.logger?.debug?.(`bots: usage: ${error?.message ?? error}`);
     }
   });
+  // What a bot's home or task Session does right now, for the panel (lib/activity.mjs).
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (session?.id && botOfSession(session.id)) activity.note(session.id, event);
+    } catch {
+      // Live status is a nicety.
+    }
+  });
   // The surest sign a task is over: the bot's Agent went idle.
   ctx.on('agent/status', (payload) => {
     try {
       const sid = payload?.agent?.session?.id;
+      if (sid && payload.status === 'idle') activity.clear(sid);
       if (sid && payload.status === 'idle' && openTasks.has(sid)) settleSoon(sid, 300);
       else if (sid && payload.status === 'idle' && memoStale.delete(sid)) memoText.delete(sid);
       if (sid && payload.status === 'idle') ticketIdle(ticketOf(sid));
@@ -2389,6 +2421,7 @@ export function apply(ctx, config, deps = {}) {
 
   // --- bot lifecycle helpers -----------------------------------------------------------
   async function removeBot(bot) {
+    dropDrawing(bot.id, 'deleted');
     try {
       for (const task of await schedulesOf(bot)) await schedule().edit({ id: task.id, action: 'delete' });
     } catch {
@@ -2466,11 +2499,15 @@ export function apply(ctx, config, deps = {}) {
       'It must read clearly at 32×32 pixels.',
     ].join(' ');
   }
-  async function generateAvatar(bot, extra) {
+  /** Draw a picture for `bot` with the Images plugin's generate_image; its bytes and type. `signal` gives up on it. */
+  async function drawAvatar(bot, extra, signal) {
     const tool = imageTool();
     if (!tool) throw new Error('the Images plugin (generate_image) is not installed or turned off');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 300_000);
+    const timer = setTimeout(() => controller.abort(new Error('the image service did not answer within 5 minutes')), 300_000);
+    const stop = () => controller.abort(signal?.reason ?? new Error('stopped'));
+    if (signal?.aborted) stop();
+    else signal?.addEventListener?.('abort', stop, { once: true });
     let value;
     try {
       for (let attempt = 1; ; attempt += 1) {
@@ -2480,7 +2517,9 @@ export function apply(ctx, config, deps = {}) {
         } catch (error) {
           const message = String(error?.message ?? error);
           // Gateways drop long image requests now and then; those are worth another try.
-          if (attempt >= AVATAR_ATTEMPTS || controller.signal.aborted || !TRANSIENT.test(message)) {
+          // Given up on (out of time, or replaced): why, rather than the tool's own abort message.
+          if (controller.signal.aborted) throw new Error(controller.signal.reason instanceof Error ? controller.signal.reason.message : message);
+          if (attempt >= AVATAR_ATTEMPTS || !TRANSIENT.test(message)) {
             throw new Error(TRANSIENT.test(message) ? `the image service failed ${attempt} times in a row (${message}); try again in a moment` : message);
           }
           ctx.logger?.warn?.(`bots: avatar for @${bot.handle}, attempt ${attempt} failed: ${message}; retrying`);
@@ -2489,13 +2528,120 @@ export function apply(ctx, config, deps = {}) {
       }
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener?.('abort', stop);
     }
     const path = value?.images?.[0]?.path;
     const type = value?.images?.[0]?.mediaType;
     if (!path || !/^image\/(png|jpeg|webp|gif)$/.test(String(type))) throw new Error('the image model returned no picture');
     const bytes = readFileSync(path);
     if (bytes.length > 8 * 1024 * 1024) throw new Error('the generated picture is too large');
-    return savePicture(bot, bytes, type, 'ai');
+    return { bytes, type };
+  }
+
+  /**
+   * Drawings under way, by bot: only the latest asked for a bot counts. `sessionId`: the bot
+   * conversation that asked (it gets a note when the drawing ends), none for a person's own
+   * conversation or the panel (they wait for it). Kept in memory only: a restart drops them, and
+   * nobody hears of one dropped that way.
+   */
+  const drawings = new Map();
+  /** Message id of a drawing's note → the Threads of the turn that asked for it (the answer to the person goes there). */
+  const drawingOrigins = new Map();
+  /** One drawing whose outcome nobody waits for any more: an avatar change since replaced it. */
+  function dropDrawing(botId, by) {
+    const job = drawings.get(botId);
+    if (!job) return;
+    drawings.delete(botId);
+    job.droppedBy = by ?? 'panel';
+    job.controller.abort(new Error('replaced by a newer avatar change'));
+  }
+  /**
+   * Draw `bot`'s avatar: the drawing replaces any still under way for it, and its picture is saved
+   * when it is still the latest asked once it is ready. `job.done` resolves to the bot with its new
+   * picture, or rejects with why not (`dropped`: replaced meanwhile, or the bot is gone).
+   */
+  function startDrawing(bot, extra, { sessionId = null, by = null } = {}) {
+    dropDrawing(bot.id, sessionId ?? 'panel');
+    const job = { id: `a${randomUUID().replace(/-/g, '').slice(0, 12)}`, botId: bot.id, handle: bot.handle, name: bot.name, sessionId, by, at: nowMs(), controller: new AbortController() };
+    drawings.set(bot.id, job);
+    const current = () => drawings.get(bot.id) === job;
+    job.done = (async () => {
+      try {
+        const { bytes, type } = await drawAvatar(store.get(bot.id) ?? bot, extra, job.controller.signal);
+        const now = store.get(bot.id);
+        if (!current() || !now) throw Object.assign(new Error(now ? 'its avatar was changed meanwhile' : 'the bot was deleted'), { dropped: true });
+        return savePicture(now, bytes, type, 'ai');
+      } catch (error) {
+        if (error?.dropped || (current() && store.get(bot.id))) throw error;
+        throw Object.assign(new Error(store.get(bot.id) ? 'its avatar was changed meanwhile' : 'the bot was deleted'), { dropped: true });
+      } finally {
+        if (current()) drawings.delete(bot.id);
+      }
+    })();
+    return job;
+  }
+  /** Draw `bot`'s avatar and wait for it (the panel, a person's own conversation): the bot with its picture. */
+  async function generateAvatar(bot, extra) {
+    if (!imageTool()) throw new Error('the Images plugin (generate_image) is not installed or turned off');
+    try {
+      return await startDrawing(bot, extra).done;
+    } catch (error) {
+      throw new Error(error?.dropped ? `no picture was saved: ${error.message}` : String(error?.message ?? error));
+    }
+  }
+  /**
+   * A drawing a bot asked for goes on without it: the caller's turn goes on, and its conversation
+   * gets one note when the drawing ends (ready, or why not). A home takes it steered, so drawings that
+   * end together arrive together; a task's Session takes it like any message for its task (once it
+   * has a worker slot), unless the task has ended. A drawing replaced from the same conversation, or
+   * dropped by a restart, sends nothing.
+   */
+  function drawInBackground(bot, extra, caller) {
+    const job = startDrawing(bot, extra, { sessionId: caller.sessionId, by: caller.bot.id });
+    // The Threads of the asking turn: the note's answer goes back where the person asked.
+    const origins = (() => {
+      try {
+        return channels.replyPlan(caller.sessionId).origins.map(({ body: _b, tickets: _t, ...o }) => o).filter((o) => o.threadKey);
+      } catch {
+        return [];
+      }
+    })();
+    const who = `@${job.handle}`;
+    job.done.then(
+      (saved) => noteDrawing(job, origins, `[Avatar ready] The new avatar of ${who} (${saved?.name ?? job.name}) is ready and shows in Bots now. Tell the person if they are waiting for it.`),
+      (error) => {
+        const reason = String(error?.message ?? error).slice(0, 300);
+        if (!error?.dropped) return noteDrawing(job, origins, `[Avatar failed] The picture for ${who} could not be drawn: ${reason}. Its avatar is unchanged.`);
+        if (job.droppedBy !== job.sessionId) return noteDrawing(job, origins, `[Avatar dropped] The picture for ${who} was not used: ${reason}.`);
+        return undefined;
+      },
+    );
+    return job;
+  }
+  /** A drawing's note to the conversation that asked for it (`job.sessionId`): see `drawInBackground`. */
+  async function noteDrawing(job, origins, text) {
+    try {
+      const key = `avatar:${job.id}`;
+      const content = [{ type: 'text', text }];
+      const source = { kind: 'agent-message', form: 'relay' };
+      const t = ticketOf(job.sessionId);
+      if (t) {
+        const cur = tickets.get(t.id);
+        if (cur && !cur.ended && !cur.archivedAt) await toTicket(cur, { content, source, key });
+        return;
+      }
+      const asker = store.get(job.by);
+      if (!asker) return;
+      if (origins.length) {
+        drawingOrigins.set(`${MESSAGE_PREFIX}${key}`, origins);
+        // A note never delivered (Harness gone meanwhile) leaves nothing behind for long.
+        while (drawingOrigins.size > 200) drawingOrigins.delete(drawingOrigins.keys().next().value);
+      }
+      // The asking bot may have started a new topic since: the note goes to the conversation it has now.
+      await sendTo(await agentOf(asker), { content, source, mode: 'steer', key });
+    } catch (error) {
+      ctx.logger?.warn?.(`bots: the note about @${job.handle}'s avatar did not arrive: ${error?.message ?? error}`);
+    }
   }
   /** Store `bytes` as the bot's picture avatar. */
   function savePicture(bot, bytes, type, source) {
@@ -2533,21 +2679,43 @@ export function apply(ctx, config, deps = {}) {
     return store.patch(bot.id, { avatar: { kind: 'initials', color: bot.avatar.color } });
   }
   const AVATAR_PARAMS = {
-    avatar_prompt: { type: 'string', description: 'Draw a picture avatar with AI from this description of the look and style (e.g. "photorealistic portrait of a woman in her thirties, studio light"). Needs the Images plugin; takes up to a minute per picture. The result says so when it is not available.' },
+    avatar_prompt: {
+      type: 'string',
+      description:
+        'Draw a picture avatar with AI from this description of the look and style (e.g. "photorealistic portrait of a woman in her thirties, studio light"). Needs the Images plugin (the result says so when it is not available). Called from a bot\'s conversation, the drawing runs in the background: the call returns at once and a note arrives in this conversation when the picture is ready (or why it failed), so never wait or poll for it. A restart of Harness drops a drawing still under way, without a note.',
+    },
     avatar_file: { type: 'string', description: 'Absolute path of an image file on this computer (PNG, JPEG, WebP or GIF, at most 2 MB) to use as the avatar picture.' },
   };
-  /** Apply a tool's picture arguments to `bot`; the note says what happened (a failed drawing leaves the rest of the change in place). */
-  async function applyPicture(bot, args) {
-    if (typeof args.avatar_file === 'string' && args.avatar_file.trim()) return { bot: avatarFromFile(bot, args.avatar_file), note: ' Its avatar is now that picture.' };
+  /**
+   * Apply a tool's picture arguments to `bot`; the note says what happened (a failed drawing leaves
+   * the rest of the change in place). From a bot's conversation (`caller.bot`), a drawing runs in the
+   * background and the note says a message will come; from a person's own conversation it is awaited.
+   * Any other avatar change replaces a drawing still under way.
+   */
+  async function applyPicture(bot, args, caller = {}) {
+    const by = caller.sessionId ?? 'panel';
+    if (typeof args.avatar_file === 'string' && args.avatar_file.trim()) {
+      const saved = avatarFromFile(bot, args.avatar_file);
+      dropDrawing(bot.id, by);
+      return { bot: saved, note: ' Its avatar is now that picture.' };
+    }
     if (typeof args.avatar_prompt === 'string' && args.avatar_prompt.trim()) {
       if (!imageGenAvailable()) return { bot, note: ' No picture was drawn: AI avatars need the Images plugin (generate_image), which is not installed or is turned off. The user can install it from the plugin market, or upload a picture on the bot\'s Profile page; avatar_file takes an image file.' };
+      if (caller.bot && caller.sessionId) {
+        drawInBackground(bot, args.avatar_prompt, caller);
+        return { bot, drawing: true, note: ' Its avatar picture is being drawn in the background (often a minute or more); the current avatar stays until then. A note arrives in this conversation when it is ready, or with the reason if it fails: do not wait or poll for it, carry on.' };
+      }
       try {
         return { bot: await generateAvatar(bot, args.avatar_prompt), note: ' Its avatar is now a picture drawn from that description.' };
       } catch (error) {
         return { bot, note: ` The picture could not be drawn: ${String(error?.message ?? error).slice(0, 300)}` };
       }
     }
-    if (args.avatar_clear === true && bot.avatar.kind === 'image') return { bot: clearPicture(bot), note: ' Its avatar is back to letters.' };
+    if (args.avatar_clear === true && bot.avatar.kind === 'image') {
+      dropDrawing(bot.id, by);
+      return { bot: clearPicture(bot), note: ' Its avatar is back to letters.' };
+    }
+    if (args.avatar_clear === true || args.initials || args.color) dropDrawing(bot.id, by);
     return { bot, note: '' };
   }
 
@@ -2721,7 +2889,8 @@ export function apply(ctx, config, deps = {}) {
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ bot: v.bot }) },
       execute: async (args, exec) => {
-        const by = callerBot(exec);
+        const caller = actor(exec);
+        const by = caller.bot;
         tooManySkills((args.skills ?? []).length);
         const bot = store.save(
           {
@@ -2734,7 +2903,7 @@ export function apply(ctx, config, deps = {}) {
           },
           { createdBy: by?.id ?? 'user' },
         );
-        const pic = await applyPicture(bot, args);
+        const pic = await applyPicture(bot, args, caller);
         return { ok: true, text: `Created ${card(pic.bot)}. Message it with bot_send_message to @${bot.handle}.${pic.note}${offNote(args.skills, bot)}`, bot: face(pic.bot) };
       },
     }),
@@ -2755,7 +2924,9 @@ export function apply(ctx, config, deps = {}) {
         make_dispatcher: { type: 'boolean', description: 'true to make this bot the dispatcher.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ bot: v.bot }) },
-      execute: async (args) => {
+      execute: async (args, exec) => {
+        // A helper whose line cannot be traced still changes bots, as before; it waits for a drawing.
+        const caller = actorOf(exec);
         const bot = resolve(args.bot);
         const next = { id: bot.id };
         for (const k of ['name', 'bio', 'persona']) if (typeof args[k] === 'string') next[k] = args[k];
@@ -2766,7 +2937,7 @@ export function apply(ctx, config, deps = {}) {
           tooManySkills(next.skills.length);
         }
         if (args.make_dispatcher === true) next.role = 'primary';
-        const pic = await applyPicture(store.save(next), args);
+        const pic = await applyPicture(store.save(next), args, caller.restricted ? {} : caller);
         const saved = pic.bot;
         return { ok: true, text: `Updated ${card(saved)}.${pic.note}${offNote(args.add_skills, saved)}`, bot: face(saved) };
       },
@@ -3503,6 +3674,7 @@ export function apply(ctx, config, deps = {}) {
         tickets: counts.get(b.id) ?? { working: 0, question: 0, stalled: 0, queued: 0 },
         // Questions its own conversation waits to have answered (`asks`); a task's count under `attention`.
         asking: waiting.filter((a) => a.botId === b.id && !a.ticketId).length,
+        ...liveOf(b),
       };
     });
     const sessionMap = {};
@@ -3516,6 +3688,8 @@ export function apply(ctx, config, deps = {}) {
     }
     const s = settings.get();
     return {
+      // The Host's clock, so the page can time what runs.
+      at: nowMs(),
       bots,
       primaryId: store.primary()?.id ?? null,
       sessionMap,
@@ -3531,7 +3705,35 @@ export function apply(ctx, config, deps = {}) {
       // A task whose conversation waits for an answer to its question needs you too (its row says `asking`).
       attention: live.filter((t) => needsPerson(t) || askingIn(t.sessionId)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
       asks: waiting.sort((a, b) => a.at - b.at).map(askView),
+      // What each running task Session does now, by task id (with its bot); a bot's home under `bots[].activity`.
+      taskActivity: taskActivity(),
+      // How the panel shows what bots say to each other ('line' | 'short' | 'full').
+      display: s.display,
     };
+  }
+  /** A bot's live fields in state: what its home does now (`activity`), and a picture being drawn for it (`avatarPending`). */
+  function liveOf(b) {
+    const now = activity.get(b.sessionId);
+    return { ...(now ? { activity: now } : {}), ...(drawings.has(b.id) ? { avatarPending: true } : {}) };
+  }
+  /** Task id → what its running Session does now, with the task's bot and title. */
+  function taskActivity() {
+    const out = {};
+    for (const sid of activity.sessions()) {
+      const t = ticketOf(sid);
+      const now = t && !t.ended ? activity.get(sid) : undefined;
+      if (now) out[t.id] = { ...now, botId: t.botId, title: t.title };
+    }
+    return out;
+  }
+  /**
+   * GET /activity: only what moves while bots work, for the panel to poll often while something
+   * runs: each bot's status and live fields, and the running tasks' activity.
+   */
+  function activityView() {
+    const bots = {};
+    for (const b of store.list()) bots[b.id] = { status: botStatus(b), ...liveOf(b) };
+    return { ok: true, at: nowMs(), bots, taskActivity: taskActivity() };
   }
 
   let ocuInstalling = false;
@@ -3808,6 +4010,7 @@ export function apply(ctx, config, deps = {}) {
         if (!m) return { ok: false, reason: 'send a PNG, JPEG, WebP or GIF image' };
         const bytes = Buffer.from(m[2], 'base64');
         if (bytes.length > MAX_AVATAR) return { ok: false, reason: 'the image is larger than 2 MB' };
+        dropDrawing(bot.id, 'panel');
         return { ok: true, bot: publicBot(savePicture(bot, bytes, m[1])) };
       },
     },
@@ -3822,6 +4025,7 @@ export function apply(ctx, config, deps = {}) {
       post: (body) => {
         const bot = store.get(String(body.id ?? ''));
         if (!bot) return { ok: false, reason: 'no such bot' };
+        dropDrawing(bot.id, 'panel');
         return { ok: true, bot: publicBot(clearPicture(bot)) };
       },
     },
@@ -3860,6 +4064,8 @@ export function apply(ctx, config, deps = {}) {
     'schedules/run': { post: async (body) => (checkEntry(await schedule().run({ id: String(body.id ?? '') })), { ok: true }) },
     // Usage, prices, memory, topics, settings, model sources.
     usage: { get: (url) => usageReport(url) },
+    // The live part of `state`, cheap enough to poll every second or two while bots work.
+    activity: { get: () => activityView() },
     prices: {
       get: () => pricesView(),
       post: (body) => {

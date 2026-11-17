@@ -22,6 +22,8 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'bots';
     const R = '/__dsh_bots/';
     const STATE_POLL_MS = 5000;
+    /** While a bot works (or a picture is being drawn), its live status is polled this often (`activity`, a small answer). */
+    const LIVE_POLL_MS = 1500;
     const CHAT_POLL_MS = 3000;
     const SCHEDULE_POLL_MS = 10000;
     const TOOL_NAMES = ['bot_send_message', 'bot_create', 'bot_update', 'bot_delete', 'bot_list', 'bot_schedule'];
@@ -34,6 +36,8 @@ window.__ModuleLoader__.load({
       border: 'var(--dsw-alias-border-l2, rgba(127,127,127,.25))',
       border1: 'var(--dsw-alias-border-l1, rgba(127,127,127,.15))',
       label: 'var(--dsw-alias-brand-primary)',
+      // Text on a brand fill (a primary button, your own message): white on a colour, dark on the white of a dark theme.
+      onLabel: 'var(--dsw-alias-label-primary-foreground, #fff)',
       primary: 'var(--dsw-alias-label-primary)',
       muted: 'var(--dsw-alias-label-secondary)',
       faint: 'var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary))',
@@ -144,6 +148,12 @@ window.__ModuleLoader__.load({
       nav: { botId: null, view: null, ticket: null, tick: 0 },
       focusBound: false,
       tickets: new Map(),
+      // The quick poll of what runs now (`activity`), and when it and the state last arrived.
+      live: null,
+      liveAt: 0,
+      stateAt: 0,
+      liveTimer: null,
+      liveInflight: null,
     };
     const notify = () => {
       for (const fn of [...store.subs]) {
@@ -166,6 +176,8 @@ window.__ModuleLoader__.load({
         .then((s) => {
           if (s && Array.isArray(s.bots)) {
             store.state = s;
+            store.stateAt = Date.now();
+            if (Number.isFinite(s.at)) store.skew = s.at - Date.now();
             store.failed = false;
           } else if (!store.state) store.failed = true;
         })
@@ -187,6 +199,38 @@ window.__ModuleLoader__.load({
       }
     };
     const onFocus = () => void refreshState();
+    /** Whether anything runs now: a bot at work, a task's conversation, a picture being drawn. */
+    function busyNow() {
+      const fresh = store.live && store.liveAt > store.stateAt;
+      if (fresh) return Object.values(store.live.bots ?? {}).some((b) => b?.status === 'running' || b?.activity || b?.avatarPending) || Object.keys(store.live.taskActivity ?? {}).length > 0;
+      return botsOf().some((b) => b.status === 'running' || b.activity || b.avatarPending) || Object.keys(store.state?.taskActivity ?? {}).length > 0;
+    }
+    /** What runs now, polled quickly while something does; a bot that stopped or a task that finished brings the whole state. */
+    function refreshLive() {
+      if (store.liveInflight) return store.liveInflight;
+      let p;
+      try {
+        p = Promise.resolve(getJson('activity'));
+      } catch {
+        p = Promise.resolve(null);
+      }
+      store.liveInflight = p
+        .then((r) => {
+          if (!r || typeof r.bots !== 'object' || !r.bots) return;
+          const before = { bots: Object.fromEntries(botsOf().map((b) => [b.id, liveBot(b)])), tasks: Object.keys(liveTasks()) };
+          store.live = r;
+          store.liveAt = Date.now();
+          if (Number.isFinite(r.at)) store.skew = r.at - Date.now();
+          const ended = Object.entries(r.bots).some(([id, x]) => before.bots[id] && (before.bots[id].status === 'running') !== (x?.status === 'running')) || before.tasks.some((id) => !r.taskActivity?.[id]) || Object.entries(r.bots).some(([id, x]) => before.bots[id]?.avatarPending && !x?.avatarPending);
+          notify();
+          if (ended) void refreshState();
+        })
+        .catch(() => {})
+        .then(() => {
+          store.liveInflight = null;
+        });
+      return store.liveInflight;
+    }
     function subscribe(fn) {
       store.subs.add(fn);
       if (store.subs.size === 1) {
@@ -198,6 +242,14 @@ window.__ModuleLoader__.load({
           store.timer?.unref?.();
         } catch {
           store.timer = null;
+        }
+        try {
+          store.liveTimer = setInterval(() => {
+            if (visible() && busyNow()) void refreshLive();
+          }, LIVE_POLL_MS);
+          store.liveTimer?.unref?.();
+        } catch {
+          store.liveTimer = null;
         }
         try {
           if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
@@ -213,10 +265,12 @@ window.__ModuleLoader__.load({
         if (store.subs.size === 0) {
           try {
             if (store.timer) clearInterval(store.timer);
+            if (store.liveTimer) clearInterval(store.liveTimer);
           } catch {
             // Gone already.
           }
           store.timer = null;
+          store.liveTimer = null;
           try {
             if (store.focusBound) window.removeEventListener('focus', onFocus);
           } catch {
@@ -282,6 +336,21 @@ window.__ModuleLoader__.load({
     const teamsOf = () => (Array.isArray(store.teams) ? store.teams : []);
     const botsOf = () => (Array.isArray(store.state?.bots) ? store.state.bots : []);
     const botById = (id) => botsOf().find((b) => b.id === id) ?? null;
+    /** Whether the quick poll is newer than the state. */
+    const liveFresh = () => Boolean(store.live) && store.liveAt > store.stateAt;
+    /** A bot's live fields: `{status, activity, avatarPending}` from whichever of the state and the quick poll is newer. */
+    function liveBot(bot) {
+      const x = liveFresh() ? store.live.bots?.[bot?.id] : null;
+      if (x) return { status: x.status ?? bot.status, activity: x.activity ?? null, avatarPending: x.avatarPending === true };
+      return { status: bot?.status, activity: bot?.activity ?? null, avatarPending: bot?.avatarPending === true };
+    }
+    /** Task id → what its conversation does now (with `botId`, `title`), from the newer of the state and the quick poll. */
+    function liveTasks() {
+      const map = liveFresh() ? store.live.taskActivity : store.state?.taskActivity;
+      return map && typeof map === 'object' ? map : {};
+    }
+    /** What one task's conversation does now, or null. */
+    const liveTask = (id) => (id ? liveTasks()[id] ?? null : null);
     /** A bot by id, @handle or name, as a model writes it. */
     function findBot(ref) {
       if (!ref || typeof ref !== 'string') return null;
@@ -314,6 +383,8 @@ window.__ModuleLoader__.load({
         store.settings = { ...(store.settings ?? {}), settings: next };
         // Until the next poll says, router mode is in effect when the dispatcher has a teammate.
         if (store.state && typeof next.dispatcher === 'string') store.state = { ...store.state, dispatcher: next.dispatcher, routerActive: next.dispatcher === 'router' && (store.state.bots?.length ?? 0) > 1 };
+        // Chats show the new level of bot-to-bot detail at once.
+        if (store.state && next.display && typeof next.display === 'object') store.state = { ...store.state, display: next.display };
         notify();
       }
     }
@@ -597,7 +668,7 @@ window.__ModuleLoader__.load({
 .dshb-btn:hover{background:${C.hover}}
 .dshb-btn:focus-visible{outline:2px solid ${C.label};outline-offset:1px}
 .dshb-btn:disabled{opacity:.45;cursor:default}
-.dshb-btn-primary{background:${C.label};border-color:transparent;color:#fff}
+.dshb-btn-primary{background:${C.label};border-color:transparent;color:${C.onLabel}}
 .dshb-btn-primary:hover{background:${C.label};filter:brightness(1.1)}
 .dshb-btn-ghost{background:transparent;border-color:transparent;color:${C.muted}}
 .dshb-btn-ghost:hover{color:${C.primary}}
@@ -625,7 +696,7 @@ select.dshb-input{padding-right:6px}
 .dshb-chip:hover{color:${C.primary};background:${C.hover}}
 .dshb-chip[data-active=true]{color:${C.label};border-color:${C.label};background:${tint(C.label, 10)}}
 .dshb-scroll{overflow:auto;scrollbar-width:thin;min-height:0}
-.dshb-spinner{display:inline-block;flex:none;width:14px;height:14px;border-radius:50%;border:2px solid ${tint(C.label, 25)};border-top-color:${C.label};animation:dshb-spin .8s linear infinite}
+.dshb-spinner{display:inline-block;flex:none;width:14px;height:14px;border-radius:50%;corner-shape:round;border:2px solid ${tint(C.label, 25)};border-top-color:${C.label};animation:dshb-spin .8s linear infinite}
 .dshb-appcard{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid ${C.border1};border-radius:12px;background:${C.layer1};transition:border-color .12s,box-shadow .12s;min-width:0}
 .dshb-appcard:hover{border-color:${C.border};box-shadow:0 2px 10px rgba(0,0,0,.06)}
 .dshb-clamp2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -645,7 +716,7 @@ select.dshb-input{padding-right:6px}
 .dshb-fade{animation:dshb-in .18s ease-out}
 .dshb-md{white-space:pre-wrap;word-break:break-word;user-select:text}
 .dshb-md a{color:inherit;text-decoration:underline;text-underline-offset:2px;word-break:break-all}
-.dshb-md-light a{color:#fff}
+.dshb-md-light a{color:inherit}
 .dshb-rich{min-width:0;word-break:break-word;user-select:text;overflow-wrap:anywhere}
 .dshb-rich table{border-collapse:collapse;font-size:${SMALL};margin:6px 0}
 .dshb-rich th,.dshb-rich td{border:1px solid ${C.border};padding:5px 9px;vertical-align:top;text-align:left}
@@ -680,6 +751,45 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
 .dshb-play{position:absolute;inset:0;border:none;padding:0;margin:0;cursor:pointer;background:#000;display:block;width:100%;height:100%}
 .dshb-play-btn{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:inline-flex;filter:drop-shadow(0 2px 6px rgba(0,0,0,.45));transition:transform .15s}
 .dshb-play:hover .dshb-play-btn{transform:translate(-50%,-50%) scale(1.08)}
+.dshb-act-code{font-family:var(--dsh-code-font, ui-monospace, SFMono-Regular, Menlo, monospace);font-size:.9em;padding:1px 5px;border-radius:5px;background:${C.layer3}}
+.dshb-act-detail{font-weight:600}
+.dshb-live{min-width:0}
+.dshb-liveline{display:inline-flex;align-items:baseline;gap:4px;max-width:100%;min-width:0;vertical-align:bottom}
+.dshb-liveline-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dshb-liveline .dshb-act-code{background:none;padding:0}
+.dshb-live-time{color:${C.faint};font-variant-numeric:tabular-nums;white-space:nowrap}
+.dshb-dots{display:inline-flex;gap:3px;align-items:center;flex:none;align-self:center}
+.dshb-dots i{width:4px;height:4px;border-radius:50%;background:${C.faint};animation:dshb-blink 1.2s infinite}
+.dshb-dots i:nth-child(2){animation-delay:.2s}
+.dshb-dots i:nth-child(3){animation-delay:.4s}
+.dshb-livechip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;font-size:${TINY};font-weight:600;color:${C.ok};background:${tint(C.ok, 12)};max-width:300px;min-width:0;flex:0 0 auto;white-space:nowrap}
+.dshb-livechip .dshb-act-code{background:none;padding:0;font-size:1em}
+.dshb-livechip .dshb-live-time{color:inherit;opacity:.75}
+.dshb-avring{position:absolute;inset:-3px;border-radius:50%;pointer-events:none}
+.dshb-avring-pending{inset:-4px;corner-shape:round;border:2px solid ${tint(C.label, 14)};border-top-color:${C.label};border-right-color:${C.label};animation:dshb-spin 1.2s linear infinite}
+.dshb-avring-working{box-shadow:0 0 0 0 ${tint(C.ok, 50)};animation:dshb-breathe 1.8s ease-out infinite}
+.dshb-traffic{display:flex;flex-direction:column;gap:1px;margin:4px 0 6px 40px;padding:1px 0 1px 6px;border-left:2px solid ${C.border1};min-width:0}
+.dshb-traffic[data-level=short]{gap:4px}
+.dshb-traffic[data-level=full]{gap:10px;padding:2px 0 2px 8px}
+.dshb-titem{display:flex;flex-direction:column;min-width:0;border-radius:8px}
+.dshb-tline{display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:28px;padding:3px 8px;border:none;border-radius:7px;background:transparent;color:${C.muted};font:inherit;font-size:${SMALL};line-height:1.35;text-align:left;cursor:pointer;transition:background .1s}
+button.dshb-tline:hover{background:${C.hover}}
+.dshb-tline:focus-visible{outline:2px solid ${C.label};outline-offset:-2px}
+.dshb-tname{font-weight:600;color:${C.primary};white-space:nowrap;flex:none}
+.dshb-tsubject{flex:1 1 0;min-width:40px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dshb-ttime{flex:none;min-width:58px;text-align:right;color:${C.faint};font-size:${TINY};font-variant-numeric:tabular-nums;white-space:nowrap}
+.dshb-tbody{padding:0 8px 4px 30px;font-size:${SMALL};color:${C.muted};line-height:1.5;min-width:0}
+.dshb-titem[data-level=full] .dshb-tbody{padding:2px 8px 4px 30px;display:flex;flex-direction:column;gap:6px}
+.dshb-reply{font-size:${FONT};line-height:1.65;color:${C.primary};min-width:0}
+.dshb-reply [data-dsh-bots-md] > div{font:inherit;color:inherit}
+.dshb-reply [data-dsh-bots-md] p{margin:0 0 9px}
+.dshb-reply [data-dsh-bots-md] :is(ul,ol){margin:0 0 9px}
+.dshb-reply [data-dsh-bots-md] li{margin:3px 0}
+.dshb-seg{display:inline-flex;padding:2px;border-radius:9px;background:${C.layer2};border:1px solid ${C.border1};flex:none}
+.dshb-seg button{height:26px;padding:0 11px;border:none;border-radius:7px;background:transparent;color:${C.muted};font:inherit;font-size:${SMALL};font-weight:550;cursor:pointer;white-space:nowrap}
+.dshb-seg button:hover{color:${C.primary}}
+.dshb-seg button[data-active=true]{background:${C.layer1};color:${C.primary};box-shadow:0 1px 2px rgba(0,0,0,.12),0 0 0 1px ${C.border1}}
+@keyframes dshb-breathe{0%{box-shadow:0 0 0 0 ${tint(C.ok, 45)}}70%{box-shadow:0 0 0 5px ${tint(C.ok, 0)}}100%{box-shadow:0 0 0 0 ${tint(C.ok, 0)}}}
 @keyframes dshb-pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.6)}70%{box-shadow:0 0 0 5px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
 @keyframes dshb-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes dshb-blink{0%,100%{opacity:.25}50%{opacity:1}}
@@ -763,7 +873,11 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       );
 
     /** A circle: initials on a colour, or the uploaded / generated picture. */
-    function Avatar({ avatar, name, size = 32, status, title, ring }) {
+    /**
+     * A circle: initials on a colour, or the uploaded / generated picture. `pending`: a new picture is
+     * being drawn (a turning arc); `working`: it works right now (a soft pulse).
+     */
+    function Avatar({ avatar, name, size = 32, status, title, ring, pending, working }) {
       const a = avatar && typeof avatar === 'object' ? avatar : { kind: 'initials', color: COLORS[0] };
       const color = str(a.color) || COLORS[0];
       const letters = avatarLetters(a, name);
@@ -811,6 +925,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           },
         },
         face,
+        pending ? h('span', { className: 'dshb-avring dshb-avring-pending', 'data-dsh-bots-avatar-pending': true, title: undefined }) : working ? h('span', { className: 'dshb-avring dshb-avring-working' }) : null,
         status ? h(StatusDot, { status, size: dot, style: { position: 'absolute', right: -1, bottom: -1, boxShadow: `0 0 0 2px ${C.base}` } }) : null,
       );
     }
@@ -1045,11 +1160,15 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         .filter((b) => !needle || [b.name, b.handle, b.bio].some((s) => str(s).toLowerCase().includes(needle)))
         .sort((a, b) => (a.id === primaryId ? -1 : b.id === primaryId ? 1 : 0));
       const groups = needle ? null : groupByTeam(t, lang, shown);
-      const row = (b) =>
-        h(
+      const row = (b) => {
+        // At work: its own conversation, else the freshest of its tasks; the line under its name says what it does.
+        const live = liveBot(b);
+        const work = live.activity ? live.activity : botTaskActivity(b.id);
+        const status = live.status === 'running' || work ? 'running' : (live.status ?? 'offline');
+        return h(
           'button',
           { key: b.id, type: 'button', className: 'dshb-row', 'data-active': view === 'bot' && b.id === selected, 'data-dsh-bots-row': b.id, onClick: () => onSelect(b.id) },
-          h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 36, status: b.status ?? 'offline', title: t(`status_${b.status ?? 'offline'}`) }),
+          h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 36, status, pending: live.avatarPending, title: live.avatarPending ? t('avatarDrawing') : t(`status_${status}`) }),
           h(
             'span',
             { style: { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 } },
@@ -1060,11 +1179,19 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
               b.id === primaryId ? h('span', { title: t('dispatcher'), style: { color: '#f5b301', display: 'inline-flex' } }, Icon.crown(12)) : null,
               h('span', { style: { color: C.faint, fontSize: TINY, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `@${b.handle}`),
             ),
-            h('span', { style: { fontSize: TINY, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, b.bio || t('noBio')),
+            work
+              ? h(
+                  'span',
+                  { 'data-dsh-bots-row-live': work.ticket ? 'task' : 'home', title: work.ticket ? str(work.title) : undefined, style: { fontSize: TINY, color: C.muted, marginTop: 1, display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, whiteSpace: 'nowrap' } },
+                  work.ticket ? h('span', { style: { color: C.faint, display: 'inline-flex', flex: 'none' } }, Icon.tasks(11)) : null,
+                  h(LiveLine, { t, a: work, attr: b.id }),
+                )
+              : h('span', { style: { fontSize: TINY, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, b.bio || t('noBio')),
           ),
           // Questions its own conversation waits to have answered (a task's show on Tasks).
           Number(b.asking) > 0 ? h(NeedsBadge, { n: Number(b.asking), label: t('askingBadge', { n: Number(b.asking) }), attr: 'data-dsh-bots-row-asking' }) : null,
         );
+      };
       return h(
         'aside',
         { 'data-dsh-bots-rail': true, style: { width: 264, flex: 'none', display: 'flex', flexDirection: 'column', borderRight: `1px solid ${C.border1}`, background: C.base, minHeight: 0 } },
@@ -1225,12 +1352,148 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             ),
           );
         }
+        // What bots say to each other runs together in one compact group, under the main thread.
+        if (isTraffic(m)) {
+          const last = rows[rows.length - 1];
+          if (last && last.traffic) last.items.push(m);
+          else rows.push({ traffic: true, key: `g${m.id ?? i}`, items: [m] });
+          return;
+        }
         const prev = items[i - 1];
         // Answers to two chats of one turn keep their own headers (where each went), and so do two tasks.
-        const grouped = prev && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
+        const grouped = prev && !isTraffic(prev) && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
         rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped, names }));
       });
-      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 880, margin: '0 auto' } }, rows);
+      const level = botMessagesLevel();
+      return h(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 880, margin: '0 auto' } },
+        rows.map((r) => (r && r.traffic ? h(BotTraffic, { key: r.key, t, items: r.items, level }) : r)),
+      );
+    }
+    /** A message between two bots (a delegation, a report, a DM), or a scheduled prompt: secondary traffic. */
+    const isTraffic = (m) => m?.kind === 'system' || ((m?.kind === 'dm' || m?.kind === 'report') && m.from !== 'user' && m.to !== 'user');
+    /** How much of what bots say to each other a chat shows (a team setting): 'line' | 'short' | 'full'. */
+    function botMessagesLevel() {
+      const v = store.state?.display?.botMessages ?? store.settings?.settings?.display?.botMessages;
+      return v === 'short' || v === 'full' ? v : 'line';
+    }
+    /** The first sentence of a message (or its first line), for a one-line row. */
+    function firstSentence(text) {
+      const line = (str(text).split('\n').find((l) => l.trim() !== '') ?? '').trim();
+      const m = /^(.{12,}?[.!?。！？])(\s|$)/u.exec(line);
+      const s = (m ? m[1] : line).trim();
+      // A very long one is cut, and says so (the short view goes on from there).
+      return [...s].length > 160 ? `${[...s].slice(0, 159).join('').trimEnd()}…` : s;
+    }
+    /** Consecutive messages between bots, as one quiet group at the chosen level of detail. */
+    function BotTraffic({ t, items, level }) {
+      let lastTime = '';
+      return h(
+        'div',
+        { className: 'dshb-traffic', 'data-dsh-bots-traffic': items.length, 'data-level': level },
+        items.map((m, i) => {
+          const at = toMs(m.at);
+          const time = Number.isFinite(at) ? fmtClock(at) : '';
+          // A time shows once for a run of messages in the same minute.
+          const showTime = time !== lastTime;
+          lastTime = time;
+          return h(TrafficItem, { key: m.id ?? i, t, m, level, time: showTime ? time : '' });
+        }),
+      );
+    }
+
+    /**
+     * One message between bots. `line`: who to whom, the task's title (or the first sentence), its stage
+     * (alive while it works) and the time; a click opens the task, or unfolds a message without one.
+     * `short`: that and two lines of the text. `full`: the whole text, and a delegation's task card.
+     */
+    function TrafficItem({ t, m, level, time }) {
+      const [open, setOpen] = useState(false);
+      const from = party(t, m.from);
+      const to = party(t, m.to);
+      const ticketId = messageTicket(m);
+      const report = messageReport(m);
+      const notice = messageNotice(m);
+      const delegation = Boolean(ticketId) && !report && !notice;
+      usePoll(() => (delegation ? loadTicket(ticketId) : undefined), 10_000, [ticketId, delegation]);
+      const view = delegation ? store.tickets.get(ticketId)?.view ?? null : null;
+      const live = delegation ? liveTask(ticketId) : null;
+      const stage = str(view?.stage) || (live ? 'working' : '');
+      const subject = delegation ? str(view?.title).trim() || firstLine(m.text) : firstSentence(m.text);
+      const full = level === 'full' || open;
+      const chip = notice
+        ? h(StageChip, { t, stage: notice })
+        : report
+          ? h(ReportChip, { t, status: report })
+          : m.kind === 'system'
+            ? h(Badge, { color: C.warn }, t('scheduled'))
+            : delegation
+              ? live && (!stage || stage === 'working')
+                ? h(LiveChip, { t, a: live })
+                : view?.asking
+                  ? h(TaskChip, { t, row: view })
+                  : h(StageChip, { t, stage })
+              : null;
+      const who = [
+        h(PartyAvatar, { key: 'fa', p: from, size: 16 }),
+        h('span', { key: 'fn', className: 'dshb-tname' }, from.name),
+        h('span', { key: 'ar', style: { color: C.faint, display: 'inline-flex', flex: 'none' } }, Icon.arrow(10)),
+        h(PartyAvatar, { key: 'ta', p: to, size: 16 }),
+        h('span', { key: 'tn', className: 'dshb-tname' }, to.name),
+      ];
+      const timeEl = h('span', { className: 'dshb-ttime' }, time);
+      if (full) {
+        // The whole message: a header (who, its stage, a link to its task), the task card, the text.
+        return h(
+          'div',
+          { className: 'dshb-titem dshb-fade', 'data-dsh-bots-msg': m.kind, 'data-level': 'full' },
+          h(
+            'div',
+            { className: 'dshb-tline', style: { cursor: 'default' } },
+            who,
+            h('span', { style: { flex: 1 } }),
+            delegation ? (live ? h(LiveChip, { t, a: live }) : null) : chip,
+            ticketId && !delegation ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY, flex: 'none' } }, t('openTask')) : null,
+            open && level !== 'full' ? h('button', { type: 'button', className: 'dshb-link', onClick: () => setOpen(false), style: { fontSize: TINY, flex: 'none' } }, t('showLess')) : null,
+            timeEl,
+          ),
+          h(
+            'div',
+            { className: 'dshb-tbody' },
+            delegation ? h(TaskCard, { t, id: ticketId, botId: m.to, title: firstLine(m.text) }) : null,
+            h(Clamp, { t, text: m.text, lines: 6, style: { fontSize: SMALL } }),
+            h(LinkCards, { t, text: m.text }),
+          ),
+        );
+      }
+      // Short: the text's first two lines under the row, which then names only a task title the text does not start with.
+      const short = level === 'short' && str(m.text).trim() !== '';
+      const ownTitle = delegation && str(view?.title).trim() !== '' && !str(m.text).trim().startsWith(str(view.title).trim().replace(/…$/, '').trimEnd());
+      const lineSubject = short && !ownTitle ? '' : subject;
+      return h(
+        'div',
+        { className: 'dshb-titem dshb-fade', 'data-dsh-bots-msg': m.kind, 'data-level': level },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'dshb-tline',
+            title: ticketId ? `${t('openTask')}: ${subject}` : t('showMore'),
+            ...(delegation ? { 'data-dsh-bots-task-card': ticketId } : ticketId ? { 'data-dsh-bots-report-task': ticketId } : { 'data-dsh-bots-expand': m.id ?? true }),
+            onClick: (e) => {
+              e?.stopPropagation?.();
+              if (ticketId) openTicket(ticketId);
+              else setOpen(true);
+            },
+          },
+          who,
+          h('span', { className: 'dshb-tsubject', 'data-dsh-bots-subject': true }, lineSubject),
+          chip,
+          timeEl,
+        ),
+        short ? h('div', { className: 'dshb-tbody dshb-clamp2', 'data-dsh-bots-short': true }, str(m.text).trim()) : null,
+      );
     }
 
     function MessageRow({ t, m, botId, grouped, names }) {
@@ -1256,32 +1519,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const ticketId = messageTicket(m);
       const report = messageReport(m);
       const notice = messageNotice(m);
-      if (between || m.kind === 'system') {
-        return h(
-          'div',
-          { 'data-dsh-bots-msg': m.kind, className: 'dshb-fade', style: { display: 'flex', padding: '4px 0 4px 40px' } },
-          h(
-            'div',
-            { style: { width: 'min(600px, 100%)', borderLeft: `3px solid ${m.kind === 'system' ? C.warn : tint(C.label, 60)}`, border: `1px solid ${C.border1}`, borderRadius: 12, background: C.layer2, padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 5 } },
-            h(
-              'div',
-              { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
-              h(PartyAvatar, { p: from, size: 18 }),
-              h('span', { style: { fontWeight: 600, color: C.primary } }, from.name),
-              h('span', { style: { color: C.faint, display: 'inline-flex' } }, Icon.arrow(11)),
-              h(PartyAvatar, { p: to, size: 18 }),
-              h('span', { style: { fontWeight: 600, color: C.primary } }, to.name),
-              report ? h(ReportChip, { t, status: report }) : null,
-              notice ? h(StageChip, { t, stage: notice }) : null,
-              (report || notice) && ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
-              h('span', { style: { marginLeft: 'auto', color: C.faint } }, m.kind === 'system' ? `${t('scheduled')} · ${time}` : time),
-            ),
-            ticketId && !report && !notice ? h(TaskCard, { t, id: ticketId, botId: m.to, title: firstLine(m.text) }) : null,
-            h(Clamp, { t, text: m.text, lines: ticketId && !report && !notice ? 3 : 6, style: { fontSize: SMALL, color: C.primary } }),
-            h(LinkCards, { t, text: m.text }),
-          ),
-        );
-      }
+      if (between || m.kind === 'system') return h(BotTraffic, { t, items: [m], level: botMessagesLevel() });
       if (mine) {
         return h(
           'div',
@@ -1296,7 +1534,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 // A message from a chat that went straight to the task it follows up on.
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, title: m.via ? t('followUpHint') : undefined, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t(m.via ? 'followUpTask' : 'openTask')) : null,
               ),
-          h('div', { style: { maxWidth: '78%', padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: '#fff', fontSize: FONT } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
+          h('div', { style: { maxWidth: '78%', padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
           h('div', { style: { width: 'min(480px, 78%)', display: 'flex', justifyContent: 'flex-end' } }, h(LinkCards, { t, text: m.text, align: 'flex-end' })),
         );
       }
@@ -1304,13 +1542,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const place = m.via ? (isChatThread(m.thread) ? threadName(t, m.thread, names) : channelName(m.via, t)) : '';
       // With several chats in the turn, plain text reached none of them (bot_reply says where each answer goes).
       const choices = m.notSent === true && Array.isArray(m.choices) ? m.choices.filter(isChatThread) : [];
+      // A bot speaking to you reads like the main conversation: no box, full-strength text.
       return h(
         'div',
-        { 'data-dsh-bots-msg': m.kind || 'reply', className: 'dshb-fade', style: { display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: grouped ? 0 : 8 } },
+        { 'data-dsh-bots-msg': m.kind || 'reply', className: 'dshb-fade', style: { display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: grouped ? 4 : 12 } },
         h('div', { style: { width: 30, flex: 'none' } }, grouped ? null : h(PartyAvatar, { p: from, size: 30 })),
         h(
           'div',
-          { style: { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, maxWidth: '82%' } },
+          { style: { display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, flex: 1, maxWidth: 760 } },
           grouped
             ? null
             : h(
@@ -1325,7 +1564,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 notice ? h(StageChip, { t, stage: notice }) : null,
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
               ),
-          h('div', { style: { padding: '8px 12px', borderRadius: '4px 14px 14px 14px', background: C.layer2, border: `1px solid ${C.border1}`, fontSize: FONT, minWidth: 0 } }, h(Clamp, { t, text: m.text, lines: 24 })),
+          h('div', { className: 'dshb-reply', 'data-dsh-bots-reply-text': true }, h(Clamp, { t, text: m.text, lines: 24, variant: 'body' })),
           choices.length
             ? h(
                 'div',
@@ -1340,7 +1579,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     }
 
     /** Long text folded to about `lines` lines, with a toggle. Bot text renders as Markdown; the user's own bubble stays plain with live links. */
-    function Clamp({ t, text, lines = 6, style, light }) {
+    function Clamp({ t, text, lines = 6, style, light, variant }) {
       const [open, setOpen] = useState(false);
       const s = str(text);
       const long = s.length > lines * 90 || s.split('\n').length > lines;
@@ -1359,9 +1598,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
               ...(folded ? { maxHeight: `${lines * 1.55}em`, overflow: 'hidden', WebkitMaskImage: 'linear-gradient(180deg,#000 70%,transparent)', maskImage: 'linear-gradient(180deg,#000 70%,transparent)' } : {}),
             },
           },
-          light ? h('div', { className: 'dshb-md dshb-md-light' }, linkify(s, 'l')) : h(RichText, { t, text: s }),
+          light ? h('div', { className: 'dshb-md dshb-md-light' }, linkify(s, 'l')) : h(RichText, { t, text: s, variant }),
         ),
-        long ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, alignSelf: 'flex-start', color: light ? 'rgba(255,255,255,.85)' : C.label }, onClick: () => setOpen((v) => !v) }, open ? t('showLess') : t('showMore')) : null,
+        long ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, alignSelf: 'flex-start', color: light ? 'inherit' : C.label, opacity: light ? 0.85 : 1 }, onClick: () => setOpen((v) => !v) }, open ? t('showLess') : t('showMore')) : null,
       );
     }
 
@@ -1412,10 +1651,11 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         .map((part, i) => (i % 2 ? part : part.replace(/(^|[^\\])\$(?=\d)/g, '$1\\$')))
         .join('');
     }
-    function RichText({ t, text }) {
+    /** `variant`: 'compact' (secondary text: muted and small, the default) or 'body' (the main conversation's). */
+    function RichText({ t, text, variant = 'compact' }) {
       const Md = primitives && primitives.MarkdownText;
       if (Md && (typeof Md === 'function' || typeof Md === 'object')) {
-        return h('div', { className: 'dshb-rich', 'data-dsh-bots-md': 'harness' }, h(Md, { text: moneySafe(text), labels: mdLabels(t), variant: 'compact' }));
+        return h('div', { className: 'dshb-rich', 'data-dsh-bots-md': 'harness' }, h(Md, { text: moneySafe(text), labels: mdLabels(t), variant: variant === 'body' ? 'body' : 'compact' }));
       }
       return h('div', { className: 'dshb-rich dshb-mdf', 'data-dsh-bots-md': 'builtin' }, miniMarkdown(text));
     }
@@ -1926,9 +2166,13 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const box = useRef(null);
       const content = useRef(null);
       const pinned = useRef(true);
+      const lastTop = useRef(0);
       const toBottom = () => {
         const el = box.current;
-        if (el) el.scrollTop = el.scrollHeight;
+        if (el) {
+          el.scrollTop = el.scrollHeight;
+          lastTop.current = el.scrollTop;
+        }
       };
       useEffect(() => {
         if (pinned.current) toBottom();
@@ -1941,9 +2185,13 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         ro.observe(content.current);
         return () => ro.disconnect();
       }, [content.current]);
+      // Only the reader scrolling up lets go of the bottom: the browser nudging the view as content grows
+      // (scroll anchoring) can land before the resize is seen, and must not.
       const onScroll = (e) => {
         const el = e.currentTarget;
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight < 80) pinned.current = true;
+        else if (el.scrollTop < lastTop.current) pinned.current = false;
+        lastTop.current = el.scrollTop;
       };
       const stick = () => {
         pinned.current = true;
@@ -2006,7 +2254,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             ...(quick ? {} : { role: q.multiSelect ? 'checkbox' : 'radio', 'aria-checked': on }),
             style: { alignItems: 'flex-start', gap: 9, padding: '7px 10px', border: `1px solid ${on ? C.label : C.border1}`, background: on ? tint(C.label, 8) : C.layer1, opacity: busy ? 0.6 : 1 },
           },
-          quick ? null : h('span', { style: { width: 14, height: 14, marginTop: 2, flex: 'none', borderRadius: q.multiSelect ? 4 : '50%', border: `1.5px solid ${on ? C.label : C.border}`, background: on ? C.label : 'transparent', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' } }, on && q.multiSelect ? Icon.check(10) : null),
+          quick ? null : h('span', { style: { width: 14, height: 14, marginTop: 2, flex: 'none', borderRadius: q.multiSelect ? 4 : '50%', border: `1.5px solid ${on ? C.label : C.border}`, background: on ? C.label : 'transparent', color: C.onLabel, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' } }, on && q.multiSelect ? Icon.check(10) : null),
           h('span', { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 } }, h('span', { style: { fontWeight: 600, fontSize: SMALL } }, str(o.label)), o.description ? h('span', { style: { fontSize: TINY, color: C.muted } }, str(o.description)) : null),
         );
       };
@@ -2077,7 +2325,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const { items, failed, reload } = useMessages(bot.id);
       const [text, setText] = useState('');
       const [sending, setSending] = useState(false);
-      const running = bot.status === 'running';
+      // The quick poll may know before the state does that it started or stopped.
+      const live = liveBot(bot);
+      const running = live.status === 'running' || Boolean(live.activity);
       const thread = useStickToBottom(`${items?.length ?? 0}:${items?.[items.length - 1]?.id ?? ''}:${running}`);
       const [topicBusy, setTopicBusy] = useState(false);
       const startTopic = () => {
@@ -2127,15 +2377,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 botId: bot.id,
                 empty: h(ChatEmpty, { t, bot, onPick: setText }),
               }),
-          running
-            ? h(
-                'div',
-                { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 4px', color: C.muted, fontSize: SMALL, maxWidth: 880, margin: '0 auto' } },
-                h(Avatar, { avatar: bot.avatar, name: bot.name, size: 22 }),
-                h('span', null, t('working', { name: bot.name })),
-                h('span', { style: { display: 'inline-flex', gap: 3 } }, [0, 1, 2].map((i) => h('span', { key: i, style: { width: 4, height: 4, borderRadius: '50%', background: C.muted, animation: `dshb-blink 1.2s ${i * 0.2}s infinite` } }))),
-              )
-            : null,
+          running ? h('div', { style: { maxWidth: 880, margin: '0 auto' } }, h(WorkingRow, { t, bot, a: live.activity, attr: bot.id })) : null,
           ),
         ),
         h(
@@ -2303,10 +2545,158 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     };
     const dotSep = () => h('span', { style: { color: C.faint } }, '·');
 
+    // --- live status: what a bot's conversation or a task's does right now ------------------------
+
+    /** Tool names (an MCP tool by its last part) by what the panel says they do; the Host sends the name and a short `detail`. */
+    const ACT_TOOLS = [
+      [/^(bash|pwsh|shell|sh|terminal|exec|run_command|execute_command)$/, 'run'],
+      [/^(read|read_file|read_image|view|open_file|cat)$/, 'read'],
+      [/^(edit|str_replace|str_replace_editor|str_replace_based_edit_tool|multi_edit|multiedit|apply_patch|patch|notebook_edit)$/, 'edit'],
+      [/^(write|write_file|create_file)$/, 'write'],
+      [/^(grep|glob|ls|find|search_files|list_files|list_directory|ripgrep)$/, 'find'],
+      [/^bot_send_message$/, 'send'],
+      [/^memory_search$/, 'memory'],
+      [/^memory_(save|forget)$/, 'remember'],
+      [/(^|_)search$|^websearch$/, 'search'],
+      [/^(web_fetch|fetch|webfetch|browse|open_url)$/, 'fetch'],
+      [/^ask_user_question$/, 'ask'],
+      [/^generate_image$/, 'draw'],
+      [/^(subagent|task|agent|wait_agent)$/, 'helper'],
+      [/^(skill|load_skill)$/, 'skill'],
+      [/^bot_reply$/, 'reply'],
+      [/^bot_recall$/, 'recall'],
+      [/^bot_(create|update|delete|list|ticket)$/, 'team'],
+      [/^bot_schedule$/, 'schedule'],
+      [/^(todo|todo_write|todowrite|plan)$/, 'plan'],
+      [/^job_/, 'job'],
+      [/^office_/, 'office'],
+    ];
+    /** Kinds of tool whose words name what they work on, when the Host sent it. */
+    const ACT_DETAIL = new Set(['run', 'read', 'edit', 'write', 'find', 'search', 'fetch', 'helper', 'skill', 'memory', 'recall']);
+    /** An activity as words: its dictionary key, the detail set off in it, and whether that detail is code. */
+    function activityWords(a) {
+      if (!a || typeof a !== 'object') return null;
+      if (a.kind === 'writing') return { key: 'act_writing', detail: '' };
+      if (a.kind !== 'tool') return { key: 'act_thinking', detail: '' };
+      const tool = str(a.tool);
+      const short = tool.toLowerCase().split('__').pop();
+      const detail = str(a.detail).trim();
+      const act = (ACT_TOOLS.find(([re]) => re.test(short)) ?? [null, 'tool'])[1];
+      if (act === 'send') return detail.startsWith('@') ? { key: 'act_delegate', detail } : detail.startsWith('#') ? { key: 'act_followup', detail: detail.slice(1) } : { key: 'act_report', detail: '' };
+      if (act === 'tool') return { key: 'act_tool', detail: tool.split('__').pop() || tool || '?', code: true };
+      if (ACT_DETAIL.has(act)) return detail ? { key: `act_${act}`, detail, code: act === 'run' } : { key: `act_${act}_bare`, detail: '' };
+      return { key: `act_${act}`, detail: '' };
+    }
+    /** The activity in plain words (a title, a row of text). */
+    function activityLine(t, a) {
+      const w = activityWords(a);
+      return w ? t(w.key, { detail: w.detail }) : '';
+    }
+    /** The activity in words, its detail set off (a command in code type). */
+    function ActivityWords({ t, a }) {
+      const w = activityWords(a);
+      if (!w) return null;
+      if (!w.detail) return h('span', { 'data-dsh-bots-act': w.key }, t(w.key));
+      const [before, after = ''] = t(w.key, { detail: '\u0000' }).split('\u0000');
+      return h('span', { 'data-dsh-bots-act': w.key }, before, h('span', { className: w.code ? 'dshb-act-code' : 'dshb-act-detail' }, w.detail), after);
+    }
+    /** The Host's clock now, as far as this page can tell (its answers carry their time). */
+    const hostNow = () => Date.now() + (Number.isFinite(store.skew) ? store.skew : 0);
+    /** A running time as a timer reads: 42s, 1m 05s, 1h 02m. */
+    function fmtElapsed(t, ms) {
+      const sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+      if (sec < 60) return t('elapsedS', { s: sec });
+      if (sec < 3600) return t('elapsedM', { m: Math.floor(sec / 60), s: pad(sec % 60) });
+      return t('elapsedH', { h: Math.floor(sec / 3600), m: pad(Math.floor(sec / 60) % 60) });
+    }
+    /** Re-render every second while `on`, so running times tick between polls. */
+    function useTick(on) {
+      const [, force] = useState(0);
+      useEffect(() => {
+        if (!on) return undefined;
+        let id = null;
+        try {
+          id = setInterval(() => force((n) => n + 1), 1000);
+          id?.unref?.();
+        } catch {
+          id = null;
+        }
+        return () => {
+          if (id) clearInterval(id);
+        };
+      }, [on]);
+    }
+    /** The freshest activity of a bot's task conversations (with `ticket`), or null. */
+    function botTaskActivity(botId) {
+      let best = null;
+      for (const [id, a] of Object.entries(liveTasks())) if (a && a.botId === botId && (!best || (Number(a.stepAt) || 0) > (Number(best.stepAt) || 0))) best = { ...a, ticket: id };
+      return best;
+    }
+    /** The one-line live status: what it does now and for how long (`compact`: muted, for a row). */
+    function LiveLine({ t, a, attr, style }) {
+      useTick(Boolean(a));
+      if (!a) return null;
+      const now = hostNow();
+      const time = fmtElapsed(t, now - (Number(a.stepAt) || now));
+      // The words give way (an ellipsis); the time stays.
+      return h(
+        'span',
+        { 'data-dsh-bots-live': attr ?? true, title: `${activityLine(t, a)} · ${time}`, className: 'dshb-live dshb-liveline', style },
+        h('span', { className: 'dshb-liveline-words' }, h(ActivityWords, { t, a })),
+        h('span', { className: 'dshb-live-time' }, `· ${time}`),
+      );
+    }
+    /**
+     * The working row of a chat or a task: the bot, what it does now (ticking), then the step and
+     * the turn's time so far. Without an activity yet (an older Host, the first poll) it says the bot works.
+     */
+    function WorkingRow({ t, bot, a, attr }) {
+      useTick(true);
+      const now = hostNow();
+      const name = bot ? bot.name || `@${bot.handle}` : '';
+      return h(
+        'div',
+        { 'data-dsh-bots-working': attr ?? true, className: 'dshb-fade', style: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0 2px', minWidth: 0 } },
+        h('div', { style: { width: 30, flex: 'none', display: 'flex', justifyContent: 'center' } }, bot ? h(Avatar, { avatar: bot.avatar, name, size: 24, working: true }) : null),
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, flex: 1, fontSize: SMALL } },
+          name ? h('span', { style: { fontWeight: 650, color: C.primary, flex: 'none' } }, name) : null,
+          a
+            ? h(
+                'span',
+                { className: 'dshb-live', 'data-dsh-bots-live': 'working', style: { color: C.primary, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+                h(ActivityWords, { t, a }),
+                h('span', { className: 'dshb-live-time' }, ` · ${fmtElapsed(t, now - (Number(a.stepAt) || now))}`),
+              )
+            : h('span', { style: { color: C.muted } }, t('workingPlain')),
+          h('span', { className: 'dshb-dots', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
+          // The step and the turn's time, once they say more than the current activity's time does.
+          a && (Number(a.steps) > 1 || (Number(a.stepAt) || 0) - (Number(a.startedAt) || 0) > 2000)
+            ? h('span', { 'data-dsh-bots-live-total': true, style: { marginLeft: 'auto', paddingLeft: 12, flex: 'none', color: C.faint, fontSize: TINY, fontVariantNumeric: 'tabular-nums' } }, t('liveTotal', { n: Math.max(1, Number(a.steps) || 1), time: fmtElapsed(t, now - (Number(a.startedAt) || now)) }))
+            : null,
+        ),
+      );
+    }
+    /** A working task's stage chip, alive: what its conversation does now and for how long. */
+    function LiveChip({ t, a }) {
+      useTick(Boolean(a));
+      const now = hostNow();
+      return h(
+        'span',
+        { 'data-dsh-bots-stage': 'working', 'data-dsh-bots-live': 'chip', title: `${t('stage_working')}: ${activityLine(t, a)}`, className: 'dshb-livechip' },
+        h(StatusDot, { status: 'running', size: 6 }),
+        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, h(ActivityWords, { t, a })),
+        h('span', { className: 'dshb-live-time', style: { flex: 'none' } }, fmtElapsed(t, now - (Number(a.stepAt) || now))),
+      );
+    }
+
     /** One task in a list: title and stage, then bot, who asked, where from and when, then the last report. */
     function TaskRow({ t, row, onOpen = openTicket, showBot = true }) {
       const at = row.updatedAt ?? row.createdAt;
       const last = row.lastReport && typeof row.lastReport === 'object' ? row.lastReport : null;
+      // While its conversation runs, the last line says what it does now.
+      const live = row.stage === 'working' ? liveTask(row.id) ?? (row.activity && typeof row.activity === 'object' ? row.activity : null) : null;
       return h(
         'button',
         { type: 'button', className: 'dshb-row', 'data-dsh-bots-task': row.id, 'data-stage': row.stage, onClick: () => onOpen(row.id), style: { alignItems: 'flex-start', padding: '9px 10px' } },
@@ -2329,14 +2719,21 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             viaBadge(t, row.via),
             h('span', { style: { color: C.faint }, title: fmtDate(toMs(at)) }, fmtAgo(t, at)),
           ),
-          last && str(last.preview).trim()
+          live
             ? h(
                 'span',
-                { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
-                h(ReportChip, { t, status: last.status }),
-                h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, str(last.preview)),
+                { 'data-dsh-bots-task-live': row.id, style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
+                h(StatusDot, { status: 'running', size: 6 }),
+                h(LiveLine, { t, a: live, attr: row.id, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }),
               )
-            : null,
+            : last && str(last.preview).trim()
+              ? h(
+                  'span',
+                  { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.muted, minWidth: 0 } },
+                  h(ReportChip, { t, status: last.status }),
+                  h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 } }, str(last.preview)),
+                )
+              : null,
         ),
       );
     }
@@ -2459,6 +2856,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const name = botName(t, v.botId);
       const stage = v.stage;
       const open = !FINISHED.includes(stage) && !v.ended;
+      // What its conversation does right now (the quick poll, else the view's).
+      const live = open ? liveTask(id) ?? (v.activity && typeof v.activity === 'object' ? v.activity : null) : null;
       const archived = Boolean(v.archivedAt || v.archived);
       const after = (r, okText) => {
         if (r && r.ok !== false) {
@@ -2558,6 +2957,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           h(
             'div',
             { style: { maxWidth: 820, display: 'flex', flexDirection: 'column', gap: 22 } },
+            live ? h('div', { className: 'dshb-card', 'data-dsh-bots-ticket-live': id, style: { padding: '4px 12px 8px', borderColor: tint(C.ok, 35) } }, h(WorkingRow, { t, bot: botById(v.botId), a: live, attr: id })) : null,
             stage === 'failed' && v.error ? h('div', { 'data-dsh-bots-ticket-error': true, style: { display: 'flex', gap: 8, padding: '10px 12px', borderRadius: 10, border: `1px solid ${tint(C.error, 40)}`, background: tint(C.error, 8), fontSize: SMALL, color: C.primary } }, h('span', { style: { color: C.error, display: 'inline-flex', paddingTop: 2 } }, Icon.alert(14)), h('span', { style: { minWidth: 0, wordBreak: 'break-word' } }, str(v.error))) : null,
             h(
               'div',
@@ -3083,7 +3483,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             h(
               Section,
               { title: t('secAvatar') },
-              h(AvatarEditor, { t, avatar: draft.avatar, name: draft.name || bot.name, onChange: (avatar) => set({ avatar }), onUpload: upload, onGenerate: generate, onClear: clearAvatar, imageGen: catalog?.imageGen === true, generating }),
+              h(AvatarEditor, { t, avatar: draft.avatar, name: draft.name || bot.name, onChange: (avatar) => set({ avatar }), onUpload: upload, onGenerate: generate, onClear: clearAvatar, imageGen: catalog?.imageGen === true, generating: generating || liveBot(bot).avatarPending }),
             ),
             h(
               Section,
@@ -4874,7 +5274,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const [confirm, setConfirm] = useState(false);
       const [opening, setOpening] = useState(false);
       const isPrimary = bot.id === primaryId || bot.role === 'primary';
-      const status = bot.status ?? 'offline';
+      // Working on a task counts as working, as in the list.
+      const live = liveBot(bot);
+      const status = live.status === 'running' || live.activity || botTaskActivity(bot.id) ? 'running' : (live.status ?? 'offline');
       const open = () => {
         setOpening(true);
         Promise.resolve(env.openBot(bot)).finally(() => setOpening(false));
@@ -4912,7 +5314,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           h(
             'div',
             { style: { display: 'flex', alignItems: 'center', gap: 14 } },
-            h(Avatar, { avatar: bot.avatar, name: bot.name || bot.handle, size: 56, status, ring: isPrimary, title: t(`status_${status}`) }),
+            h(Avatar, { avatar: bot.avatar, name: bot.name || bot.handle, size: 56, status, ring: isPrimary, pending: liveBot(bot).avatarPending, title: liveBot(bot).avatarPending ? t('avatarDrawing') : t(`status_${status}`) }),
             h(
               'div',
               { style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 } },
@@ -5633,7 +6035,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const [form, setForm] = useState(null);
       const [busy, setBusy] = useState(false);
       useEffect(() => {
-        void getJson('settings').then((r) => r?.settings && setForm({ ...r.settings, tickets: { ...TICKET_DEFAULTS, ...(r.settings.tickets ?? {}) } }));
+        void getJson('settings').then((r) => r?.settings && setForm({ ...r.settings, tickets: { ...TICKET_DEFAULTS, ...(r.settings.tickets ?? {}) }, display: { botMessages: 'line', ...(r.settings.display ?? {}) } }));
       }, []);
       const set = (part, patch) => setForm((f) => ({ ...f, [part]: { ...f[part], ...patch } }));
       const models = Array.isArray(catalog?.models) ? catalog.models : [];
@@ -5641,7 +6043,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         setBusy(true);
         const tk = form.tickets;
         const tickets = { maxWorking: Math.round(numberOr(tk.maxWorking, TICKET_DEFAULTS.maxWorking, 1)), stallMinutes: numberOr(tk.stallMinutes, TICKET_DEFAULTS.stallMinutes, 1), archiveHours: numberOr(tk.archiveHours, TICKET_DEFAULTS.archiveHours, 0) };
-        postJson('settings', { patch: { tickets, topics: { idleHours: Number(form.topics.idleHours) || 0, maxContextK: Number(form.topics.maxContextK) || 0 }, memory: form.memory } })
+        postJson('settings', { patch: { display: { botMessages: form.display.botMessages }, tickets, topics: { idleHours: Number(form.topics.idleHours) || 0, maxContextK: Number(form.topics.maxContextK) || 0 }, memory: form.memory } })
           .then((r) => {
             if (r?.ok) {
               tookSettings(r.settings);
@@ -5664,6 +6066,21 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         !form
           ? h('div', { style: { color: C.faint, fontSize: SMALL } }, t('loading'))
           : [
+              h(
+                Section,
+                { key: 'chat', title: t('setChat') },
+                row(
+                  t('setBotMessages'),
+                  t(`setBotMessagesHint_${form.display.botMessages}`),
+                  h(
+                    'div',
+                    { className: 'dshb-seg', role: 'radiogroup', 'aria-label': t('setBotMessages'), 'data-dsh-bots-setting': 'botMessages' },
+                    ['line', 'short', 'full'].map((v) =>
+                      h('button', { key: v, type: 'button', role: 'radio', 'aria-checked': form.display.botMessages === v, 'data-active': form.display.botMessages === v, 'data-dsh-bots-bot-messages': v, onClick: () => set('display', { botMessages: v }) }, t(`botMessages_${v}`)),
+                    ),
+                  ),
+                ),
+              ),
               h(
                 Section,
                 { key: 'tasks', title: t('setTasks') },
@@ -6841,6 +7258,49 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         chatEmptyTitle: 'Say hi to {name}',
         chatEmptyBody: 'Messages you send land in this bot’s own conversation, where it works on them with its persona, skills and apps.',
         working: '{name} is working…',
+        workingPlain: 'Working…',
+        liveTotal: 'step {n} · {time} so far',
+        elapsedS: '{s}s',
+        elapsedM: '{m}m {s}s',
+        elapsedH: '{h}h {m}m',
+        avatarDrawing: 'Drawing a new avatar…',
+        act_thinking: 'Thinking',
+        act_writing: 'Writing the reply',
+        act_run: 'Running {detail}',
+        act_run_bare: 'Running a command',
+        act_read: 'Reading {detail}',
+        act_read_bare: 'Reading a file',
+        act_edit: 'Editing {detail}',
+        act_edit_bare: 'Editing a file',
+        act_write: 'Writing {detail}',
+        act_write_bare: 'Writing a file',
+        act_find: 'Looking for {detail}',
+        act_find_bare: 'Looking through files',
+        act_search: 'Searching for “{detail}”',
+        act_search_bare: 'Searching the web',
+        act_fetch: 'Reading {detail}',
+        act_fetch_bare: 'Reading a web page',
+        act_delegate: 'Handing work to {detail}',
+        act_followup: 'Writing to task {detail}',
+        act_report: 'Reporting back',
+        act_ask: 'Asking you',
+        act_draw: 'Drawing a picture',
+        act_helper: 'Helper: {detail}',
+        act_helper_bare: 'Working with a helper',
+        act_skill: 'Using the skill {detail}',
+        act_skill_bare: 'Loading a skill',
+        act_memory: 'Searching memory for “{detail}”',
+        act_memory_bare: 'Searching memory',
+        act_remember: 'Updating memory',
+        act_reply: 'Replying in a chat',
+        act_recall: 'Looking up {detail}',
+        act_recall_bare: 'Looking something up',
+        act_team: 'Updating the team',
+        act_schedule: 'Scheduling',
+        act_plan: 'Updating its plan',
+        act_job: 'Checking a background job',
+        act_office: 'Working on a document',
+        act_tool: 'Using {detail}',
         composer: 'Message @{handle}',
         composerHint: 'Enter to send · Shift+Enter for a new line',
         fullTranscript: 'Full transcript in its conversation',
@@ -7441,6 +7901,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         routerNoticeOpen: 'Open its profile',
         routerNoticeOk: 'Got it',
         setTasks: 'Tasks',
+        setChat: 'Chat',
+        setBotMessages: 'Messages between bots',
+        setBotMessagesHint_line: 'One line each: who hands what to whom, its stage and time. A click opens the task.',
+        setBotMessagesHint_short: 'The one line and the first two lines of the message.',
+        setBotMessagesHint_full: 'The whole message, with the task card of a delegation.',
+        botMessages_line: 'One line',
+        botMessages_short: 'Short',
+        botMessages_full: 'Full',
         setMaxWorking: 'Tasks worked on at once',
         setMaxWorkingHint: 'More wait in line. A follow-up from you can use one extra.',
         setStall: 'Minutes before a quiet task counts as stuck',
@@ -7666,6 +8134,49 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         chatEmptyTitle: '和 {name} 打个招呼',
         chatEmptyBody: '你发的消息会进入这个 Bot 自己的会话，它会用自己的人设、技能和应用来处理。',
         working: '{name} 正在工作…',
+        workingPlain: '工作中…',
+        liveTotal: '第 {n} 步 · 已用 {time}',
+        elapsedS: '{s} 秒',
+        elapsedM: '{m} 分 {s} 秒',
+        elapsedH: '{h} 小时 {m} 分',
+        avatarDrawing: '正在画新头像…',
+        act_thinking: '思考中',
+        act_writing: '正在写回复',
+        act_run: '运行 {detail}',
+        act_run_bare: '运行命令',
+        act_read: '读取 {detail}',
+        act_read_bare: '读取文件',
+        act_edit: '修改 {detail}',
+        act_edit_bare: '修改文件',
+        act_write: '写入 {detail}',
+        act_write_bare: '写文件',
+        act_find: '查找 {detail}',
+        act_find_bare: '查找文件',
+        act_search: '搜索“{detail}”',
+        act_search_bare: '联网搜索',
+        act_fetch: '阅读 {detail}',
+        act_fetch_bare: '阅读网页',
+        act_delegate: '把工作交给 {detail}',
+        act_followup: '给任务 {detail} 发消息',
+        act_report: '汇报进展',
+        act_ask: '在问你',
+        act_draw: '画图中',
+        act_helper: '助手：{detail}',
+        act_helper_bare: '让助手帮忙',
+        act_skill: '使用技能 {detail}',
+        act_skill_bare: '加载技能',
+        act_memory: '搜索记忆“{detail}”',
+        act_memory_bare: '搜索记忆',
+        act_remember: '更新记忆',
+        act_reply: '回复聊天',
+        act_recall: '查阅 {detail}',
+        act_recall_bare: '查阅记录',
+        act_team: '调整团队',
+        act_schedule: '安排定时任务',
+        act_plan: '更新计划',
+        act_job: '查看后台任务',
+        act_office: '处理文档',
+        act_tool: '使用 {detail}',
         composer: '给 @{handle} 发消息',
         composerHint: 'Enter 发送 · Shift+Enter 换行',
         fullTranscript: '完整记录在它的会话里',
@@ -8255,6 +8766,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         routerNoticeOpen: '打开它的资料页',
         routerNoticeOk: '知道了',
         setTasks: '任务',
+        setChat: '聊天',
+        setBotMessages: 'Bot 之间的消息',
+        setBotMessagesHint_line: '每条一行：谁把什么交给谁、进度和时间。点一下打开任务。',
+        setBotMessagesHint_short: '一行摘要，再加消息的前两行。',
+        setBotMessagesHint_full: '完整消息，委派附任务卡片。',
+        botMessages_line: '一行',
+        botMessages_short: '简短',
+        botMessages_full: '完整',
         setMaxWorking: '同时进行的任务数',
         setMaxWorkingHint: '多出来的排队等候。你的跟进消息可以多占一个名额。',
         setStall: '多少分钟没动静算卡住',

@@ -82,9 +82,20 @@ letters `ABCDEFGHJKLMNOPQRSTWXYZ`; the Host has the same `initialsOf` in lib/sto
 `catalog.imageGen: boolean` — whether `generate_image` is available.
 
 The tools manage avatars too (0.8): `bot_update` and `bot_create` take `avatar_prompt` (a picture drawn by the
-Images plugin from that description; without the plugin the result says so and the rest of the change still
+Images plugin from that description; without the plugin the result says so at once and the rest of the change still
 applies) and `avatar_file` (an absolute path to a PNG, JPEG, WebP or GIF of at most 2 MB); `bot_update` also takes
-`avatar_clear: true` (back to initials).
+`avatar_clear: true` (back to initials). Called from a bot's home or task Session (or a helper of one), a drawing runs
+in the background: the call returns at once, and when the drawing ends that conversation gets one note, steered
+(an idle home starts a turn; several notes arriving together are one step), with the message id `bots:avatar:<job>`
+and source `{ kind: 'agent-message', form: 'relay' }`: `[Avatar ready] The new avatar of @x (Name) is ready…`,
+`[Avatar failed] The picture for @x could not be drawn: <reason>. Its avatar is unchanged.`, or `[Avatar dropped] …`
+when another conversation or the panel changed that avatar meanwhile. A home's turn takes the note like a report: the
+chats of the turn that asked are its Threads, so the answer to the person goes there. A task Session gets it like any
+message for its task (not after the task ended). Only the latest drawing asked for a bot counts: a newer one, a
+picture file, `avatar_clear`, new letters or colour, a panel upload or clear replaces it (one replaced from the same
+conversation sends nothing). Drawings are kept in memory only: a restart drops them without a note. From a
+conversation of no bot, and through `avatar/generate`, the call waits for the picture as before; while any drawing
+runs, `state.bots[].avatarPending` is `true`.
 
 ### Apps
 `App = { id, template, name, serverName, enabled, values: {[fieldKey]: string}, config: {command?, args?, env?, url?, headers?} }`.
@@ -315,6 +326,10 @@ TaskView = { id, bot, trigger: 'user'|'chat'|'schedule'|'dm', via?, from?, sched
 | GET | `settings` | – | `{ settings }` |
 | POST | `settings` | `{ patch: {topics?: {idleHours, maxContextK}, memory?: {auto, model, dream, dreamTime}} }` | `{ ok, settings }` |
 
+`settings.display = { botMessages: 'line' | 'short' | 'full' }` (0.8; default `'line'`, anything else reads as
+`'line'`): how a chat in the panel shows messages between bots (one line each; that and two lines of the text; the
+whole message with a delegation's task card). `POST settings` takes it in `patch`; `state.display` carries it.
+
 ## v0.8 — tasks, the router, chat threads
 
 A **task** is work one bot hands another, done in a Harness Session of its own (`ticket-<id>`). The code calls it a
@@ -364,7 +379,26 @@ state += {
 }
 state.sessionMap                       // also maps each unarchived task Session to its bot
 state.bots[].tickets = { working, question, stalled, queued }   // counts of unarchived tasks
+state += {
+  at: number,                          // the Host's clock (ms), to time what runs
+  taskActivity: { [ticketId]: Activity & { botId, title } },   // open tasks whose Session runs now
+  display: { botMessages: 'line' | 'short' | 'full' },
+}
+state.bots[].activity?: Activity       // its home Session runs now
+state.bots[].avatarPending?: true      // a picture is being drawn for it
 ```
+`Activity` is what a Session does right now, while a turn runs: `{ kind: 'thinking' | 'tool' | 'writing', tool?, detail?,
+startedAt, stepAt, steps }`. `tool` is the running tool's name; `detail` a summary of what it works on, ≤ 80
+characters, only for tools the Host knows: a shell command's first line (`bash`, `pwsh`), a file's name (`read`,
+`edit`, `write`), the search words (`web_search`, `…_search`, `grep`), a page's host and path (`web_fetch`), the
+@handle work is handed to (`bot_send_message` with `to`; `#<id>` with `ticket`; none for a report), a skill's name.
+Channel tokens and anything shaped or named like a key, token or password are replaced with `<redacted>`; tool
+results are never read. `startedAt`: the turn's start; `stepAt`: the current activity's; `steps`: model calls so far
+in the turn. The panel words it from `tool`, `detail` and its own dictionary.
+
+| Method | Path | Body | Answer |
+|---|---|---|---|
+| GET | `activity` | – | `{ ok, at, bots: { [botId]: { status, activity?, avatarPending? } }, taskActivity }`: the live part of `state`, cheap to poll; the panel polls it every 1.5 s while anything runs |
 
 ### Task data
 `tickets.json` under the cache, written whole through a temp file (mode 0600):
@@ -421,7 +455,8 @@ Stage (`stageOf`, first match wins; "answered" means `lastHumanAt` or `lastReque
 
 ```ts
 TicketRow = { id, title, botId, stage, requester: { kind: 'bot', botId } | { kind: 'user' }, via?, createdAt, updatedAt,
-  lastReport?: { status, preview /* ≤ 200 characters */ } }
+  lastReport?: { status, preview /* ≤ 200 characters */ },
+  activity?: Activity /* while its Session runs (see State) */ }
 TicketView = TicketRow & {
   text, parentId?, children: string[], requesterSessionId: string | null, origin: { threadKey?, via?, who?, replyTo? },
   startedAt?, ended?, error?, archivedAt?, nudgedAt?, stalledAt?, retries? /* when not 0 */,

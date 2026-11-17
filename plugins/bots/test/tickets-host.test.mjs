@@ -504,6 +504,163 @@ test('upkeep archives the Sessions of tickets ended long enough ago', async () =
   await api.routes.settings.post({ patch: { tickets: { archiveHours: 24 } } });
 });
 
+/** An Images plugin stand-in whose drawings finish when the test says (`finish`, `fail`), or are dropped when aborted. */
+function fakeImages(png) {
+  const pending = [];
+  const tool = {
+    name: 'generate_image',
+    execute: (args, { signal } = {}) =>
+      new Promise((resolve, reject) => {
+        const job = { prompt: args.prompt, finish: () => resolve({ images: [{ path: png, mediaType: 'image/png' }] }), fail: (error) => reject(error) };
+        signal?.addEventListener?.('abort', () => reject(signal.reason ?? new Error('aborted')), { once: true });
+        pending.push(job);
+      }),
+  };
+  h.ctx.tools.get = (name) => (name === 'generate_image' ? tool : h.tools.get(name));
+  return { pending, off: () => delete h.ctx.tools.get };
+}
+const avatarNotes = (agent, from) => agent.deliveries.slice(from).filter((d) => /^bots:avatar:/.test(d.message.id));
+
+test('an avatar a bot asks for is drawn in the background: the call returns at once and a note arrives when it is ready', async () => {
+  const png = join(process.env.DSH_HOME, 'drawn.png');
+  writeFileSync(png, Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
+  const images = fakeImages(png);
+  try {
+    const router = agentOf(atlasSid);
+    const before = router.deliveries.length;
+    const r = await call('bot_update', { bot: '@scout', bio: 'Finds things', avatar_prompt: 'a fox in a scarf' }, atlasSid);
+    // Returned while the picture is still being drawn; the rest of the change is in.
+    assert.equal(images.pending.length, 1);
+    assert.match(images.pending[0].prompt, /a fox in a scarf/);
+    assert.match(r.text, /being drawn in the background/);
+    assert.match(r.text, /do not wait or poll for it/);
+    assert.equal(api.store.get(scout().id).bio, 'Finds things');
+    assert.equal(api.store.get(scout().id).avatar.kind, 'initials');
+    assert.equal(api.state().bots.find((b) => b.id === scout().id).avatarPending, true);
+    assert.equal(api.routes.activity.get().bots[scout().id].avatarPending, true);
+    images.pending[0].finish();
+    await sleep(20);
+    const saved = api.store.get(scout().id).avatar;
+    assert.deepEqual([saved.kind, saved.source], ['image', 'ai']);
+    assert.match(saved.url, /\/avatar\/[^?]+\?v=/, 'a new cache-buster, so the panel shows the new picture');
+    assert.equal(api.state().bots.find((b) => b.id === scout().id).avatarPending, undefined);
+    // One note, steered into the conversation that asked.
+    const notes = avatarNotes(router, before);
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0].mode, 'steer');
+    assert.deepEqual(notes[0].message.source, { kind: 'agent-message', form: 'relay' });
+    assert.match(textOfMsg(notes[0].message), /^\[Avatar ready\] The new avatar of @scout \(Scout\) is ready/);
+    // It wakes the router, whose answer is for the person, where they asked (the panel here).
+    await h.step(atlasSid, { answer: 'Scout has a new fox avatar.' });
+    const reply = api.store.messages({ bot: atlas().id }).find((m) => m.kind === 'reply' && m.text === 'Scout has a new fox avatar.');
+    assert.ok(reply);
+    assert.equal(reply.thread, `panel:${atlasSid}`);
+  } finally {
+    images.off();
+  }
+});
+
+test('a drawing that fails tells the conversation why; one replaced from the same conversation says nothing; two that end together arrive together', async () => {
+  const png = join(process.env.DSH_HOME, 'drawn.png');
+  const images = fakeImages(png);
+  try {
+    const router = agentOf(atlasSid);
+    let before = router.deliveries.length;
+    await call('bot_update', { bot: '@forge', avatar_prompt: 'a robot' }, atlasSid);
+    images.pending[0].fail(new Error('the prompt was refused by the content policy'));
+    await sleep(20);
+    let notes = avatarNotes(router, before);
+    assert.equal(notes.length, 1);
+    assert.equal(textOfMsg(notes[0].message), '[Avatar failed] The picture for @forge could not be drawn: the prompt was refused by the content policy. Its avatar is unchanged.');
+    assert.equal(api.store.get(forge().id).avatar.kind, 'initials');
+    assert.equal(api.state().bots.find((b) => b.id === forge().id).avatarPending, undefined);
+    await h.step(atlasSid, { answer: 'The robot avatar could not be drawn.' });
+    // Asked again before the first is ready: only the second counts, and only it is announced.
+    before = router.deliveries.length;
+    await call('bot_update', { bot: '@forge', avatar_prompt: 'a robot, blue' }, atlasSid);
+    await call('bot_update', { bot: '@forge', avatar_prompt: 'a robot, green' }, atlasSid);
+    await call('bot_update', { bot: '@scout', avatar_prompt: 'an owl' }, atlasSid);
+    await sleep(10);
+    assert.equal(avatarNotes(router, before).length, 0, 'the replaced drawing sends nothing');
+    images.pending[2].finish();
+    images.pending[3].finish();
+    await sleep(20);
+    notes = avatarNotes(router, before);
+    assert.deepEqual(notes.map((d) => d.mode), ['steer', 'steer']);
+    assert.match(textOfMsg(notes[0].message), /@forge/);
+    assert.match(textOfMsg(notes[1].message), /@scout/);
+    // Both wait for the router's next step together.
+    assert.equal(router.inbox.nextStep.filter((m) => /^bots:avatar:/.test(m.id)).length, 2);
+    await h.step(atlasSid, { answer: 'Both avatars are ready.' });
+  } finally {
+    images.off();
+  }
+});
+
+test('without the Images plugin a drawing is refused at once, nothing runs in the background; a person’s own conversation still waits for one', async () => {
+  const router = agentOf(atlasSid);
+  const before = router.deliveries.length;
+  const none = await call('bot_update', { bot: '@scout', avatar_prompt: 'a cat' }, atlasSid);
+  assert.match(none.text, /No picture was drawn: AI avatars need the Images plugin/);
+  assert.equal(api.state().bots.find((b) => b.id === scout().id).avatarPending, undefined);
+  await sleep(10);
+  assert.equal(avatarNotes(router, before).length, 0);
+  // From a conversation no bot owns, the call waits and says how it went.
+  const png = join(process.env.DSH_HOME, 'drawn.png');
+  const images = fakeImages(png);
+  try {
+    const waiting = call('bot_update', { bot: '@scout', avatar_prompt: 'a cat' }, 'someone-elses-session');
+    await sleep(5);
+    assert.equal(api.state().bots.find((b) => b.id === scout().id).avatarPending, true);
+    images.pending[0].finish();
+    const r = await waiting;
+    assert.match(r.text, /Its avatar is now a picture drawn from that description/);
+    assert.equal(avatarNotes(router, before).length, 0);
+  } finally {
+    images.off();
+  }
+});
+
+test('live status: a home and a task Session say what they do now, with secrets kept out, and stop when the turn ends', async () => {
+  await api.routes.settings.post({ patch: { tickets: { maxWorking: 8 } } });
+  const r = await call('bot_send_message', { to: '@scout', text: 'Look up the Safari 18 release notes.' }, atlasSid);
+  const t = api.tickets.get(r.ticket.id);
+  const ev = (sessionId, type, data = {}) => h.emit('session/event', { id: sessionId }, { type, data });
+  ev(t.sessionId, 'turn/start', { turn: 1 });
+  ev(t.sessionId, 'step/start', { turn: 1, step: 1 });
+  ev(t.sessionId, 'tool/call', { callId: 'c1', name: 'bash', arguments: JSON.stringify({ command: 'GITHUB_TOKEN=ghp_abcdefghijklmnop1234 curl https://api.github.com' }) });
+  const live = api.state().taskActivity[t.id];
+  assert.equal(live.kind, 'tool');
+  assert.equal(live.tool, 'bash');
+  assert.equal(live.detail, 'GITHUB_TOKEN=<redacted> curl https://api.github.com');
+  assert.equal(live.botId, scout().id);
+  assert.equal(live.steps, 1);
+  assert.ok(live.startedAt > 0 && live.stepAt >= live.startedAt);
+  assert.doesNotMatch(JSON.stringify(api.state()), /ghp_/);
+  // The task's row and view carry it too; the cheap poll has it.
+  assert.equal(api.ticketView(api.tickets.get(t.id)).activity.tool, 'bash');
+  assert.equal((await api.request('GET', '/__dsh_bots/tickets?limit=50')).items.find((x) => x.id === t.id).activity.detail, live.detail);
+  assert.equal(api.routes.activity.get().taskActivity[t.id].tool, 'bash');
+  // Never a tool's result.
+  ev(t.sessionId, 'tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'TOP SECRET OUTPUT' }] } });
+  assert.equal(api.state().taskActivity[t.id].kind, 'thinking');
+  assert.doesNotMatch(JSON.stringify(api.state()), /TOP SECRET OUTPUT/);
+  // A home: the router handing work out.
+  ev(atlasSid, 'turn/start', { turn: 9 });
+  ev(atlasSid, 'tool/call', { callId: 'c2', name: 'bot_send_message', arguments: JSON.stringify({ to: 'forge', text: 'x' }) });
+  assert.deepEqual(api.state().bots.find((b) => b.id === atlas().id).activity.detail, '@forge');
+  assert.equal(api.routes.activity.get().bots[atlas().id].activity.tool, 'bot_send_message');
+  ev(atlasSid, 'turn/end', { turn: 9, reason: { kind: 'completed' } });
+  ev(t.sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } });
+  assert.equal(api.state().bots.find((b) => b.id === atlas().id).activity, undefined);
+  assert.equal(api.state().taskActivity[t.id], undefined);
+  // The display setting: one line by default, and it saves.
+  assert.deepEqual(api.state().display, { botMessages: 'line' });
+  assert.equal((await api.routes.settings.post({ patch: { display: { botMessages: 'full' } } })).settings.display.botMessages, 'full');
+  assert.equal((await api.routes.settings.post({ patch: { display: { botMessages: 'huge' } } })).settings.display.botMessages, 'line');
+  await api.routes.settings.post({ patch: { tickets: { maxWorking: 2 } } });
+});
+
 test('after a restart: working tickets keep their slots, queued ones start, a pending assignment is not sent twice', async () => {
   const home = mkdtempSync(join(tmpdir(), 'bots-restart-'));
   const dir = join(home, 'cache', 'bots');

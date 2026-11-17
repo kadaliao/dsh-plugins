@@ -2,8 +2,8 @@
  * Team-wide settings of the bots plugin, kept in `settings.json` beside the
  * roster: how the dispatcher works, how many tasks (tickets) run at once and
  * when they are judged stalled or archived, when a bot starts a new topic by
- * itself, how memory is written and consolidated, and the prices the usage
- * view counts with.
+ * itself, how memory is written and consolidated, the prices the usage
+ * view counts with, and how the panel shows what bots say to each other.
  *
  * @module @kadaliao/dsh-bots/lib/settings
  */
@@ -50,7 +50,17 @@ export const DEFAULTS = Object.freeze({
   prices: Object.freeze({}),
   /** Keep a ChatGPT login borrowed from the Codex CLI in sync with ~/.codex/auth.json. */
   codex: Object.freeze({ sync: false, route: false }),
+  display: Object.freeze({
+    /**
+     * Messages between bots in a chat (delegations, reports, DMs): 'line' (who to whom, the task or
+     * first sentence, its stage and time), 'short' (that and two lines of the text), 'full' (all of it).
+     */
+    botMessages: 'line',
+  }),
 });
+
+/** The levels of `display.botMessages`, least to most. */
+export const BOT_MESSAGE_LEVELS = Object.freeze(['line', 'short', 'full']);
 
 const num = (v, d, min, max) => {
   const n = Number(v);
@@ -117,6 +127,7 @@ export function normalizeSettings(input) {
     },
     prices,
     codex: { sync: s.codex?.sync === true, route: s.codex?.route === true },
+    display: { botMessages: BOT_MESSAGE_LEVELS.includes(s.display?.botMessages) ? s.display.botMessages : DEFAULTS.display.botMessages },
   };
 }
 

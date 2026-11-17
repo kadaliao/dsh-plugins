@@ -88,7 +88,18 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
   the request came from, what was asked, the reports, related tasks and the task's usage, with **Open conversation**,
   **Retry**, **Mark done**, **Stop** and a box for a message to the task (to answer its question, for instance);
   **Mark done** and **Stop** both end the task and stop its bot's work on it at once. Each bot's **Tasks** tab lists
-  what it is working on, and in a bot's chat a hand-off shows as a card that opens the task.
+  what it is working on.
+- **What bots say to each other stays out of your way**: in a bot's chat, hand-offs, reports and messages between
+  bots run together as one quiet group under your conversation with it. **Settings → Chat → Messages between bots**
+  sets how much of them shows, the same on every device: **One line** (the default: who hands what to whom, its
+  stage and time; a click opens the task), **Short** (and the first two lines of the message) or **Full** (the whole
+  message, with the task's card). The bot's replies to you read like the main conversation, without a box.
+- **Live status**: while a bot works, its chat says what it is doing right now and for how long ("Running
+  `npm test` · 42s", "Thinking · 8s", then the step and the time since it started), and so do the bot's line in
+  the list, its tasks in **Tasks** and on the task's page, and a hand-off whose task is running ("Searching for
+  “indoor venues” · 12s"). It moves on its own: the panel checks every second or two while something runs. Only the
+  tool and a short, clipped summary of what it works on show (a command's first line, a file's name, the words
+  searched for), with keys and tokens taken out; never what a tool returned.
 - **Removing a bot** stops the tasks it was doing, which are archived, and the tasks it asked for, which stay in
   **Tasks**, stopped, where you can still retry one.
 - **Settings → Tasks**: how many tasks are worked on at once (4), the minutes before a quiet task counts as stuck
@@ -201,7 +212,10 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 
 - **Schedules** are ordinary Harness scheduled tasks, also on the Automation page.
 - **AI avatars**: with the [Images plugin](../images), draw a bot's avatar from its persona. A bot can do it too:
-  ask the dispatcher to give the team new avatars and describe the look, or point it at an image file.
+  ask the dispatcher to give the team new avatars and describe the look, or point it at an image file. A bot's
+  drawing runs in the background, so it goes on answering you: a ring turns around the avatar while the picture is
+  drawn, the new one shows when it is ready, and the bot hears that it is ready (or why it failed) and tells you. A restart of
+  Harness drops a drawing under way.
 - **Logos**: each app in the gallery shows its vendor's own logo (the App Store icon where there is an app,
   otherwise the logo from the vendor's site or repository). The logos are their owners' trademarks and
   only identify each service.

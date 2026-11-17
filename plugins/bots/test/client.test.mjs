@@ -1194,6 +1194,8 @@ test('with the shell renderer available, bot replies use its MarkdownText', asyn
   assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-md'] === 'harness').length, 1);
   assert.equal(seenProps.at(-1).text, TABLE_REPLY);
   assert.equal(seenProps.at(-1).labels.code.copyLabel, 'Copy');
+  // A reply to you reads as the main conversation does (its body text, not the muted compact one).
+  assert.equal(seenProps.at(-1).variant, 'body');
   // One labels object across renders, so the renderer keeps its parse.
   assert.equal(new Set(seenProps.map((p) => p.labels)).size, 1);
 });
@@ -1942,7 +1944,7 @@ test('usage: a by-task table, and the old task counts read as runs', async () =>
   assert.equal(zh.tasks, '任务');
 });
 
-test('chat: a delegation shows as a task card that opens the detail; a report shows its status', async () => {
+test('chat: a delegation is one line that opens its task; a report shows its status', async () => {
   await withFixtures(() => {
     MESSAGES.push(
       { id: 'm6', from: 'bot-a', to: 'bot-b', text: 'Draw two logos and ask Kada', at: Date.now() - 4_000, kind: 'dm', ticket: 'tquestion' },
@@ -1952,11 +1954,10 @@ test('chat: a delegation shows as a task card that opens the detail; a report sh
     const v = await openTab('chat', 'bot-a');
     await v.rerender();
     const [card] = findAll(v.tree, (n) => n.props['data-dsh-bots-task-card'] === 'tquestion');
-    assert.ok(card, 'the delegation is a task card');
+    assert.ok(card, 'the delegation is a row that links to its task');
     const words = collect(card).join(' ');
-    assert.match(words, /Which logo do you prefer\?/, 'the title from the Host');
-    assert.match(words, /Task · Bob/);
-    assert.match(words, /Needs your answer/);
+    assert.match(words, /^AD Ada .*Bob Which logo do you prefer\? Needs your answer \d/, 'who to whom, the title from the Host, its stage, the time');
+    assert.equal(card.type, 'button');
     assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-report']).map((n) => n.props['data-dsh-bots-report']), ['question']);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-task-card']).length, 1, 'a report is not a second card');
     card.props.onClick({ stopPropagation() {} });
@@ -2107,6 +2108,154 @@ test('chat: a follow-up that went straight to a task links to it; a stuck or fai
     assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-event-task']).map((n) => n.props['data-dsh-bots-event-task']), ['tstalled1', 'tfailed01', 'tworking1', 'tquestion']);
     v.hooks.runCleanups();
   });
+});
+
+// --- bot-to-bot detail, replies, live status -----------------------------------------------------
+
+/** Patch the fixtures' state and bots for one test, then put them back. */
+async function withLive(patch, fn) {
+  const saved = { state: { ...STATE }, bots: BOTS.map((b) => ({ ...b })) };
+  Object.assign(STATE, patch.state ?? {});
+  (patch.bots ?? []).forEach((p, i) => p && Object.assign(BOTS[i], p));
+  try {
+    await fn();
+  } finally {
+    for (const k of Object.keys(STATE)) if (!(k in saved.state)) delete STATE[k];
+    Object.assign(STATE, saved.state);
+    BOTS.forEach((b, i) => {
+      for (const k of Object.keys(b)) if (!(k in saved.bots[i])) delete b[k];
+      Object.assign(b, saved.bots[i]);
+    });
+  }
+}
+const DELEGATIONS = () => {
+  const now = Date.now();
+  MESSAGES.push(
+    { id: 'm30', from: 'bot-a', to: 'bot-b', text: 'Fix the login bug\nIt fails on Safari only; the cookie may lack SameSite.\nDeploy when green.', at: now - 5_000, kind: 'dm', ticket: 'tworking1' },
+    { id: 'm31', from: 'bot-a', to: 'bot-c', text: 'Translate the docs into German.', at: now - 4_000, kind: 'dm', ticket: 'tqueued01' },
+    { id: 'm32', from: 'bot-b', to: 'bot-a', text: 'Found the cause. The cookie had no SameSite flag.', at: now - 3_000, kind: 'dm', ticket: 'tworking1', status: 'progress' },
+    { id: 'm33', from: 'bot-a', to: 'user', text: 'Two tasks are out: **Bob** fixes the login bug, 研究员 translates the docs.', at: now - 2_000, kind: 'reply' },
+  );
+};
+
+test('chat: what bots say to each other runs as one compact group; Short adds two lines, Full the whole message and its task card', async () => {
+  await withFixtures(DELEGATIONS, async () => {
+    const v = await openTab('chat', 'bot-a');
+    await v.rerender();
+    // One line (the default): consecutive messages between bots are one group of rows, no nested task cards.
+    let groups = findAll(v.tree, (n) => n.props['data-dsh-bots-traffic']);
+    assert.deepEqual(groups.map((g) => [g.props['data-dsh-bots-traffic'], g.props['data-level']]), [[1, 'line'], [3, 'line']]);
+    const rows = findAll(groups[1], (n) => n.props.className === 'dshb-tline');
+    assert.deepEqual(rows.map((r) => collect(findAll(r, (n) => n.props['data-dsh-bots-subject'])[0]).join('')), ['Fix the login bug', 'Translate the docs', 'Found the cause.']);
+    assert.equal(findAll(groups[1], (n) => n.props['data-dsh-bots-short']).length, 0);
+    assert.equal(findAll(groups[1], (n) => n.props['data-dsh-bots-task-card']).length, 2, 'the rows themselves link to the tasks');
+    assert.equal(findAll(groups[1], (n) => n.props['data-dsh-bots-task-card'] && n.type !== 'button').length, 0);
+    assert.deepEqual(findAll(groups[1], (n) => n.props['data-dsh-bots-report']).map((n) => n.props['data-dsh-bots-report']), ['progress']);
+    // The time shows once for a run in the same minute.
+    assert.ok(findAll(groups[1], (n) => n.props.className === 'dshb-ttime').filter((n) => collect(n).join('') !== '').length <= 2);
+    // A DM without a task unfolds where it is.
+    const dm = findAll(groups[0], (n) => n.props['data-dsh-bots-expand'])[0];
+    dm.props.onClick({ stopPropagation() {} });
+    await v.rerender();
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-traffic'])[0]).join(' '), /Please write the code/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-traffic'])[0].children[0].props['data-level'], 'full');
+    // The reply to you is no box: full-strength text, as in the main conversation.
+    const [reply] = findAll(v.tree, (n) => n.props['data-dsh-bots-reply-text']);
+    assert.equal(reply.props.className, 'dshb-reply');
+    assert.equal(reply.props.style, undefined);
+    assert.match(source, /\.dshb-reply\{font-size:\$\{FONT\};line-height:1\.65;color:\$\{C\.primary\}/);
+    v.hooks.runCleanups();
+  });
+  await withLive({ state: { display: { botMessages: 'short' } } }, () =>
+    withFixtures(DELEGATIONS, async () => {
+      const v = await openTab('chat', 'bot-a');
+      await v.rerender();
+      const group = findAll(v.tree, (n) => n.props['data-dsh-bots-traffic'])[1];
+      assert.equal(group.props['data-level'], 'short');
+      // The text's first lines under each row; the row names a title only when the text does not start with it.
+      assert.deepEqual(findAll(group, (n) => n.props['data-dsh-bots-short']).map((n) => collect(n).join('').slice(0, 30)), ['Fix the login bug\nIt fails on ', 'Translate the docs into German', 'Found the cause. The cookie ha']);
+      assert.deepEqual(findAll(group, (n) => n.props['data-dsh-bots-subject']).map((n) => collect(n).join('')), ['', '', '']);
+      v.hooks.runCleanups();
+    }),
+  );
+  await withLive({ state: { display: { botMessages: 'full' } } }, () =>
+    withFixtures(DELEGATIONS, async () => {
+      const v = await openTab('chat', 'bot-a');
+      await v.rerender();
+      const group = findAll(v.tree, (n) => n.props['data-dsh-bots-traffic'])[1];
+      assert.equal(group.props['data-level'], 'full');
+      // The task card is back for a delegation, and the whole text; a report links to its task.
+      assert.deepEqual(findAll(group, (n) => n.props['data-dsh-bots-task-card']).map((n) => n.props['data-dsh-bots-task-card']), ['tworking1', 'tqueued01']);
+      assert.match(collect(group).join(' '), /Deploy when green/);
+      assert.deepEqual(findAll(group, (n) => n.props['data-dsh-bots-report-task']).map((n) => n.props['data-dsh-bots-report-task']), ['tworking1']);
+      v.hooks.runCleanups();
+    }),
+  );
+});
+
+test('settings: messages between bots take one of three levels and save with the rest', async () => {
+  const v = await openView('data-dsh-bots-settings');
+  assert.match(collect(v.tree).join(' '), /Messages between bots/);
+  const choice = () => findAll(v.tree, (n) => n.props['data-dsh-bots-bot-messages']).map((n) => [n.props['data-dsh-bots-bot-messages'], n.props['data-active'], collect(n).join('')]);
+  assert.deepEqual(choice(), [['line', true, 'One line'], ['short', false, 'Short'], ['full', false, 'Full']], 'one line when the Host has none');
+  click(v.tree, 'data-dsh-bots-bot-messages', 'short');
+  await v.rerender(1);
+  assert.deepEqual(choice().map((c) => c[1]), [false, true, false]);
+  assert.match(collect(v.tree).join(' '), /first two lines/);
+  click(v.tree, 'data-dsh-bots-settings-save');
+  await v.rerender();
+  const post = v.posts.find((p) => p.path.endsWith('/settings'));
+  assert.deepEqual(post.body.patch.display, { botMessages: 'short' });
+  v.hooks.runCleanups();
+});
+
+test('live status: the working row, the list, the tasks and a delegation say what runs now, and its time ticks', async () => {
+  const now = Date.now();
+  const home = { kind: 'tool', tool: 'bash', detail: 'npm test', startedAt: now - 65_000, stepAt: now - 42_000, steps: 3 };
+  const task = { kind: 'thinking', startedAt: now - 20_000, stepAt: now - 5_000, steps: 2, botId: 'bot-b', title: 'Fix the login bug' };
+  await withLive({ state: { at: now, taskActivity: { tworking1: task } }, bots: [{ status: 'running', activity: home }, { status: 'idle', avatarPending: true }] }, () =>
+    withFixtures(DELEGATIONS, async () => {
+      const v = await openTab('chat', 'bot-a');
+      await v.rerender();
+      // The chat's working row: who, what it runs (the command set off as code), for how long, then the step and the turn's time.
+      const [row] = findAll(v.tree, (n) => n.props['data-dsh-bots-working'] === 'bot-a');
+      assert.ok(row);
+      const words = collect(row).join('');
+      assert.match(words, /^ADAdaRunning npm test · 4[23]s/);
+      assert.match(words, /step 3 · 1m 0[56]s so far$/);
+      assert.equal(collect(findAll(row, (n) => n.props.className === 'dshb-act-code')[0]).join(''), 'npm test');
+      // The list: a bot at work says what it does; one working on a task says what the task does; a picture being drawn turns on its avatar.
+      const rail = (id) => findAll(v.tree, (n) => n.props['data-dsh-bots-row'] === id)[0];
+      assert.match(collect(findAll(rail('bot-a'), (n) => n.props['data-dsh-bots-row-live'] === 'home')[0]).join(''), /^Running npm test· 4[23]s$/);
+      assert.match(collect(findAll(rail('bot-b'), (n) => n.props['data-dsh-bots-row-live'] === 'task')[0]).join(''), /^Thinking· [56]s$/);
+      assert.equal(findAll(rail('bot-b'), (n) => n.props['data-dsh-bots-avatar-pending']).length, 1);
+      assert.equal(findAll(rail('bot-b'), (n) => n.props['data-dsh-bots-status'] === 'running').length, 1, 'working on a task is working');
+      // The delegation's stage is alive while its task runs.
+      const [chip] = findAll(v.tree, (n) => n.props['data-dsh-bots-live'] === 'chip');
+      assert.match(collect(chip).join(''), /^Thinking[56]s$/);
+      // The Tasks view: the working task's last line.
+      click(v.tree, 'data-dsh-bots-tasks-entry');
+      await v.rerender();
+      assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-task-live'] === 'tworking1')[0]).join(''), /^Thinking· [56]s$/);
+      v.hooks.runCleanups();
+    }),
+  );
+});
+
+test('live words: each kind of tool reads as what it does, in English and Chinese', async () => {
+  const { exports } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const { en, zh } = seen.locale.dict;
+  const acts = Object.keys(en).filter((k) => k.startsWith('act_'));
+  assert.ok(acts.length >= 30);
+  for (const k of [...acts, 'workingPlain', 'liveTotal', 'elapsedS', 'elapsedM', 'elapsedH', 'avatarDrawing', 'setChat', 'setBotMessages', 'botMessages_line', 'botMessages_short', 'botMessages_full', 'setBotMessagesHint_line', 'setBotMessagesHint_short', 'setBotMessagesHint_full']) {
+    assert.ok(zh[k] && zh[k] !== en[k], `zh ${k}`);
+    if (/\{detail\}/.test(en[k])) assert.match(zh[k], /\{detail\}/, `zh ${k} keeps the detail`);
+  }
+  // Every kind of tool the client names has its words.
+  for (const id of ['run', 'read', 'edit', 'write', 'find', 'search', 'fetch', 'helper', 'skill', 'memory', 'recall']) assert.ok(en[`act_${id}`] && en[`act_${id}_bare`], id);
+  for (const id of ['delegate', 'followup', 'report', 'ask', 'draw', 'remember', 'reply', 'team', 'schedule', 'plan', 'job', 'office', 'tool', 'thinking', 'writing']) assert.ok(en[`act_${id}`], id);
 });
 
 test('task words: every stage, report status and action has English and Chinese', async () => {
