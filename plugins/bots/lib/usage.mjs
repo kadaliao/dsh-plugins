@@ -5,11 +5,18 @@
  * request (a message from the user or a chat app, a scheduled run, a DM from
  * another bot) until it is idle again.
  *
+ * In 0.8 a run (the plan's "回合"; still `task` in these files) may belong to a
+ * ticket: work one bot handed another, done in a conversation of its own.
+ *
  * Files under the bots cache:
- * - `usage.jsonl`: `{t, b, s, k?, r, p, m, i, o, cr, cw}` — time, bot, session,
- *   task, kind ('chat' | 'compaction' | 'memory' | 'dream'), provider, model,
- *   uncached input, output, cache-read and cache-write tokens.
- * - `tasks.jsonl`: `{id, b, s, trigger, via?, from?, sched?, title, start, end, status, topic?}`.
+ * - `usage.jsonl`: `{t, b, s, k?, tk?, r, p, m, i, o, cr, cw}` — time, bot, session,
+ *   task (run), ticket, kind ('chat' | 'compaction' | 'memory' | 'dream'), provider,
+ *   model, uncached input, output, cache-read and cache-write tokens. The ticket is
+ *   `tk`, not `t` as PLAN-0.8 §5 says: `t` has always been the time here.
+ * - `tasks.jsonl`: `{id, b, s, t?, trigger, via?, from?, sched?, title, start, end, status, topic?}`;
+ *   `t` is the ticket the run belongs to.
+ *
+ * Rows written before 0.8 have neither and read as before.
  *
  * Rows older than {@link KEEP_DAYS} are dropped when the file is compacted.
  *
@@ -29,12 +36,13 @@ const COMPACT_SLACK = 5000;
 const int = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v)) : 0);
 
 /** A ledger row from a Harness TokenUsage. */
-export function usageRow({ at, botId, sessionId, taskId, kind = 'chat', provider, model, usage }) {
+export function usageRow({ at, botId, sessionId, taskId, ticketId, kind = 'chat', provider, model, usage }) {
   return {
     t: Number(at) || Date.now(),
     b: botId,
     s: sessionId ?? '',
     ...(taskId ? { k: taskId } : {}),
+    ...(ticketId ? { tk: ticketId } : {}),
     r: kind,
     p: String(provider ?? ''),
     m: String(model ?? ''),
@@ -161,9 +169,12 @@ function add(acc, r, cost) {
 const round = (cost) => Object.fromEntries(Object.entries(cost).map(([k, v]) => [k, Number(v.toFixed(6))]));
 
 /**
- * A usage report for the page.
+ * A usage report for the page. `tickets` groups the window's calls by the
+ * ticket they were made for (with how many of its runs ended in the window);
+ * `opts.tickets` names them.
  * @param {{calls: object[], tasks: object[], running?: object[]}} data
- * @param {{range?: string, bot?: string, tz?: number, now?: number, price: (model: string) => object|null, schedules?: Map<string,string>}} opts
+ * @param {{range?: string, bot?: string, tz?: number, now?: number, price: (model: string) => object|null, schedules?: Map<string,string>,
+ *   tickets?: Map<string, {title?: string, botId?: string}>}} opts
  */
 export function report(data, opts) {
   const now = opts.now ?? Date.now();
@@ -188,6 +199,7 @@ export function report(data, opts) {
   const byModel = new Map();
   const byKind = new Map();
   const byTask = new Map();
+  const byTicket = new Map();
   const series = new Map();
   for (const r of calls) {
     if (r.t >= from - span && r.t < from) add(prev, r, costOf(price(r.m), r));
@@ -199,6 +211,7 @@ export function report(data, opts) {
     add(byModel.get(mk) ?? byModel.set(mk, { ...blank(), provider: r.p, model: r.m }).get(mk), r, cost);
     add(byKind.get(r.r) ?? byKind.set(r.r, blank()).get(r.r), r, cost);
     if (r.k) add(byTask.get(r.k) ?? byTask.set(r.k, blank()).get(r.k), r, cost);
+    if (r.tk) add(byTicket.get(r.tk) ?? byTicket.set(r.tk, { ...blank(), bot: r.b }).get(r.tk), r, cost);
     const b = keyOf(r.t);
     const s = series.get(b) ?? series.set(b, { t: b, tokens: 0, byBot: {}, cost: {} }).get(b);
     s.tokens += rowTokens(r);
@@ -222,6 +235,7 @@ export function report(data, opts) {
       ...(t.via ? { via: t.via } : {}),
       ...(t.from ? { from: t.from } : {}),
       ...(t.sched ? { sched: t.sched } : {}),
+      ...(t.t ? { ticket: t.t } : {}),
       title: t.title,
       start: t.start,
       end: t.end ?? null,
@@ -242,6 +256,8 @@ export function report(data, opts) {
     s.tokens += t.tokens;
     for (const [c, v] of Object.entries(t.cost)) s.cost[c] = (s.cost[c] ?? 0) + v;
   }
+  const runsOf = new Map();
+  for (const t of [...tasks, ...running]) if (t.t) runsOf.set(t.t, (runsOf.get(t.t) ?? 0) + 1);
   const fin = (o) => ({ ...o, cost: round(o.cost) });
   const sortTokens = (a, b) => b.tokens - a.tokens;
   return {
@@ -255,7 +271,37 @@ export function report(data, opts) {
     schedules: [...sched.values()].map((s) => ({ ...s, cost: round(s.cost) })).sort(sortTokens),
     tasks: [...live, ...finished.slice().sort((a, b) => (b.end ?? b.start) - (a.end ?? a.start))].slice(0, 60),
     topTasks: finished.slice().sort(sortTokens).slice(0, 10),
+    tickets: [...byTicket]
+      .map(([id, { bot: rowBot, ...v }]) => ({ id, bot: opts.tickets?.get(id)?.botId ?? rowBot, title: opts.tickets?.get(id)?.title ?? '', runs: runsOf.get(id) ?? 0, ...fin(v) }))
+      .sort(sortTokens)
+      .slice(0, 60),
   };
+}
+
+/**
+ * Everything one ticket cost, whenever it ran: its runs (finished and running,
+ * oldest first) with their tokens and cost, and the totals, which also count
+ * calls made for the ticket outside a run (its memory summary).
+ * @param {{calls: object[], tasks: object[], running?: object[]}} data
+ * @param {string} ticketId
+ * @param {(model: string) => object|null} price
+ */
+export function ticketUsage(data, ticketId, price) {
+  const calls = data.calls.filter((r) => r.tk === ticketId);
+  const total = blank();
+  const byRun = new Map();
+  for (const r of calls) {
+    const cost = costOf(price(r.m), r);
+    add(total, r, cost);
+    if (r.k) add(byRun.get(r.k) ?? byRun.set(r.k, blank()).get(r.k), r, cost);
+  }
+  const runs = [...data.tasks.filter((t) => t.t === ticketId), ...(data.running ?? []).filter((t) => t.t === ticketId)]
+    .sort((a, b) => a.start - b.start)
+    .map((t) => {
+      const u = byRun.get(t.id) ?? blank();
+      return { id: t.id, trigger: t.trigger, title: t.title, start: t.start, end: t.end ?? null, status: t.status ?? (t.end ? 'done' : 'running'), tokens: u.tokens, calls: u.calls, cost: round(u.cost) };
+    });
+  return { runs, tokens: total.tokens, calls: total.calls, cost: round(total.cost), unpriced: total.unpriced };
 }
 
 /** Today's tokens per bot, for the roster. */

@@ -196,6 +196,10 @@ export function normalizeBot(input, prev, seed = 0) {
   const skills = capSkillsOn(dedupeSkills((Array.isArray(b.skills) ? b.skills : []).map(normalizeSkill).filter(Boolean)).slice(0, MAX_SKILLS), prev?.skills);
   const apps = (Array.isArray(b.apps) ? b.apps : []).map(normalizeApp).filter(Boolean).slice(0, 20);
   const deny = Array.isArray(b.tools?.deny) ? [...new Set(b.tools.deny.map(String).filter(Boolean))].slice(0, 200) : [];
+  // Tools a router dispatcher keeps although router mode denies them by default. An update whose
+  // `tools` leaves the list out (a panel that only edits `deny`) keeps the stored one.
+  const allowIn = Array.isArray(b.tools?.routerAllow) ? b.tools.routerAllow : input?.tools && typeof input.tools === 'object' && !('routerAllow' in input.tools) ? prev?.tools?.routerAllow : undefined;
+  const routerAllow = Array.isArray(allowIn) ? [...new Set(allowIn.map(String).filter(Boolean))].slice(0, 200) : [];
   const model =
     b.model && typeof b.model === 'object' && str(b.model.provider) && str(b.model.model)
       ? { provider: str(b.model.provider, 200), model: str(b.model.model, 200), ...(/^[a-z0-9_-]{1,32}$/.test(str(b.model.reasoningEffort)) ? { reasoningEffort: b.model.reasoningEffort } : {}) }
@@ -210,7 +214,7 @@ export function normalizeBot(input, prev, seed = 0) {
     persona: str(b.persona, 20_000),
     skills,
     apps,
-    tools: { deny },
+    tools: { deny, ...(routerAllow.length ? { routerAllow } : {}) },
     model,
     sessionId: typeof b.sessionId === 'string' && b.sessionId !== '' ? b.sessionId : null,
     createdAt: prev?.createdAt ?? now,

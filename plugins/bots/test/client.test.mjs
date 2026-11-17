@@ -262,6 +262,51 @@ const SOURCES = {
 const SETTINGS = { topics: { idleHours: 6, maxContextK: 128 }, memory: { auto: true, model: null, dream: true, dreamTime: '03:00' }, prices: {}, codex: { sync: false } };
 const PRICES = { overrides: {}, list: { name: 'LiteLLM', count: 1800, fetchedAt: Date.now() }, models: [{ model: 'm', provider: 'p', price: { input: 1, output: 2, currency: 'USD', source: 'catalog' } }, { model: 'mystery-1', provider: 'q', price: null }] };
 
+// Tasks (tickets in the Host), in the shapes of PLAN-0.8 §6.3.
+const MIN = 60_000;
+const ticketRow = (id, botId, stage, title, extra = {}) => ({ id, title, botId, stage, requester: { kind: 'bot', botId: 'bot-a' }, createdAt: Date.now() - 90 * MIN, updatedAt: Date.now() - 10 * MIN, ...extra });
+const TICKETS = [
+  ticketRow('tfailed01', 'bot-b', 'failed', 'Deploy the site', { updatedAt: Date.now() - 20 * MIN, lastReport: { status: 'blocked', preview: 'No access to the server' } }),
+  ticketRow('tquestion', 'bot-b', 'question', 'Which logo do you prefer?', { via: 'telegram', updatedAt: Date.now() - 2 * MIN, lastReport: { status: 'question', preview: 'Blue or green?' } }),
+  ticketRow('tstalled1', 'bot-c', 'stalled', 'Write the launch post', { requester: { kind: 'user' }, via: 'panel', updatedAt: Date.now() - 40 * MIN }),
+  ticketRow('tworking1', 'bot-b', 'working', 'Fix the login bug', { via: 'slack', updatedAt: Date.now() - 5 * MIN, lastReport: { status: 'progress', preview: 'Found the cause' } }),
+  ticketRow('tqueued01', 'bot-c', 'queued', 'Translate the docs', { updatedAt: Date.now() - 1 * MIN }),
+  ticketRow('tdone0001', 'bot-b', 'done', 'Weekly numbers', { updatedAt: Date.now() - 60 * MIN, lastReport: { status: 'done', preview: 'Revenue up 12%' } }),
+  ticketRow('tstopped1', 'bot-c', 'stopped', 'Old idea', { updatedAt: Date.now() - 300 * MIN }),
+];
+const TICKET_DETAIL = {
+  tquestion: {
+    text: 'Draw two logo options and ask Kada which one he prefers.',
+    sessionId: 'ticket-tquestion',
+    origin: { threadKey: 'telegram:tg:42', via: 'telegram', who: 'Kada', label: 'Telegram · Kada' },
+    threads: [{ key: 'telegram:tg:42', kind: 'telegram', label: 'Telegram · Kada' }],
+    parentId: 'tworking1',
+    children: ['tqueued01'],
+    reports: [
+      { at: Date.now() - 2 * MIN, status: 'question', text: '**Blue** or green?' },
+      { at: Date.now() - 30 * MIN, status: 'progress', text: 'Drafted two options.' },
+    ],
+    runs: [{ id: 'r1', tokens: 12_000, cost: { USD: 0.02 } }, { id: 'r2', tokens: 3_000, cost: { USD: 0.005 } }],
+    // The Host's totals include the task's memory summary, outside any run.
+    usage: { tokens: 16_000, calls: 4, cost: { USD: 0.03 } },
+  },
+  tfailed01: {
+    text: 'Deploy it.',
+    sessionId: 'ticket-tfailed01',
+    error: 'Connection refused (3 tries).',
+    origin: { threadKey: 'panel:sess-a', who: 'the user' },
+    threads: [{ key: 'panel:sess-a', kind: 'panel', label: 'Panel' }],
+    reports: [],
+    runs: [],
+    ended: { at: Date.now() - 20 * MIN, by: 'system', outcome: 'failed' },
+  },
+};
+const ticketView = (id) => {
+  const row = TICKETS.find((r) => r.id === id);
+  return row ? { ...row, reports: [], threads: [], runs: [], sessionId: `ticket-${id}`, ...(TICKET_DETAIL[id] ?? {}) } : null;
+};
+const TICKET_AFTER = { stop: 'stopped', retry: 'working', close: 'done' };
+
 function mockFetch(posts = []) {
   globalThis.fetch = async (url, init) => {
     const path = String(url);
@@ -276,7 +321,22 @@ function mockFetch(posts = []) {
       if (path.endsWith('/skills/write')) return { ok: true, json: async () => ({ ok: true, sessionId: 'sess-b' }) };
       if (path.endsWith('/apps/import')) return { ok: true, json: async () => ({ ok: true, bot: BOTS[1], added: body.names }) };
       if (path.endsWith('/save')) return { ok: true, json: async () => ({ ok: true, bot: { ...BOTS[0], ...body.bot, id: body.bot.id ?? 'bot-new' } }) };
+      const act = /^\/__dsh_bots\/tickets\/([^/]+)\/(stop|retry|close|message)$/.exec(path);
+      if (act) {
+        const view = ticketView(decodeURIComponent(act[1]));
+        if (!view) return { ok: false, status: 404, json: async () => null };
+        return { ok: true, json: async () => (act[2] === 'message' ? { ok: true } : { ...view, stage: TICKET_AFTER[act[2]] }) };
+      }
       return { ok: true, json: async () => ({ ok: true }) };
+    }
+    if (path.startsWith('/__dsh_bots/tickets/')) {
+      const view = ticketView(decodeURIComponent(path.slice('/__dsh_bots/tickets/'.length).split('?')[0]));
+      return view ? { ok: true, json: async () => view } : { ok: false, status: 404, json: async () => null };
+    }
+    if (path.startsWith('/__dsh_bots/tickets')) {
+      const q = new URL(path, 'http://x').searchParams;
+      const items = TICKETS.filter((r) => !q.get('bot') || r.botId === q.get('bot'));
+      return { ok: true, json: async () => ({ items, next_offset: null }) };
     }
     if (path.startsWith('/__dsh_bots/state')) return { ok: true, json: async () => STATE };
     if (path.startsWith('/__dsh_bots/catalog')) return { ok: true, json: async () => CATALOG };
@@ -1398,7 +1458,7 @@ test('memory tab: notes with pin and delete, recent work, topics and a new-topic
   assert.match(text, /Kada prefers short answers/);
   assert.match(text, /after a task/);
   assert.match(text, /Sent the morning brief with three items/);
-  assert.match(text, /tasks done: 3/);
+  assert.match(text, /runs: 3/);
   assert.match(text, /after a quiet spell/);
   assert.match(text, /Plan the launch · Weekly review/);
   assert.match(text, /Memory work runs on each bot’s own model/);
@@ -1456,7 +1516,7 @@ test('chat: a topic divider and a new-topic button; the profile groups models an
     const [box] = findAll(v.tree, (n) => n.props['data-dsh-bots-thread'] === 'bot-a');
     assert.equal(typeof box.props.onScroll, 'function');
     assert.ok(box.props.ref && box.children[0].props.ref, 'the box and its content are both referenced');
-    assert.match(text, /This topic: 12K context · tasks done: 2/);
+    assert.match(text, /This topic: 12K context · runs: 2/);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-new-topic'] === 'chat')[0].props.disabled, true, 'not while the bot is running');
     const p = await openTab('profile', 'bot-b');
     text = collect(p.tree).join(' ');
@@ -1508,4 +1568,460 @@ test('the model picker groups by provider and shows the thinking levels of the c
     CATALOG.models = saved;
     delete CATALOG.defaultModel;
   }
+});
+
+// --- tasks, the dispatcher's mode, the router notice ------------------------------------------
+
+/** Run `fn` with extra fields on the shared fixtures, put back afterwards. */
+async function withTaskState(patch, fn) {
+  const saved = { state: { ...STATE }, bots: BOTS.map((b) => ({ tickets: b.tickets, tools: b.tools })) };
+  Object.assign(STATE, patch.state ?? {});
+  (patch.bots ?? []).forEach((p, i) => p && Object.assign(BOTS[i], p));
+  try {
+    await fn();
+  } finally {
+    for (const k of Object.keys(STATE)) if (!(k in saved.state)) delete STATE[k];
+    Object.assign(STATE, saved.state);
+    BOTS.forEach((b, i) => {
+      if (saved.bots[i].tickets === undefined) delete b.tickets;
+      else b.tickets = saved.bots[i].tickets;
+      b.tools = saved.bots[i].tools;
+    });
+  }
+}
+const ATTENTION = TICKETS.filter((r) => ['question', 'failed', 'stalled'].includes(r.stage));
+const TASK_COUNTS = { bots: [null, { tickets: { working: 1, question: 1, stalled: 0, queued: 0 } }, { tickets: { working: 0, question: 0, stalled: 1, queued: 1 } }] };
+const click = (tree, attr, value = true) => {
+  const [node] = findAll(tree, (n) => (value === true ? Boolean(n.props[attr]) : n.props[attr] === value));
+  assert.ok(node, `${attr}=${value}`);
+  node.props.onClick?.({ stopPropagation() {} });
+};
+const confirmButton = (tree) => findAll(tree, (n) => n.type === 'button' && n.props.className === 'dshb-btn dshb-btn-primary dshb-btn-danger')[0];
+
+test('tasks: the rail badge counts what needs you; the view groups needs you, in progress and recently done', async () => {
+  await withTaskState({ state: { attention: ATTENTION }, ...TASK_COUNTS }, async () => {
+    const v = await openView('data-dsh-bots-tasks-entry');
+    const [badge] = findAll(v.tree, (n) => n.props['data-dsh-bots-tasks-badge'] !== undefined);
+    assert.equal(badge.props['data-dsh-bots-tasks-badge'], 3);
+    assert.equal(collect(badge).join(''), '3');
+    assert.equal(badge.props['aria-label'], '3 need you');
+    const groups = findAll(v.tree, (n) => n.props['data-dsh-bots-task-group']).map((n) => [n.props['data-dsh-bots-task-group'], findAll(n, (x) => x.props['data-dsh-bots-task']).map((x) => x.props['data-dsh-bots-task'])]);
+    assert.deepEqual(groups, [
+      ['needs', ['tquestion', 'tfailed01', 'tstalled1']],
+      ['progress', ['tqueued01', 'tworking1']],
+      ['done', ['tdone0001', 'tstopped1']],
+    ]);
+    const row = findAll(v.tree, (n) => n.props['data-dsh-bots-task'] === 'tquestion')[0];
+    const text = collect(row).join(' ');
+    assert.match(text, /Which logo do you prefer\?/);
+    assert.match(text, /Needs your answer/);
+    assert.match(text, /Bob/);
+    assert.match(text, /asked by Ada/);
+    assert.match(text, /Telegram/);
+    assert.match(text, /2 min ago/);
+    assert.match(text, /Blue or green\?/);
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-task'] === 'tstalled1')[0]).join(' '), /asked by you .*Panel/);
+    // Filtering by bot asks the Host for that bot's tasks.
+    const fetched = [];
+    const inner = globalThis.fetch;
+    globalThis.fetch = (url, init) => (fetched.push(String(url)), inner(url, init));
+    findAll(v.tree, (n) => n.props['data-dsh-bots-tasks-bot'])[0].props.onChange({ target: { value: 'bot-c' } });
+    await v.rerender();
+    assert.ok(fetched.includes('/__dsh_bots/tickets?limit=200&bot=bot-c'), fetched.join(', '));
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-task']).map((n) => n.props['data-dsh-bots-task']), ['tstalled1', 'tqueued01', 'tstopped1']);
+    v.hooks.runCleanups();
+  });
+  // No tasks at all: one empty state; per-section words when only some are empty.
+  const saved = TICKETS.splice(0);
+  try {
+    const v = await openView('data-dsh-bots-tasks-entry');
+    const text = collect(v.tree).join(' ');
+    assert.match(text, /No tasks yet/);
+    assert.match(text, /hands work to a teammate/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-tasks-badge'] !== undefined).length, 0);
+    assert.match(text, /Work handed to your bots/);
+    v.hooks.runCleanups();
+    TICKETS.push(saved.find((r) => r.id === 'tdone0001'));
+    const w = await openView('data-dsh-bots-tasks-entry');
+    const words = collect(w.tree).join(' ');
+    assert.match(words, /Nothing needs you right now\./);
+    assert.match(words, /Nothing is in progress\./);
+    assert.match(words, /Weekly numbers/);
+    w.hooks.runCleanups();
+  } finally {
+    TICKETS.splice(0, TICKETS.length, ...saved);
+  }
+});
+
+test('tasks: the detail shows who, where from, the reports and usage; each action posts to its route', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const posts = mockFetch();
+  const panel = seen.slots.find((s) => s.options.name === 'main').component;
+  let tree = await renderSettled(panel, {}, hooks);
+  const rerender = async (n = 3) => {
+    for (let i = 0; i < n; i += 1) {
+      hooks.rewind();
+      tree = panel({});
+      await flush();
+    }
+    hooks.rewind();
+    tree = panel({});
+    return tree;
+  };
+  click(tree, 'data-dsh-bots-tasks-entry');
+  await rerender();
+  click(tree, 'data-dsh-bots-task', 'tquestion');
+  await rerender();
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-ticket'] === 'tquestion').length, 1);
+  let text = collect(tree).join(' ');
+  assert.match(text, /Which logo do you prefer\?/);
+  assert.match(text, /Needs your answer/);
+  const fact = (name) => collect(findAll(tree, (n) => n.props['data-dsh-bots-ticket-fact'] === name)[0]).join(' ');
+  assert.match(fact('bot'), /Bob/);
+  assert.match(fact('requester'), /Ada/);
+  assert.match(fact('from'), /Telegram · Kada/);
+  assert.doesNotMatch(fact('from'), /Kada .*Kada/, 'who is not repeated when the label has it');
+  assert.match(text, /Draw two logo options/);
+  // Reports in time order, rendered like bot replies (Markdown).
+  assert.deepEqual(findAll(tree, (n) => n.props['data-dsh-bots-report-item']).map((n) => n.props['data-dsh-bots-report-item']), ['progress', 'question']);
+  assert.ok(findAll(tree, (n) => n.type === 'strong' && collect(n).join('') === 'Blue').length === 1);
+  // Usage: the Host's totals, and the number of runs.
+  const tile = (attr) => collect(findAll(tree, (n) => n.props['data-dsh-bots-tile'] === attr)[0]).join(' ');
+  assert.match(tile('ticket-tokens'), /Tokens 16K/);
+  assert.match(tile('ticket-cost'), /\$0\.030/);
+  assert.match(tile('ticket-runs'), /Runs 2/);
+  // The parent and the sub-task show as cards with their own titles.
+  assert.match(collect(findAll(tree, (n) => n.props['data-dsh-bots-ticket-parent'] === 'tworking1')[0]).join(' '), /Fix the login bug/);
+  assert.match(collect(findAll(tree, (n) => n.props['data-dsh-bots-ticket-children'] === 1)[0]).join(' '), /Translate the docs .*Queued/);
+  // A question asks for an answer; no Retry for an open question.
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-ticket-composer'])[0].props.placeholder, 'Answer Bob…');
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-ticket-retry']).length, 0);
+
+  // Open conversation: the task's own Harness session.
+  click(tree, 'data-dsh-bots-ticket-open', 'tquestion');
+  assert.deepEqual(seen.opened, ['ticket-tquestion']);
+
+  // Stop and Close ask first, then post.
+  click(tree, 'data-dsh-bots-ticket-stop', 'tquestion');
+  await rerender(1);
+  assert.match(collect(tree).join(' '), /Stop “Which logo do you prefer\?”\?/);
+  assert.equal(posts.length, 0, 'nothing posted before confirming');
+  confirmButton(tree).props.onClick();
+  await rerender();
+  assert.ok(posts.some((p) => p.path === '/__dsh_bots/tickets/tquestion/stop'));
+  assert.match(collect(tree).join(' '), /Task stopped\./);
+  click(tree, 'data-dsh-bots-ticket-close', 'tquestion');
+  await rerender(1);
+  assert.match(collect(tree).join(' '), /Mark “Which logo do you prefer\?” done\?/);
+  confirmButton(tree).props.onClick();
+  await rerender();
+  assert.ok(posts.some((p) => p.path === '/__dsh_bots/tickets/tquestion/close'));
+
+  // A message to the task: Enter sends it.
+  const [box] = findAll(tree, (n) => n.props['data-dsh-bots-ticket-composer'] === 'tquestion');
+  box.props.onChange({ target: { value: 'Blue, please' } });
+  await rerender(1);
+  let prevented = false;
+  findAll(tree, (n) => n.props['data-dsh-bots-ticket-composer'] === 'tquestion')[0].props.onKeyDown({ key: 'Enter', shiftKey: false, preventDefault: () => (prevented = true) });
+  await rerender();
+  assert.equal(prevented, true);
+  assert.deepEqual(posts.find((p) => p.path === '/__dsh_bots/tickets/tquestion/message').body, { text: 'Blue, please' });
+
+  // Back to the list, then a failed task: its error, and Retry without asking.
+  click(tree, 'data-dsh-bots-tasks-back');
+  await rerender();
+  assert.ok(findAll(tree, (n) => n.props['data-dsh-bots-tasks']).length === 1);
+  click(tree, 'data-dsh-bots-task', 'tfailed01');
+  await rerender();
+  text = collect(tree).join(' ');
+  assert.match(text, /Connection refused \(3 tries\)\./);
+  assert.equal(fact('from'), 'From The Bots panel', 'the panel in words of the page, not the Host');
+  assert.doesNotMatch(text, /the user/);
+  assert.match(text, /No model calls yet\./);
+  assert.match(text, /No report yet\. Bob reports when it is done, stuck, or has a question\./);
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-ticket-stop']).length, 0, 'a failed task that ended cannot be stopped');
+  click(tree, 'data-dsh-bots-ticket-retry', 'tfailed01');
+  await rerender();
+  assert.ok(posts.some((p) => p.path === '/__dsh_bots/tickets/tfailed01/retry'));
+  hooks.runCleanups();
+});
+
+test('tasks: a bot page lists its open tasks and links to all of them', async () => {
+  await withTaskState(TASK_COUNTS, async () => {
+    const v = await openTab('tasks', 'bot-b');
+    const tab = findAll(v.tree, (n) => n.props['data-dsh-bots-tab'] === 'tasks')[0];
+    assert.match(collect(tab).join(' '), /Tasks 2/);
+    const [list] = findAll(v.tree, (n) => n.props['data-dsh-bots-bot-tasks'] === 'bot-b');
+    const ids = findAll(list, (n) => n.props['data-dsh-bots-task']).map((n) => n.props['data-dsh-bots-task']);
+    assert.deepEqual(ids, ['tquestion', 'tworking1', 'tfailed01', 'tdone0001']);
+    assert.match(collect(list).join(' '), /What Bob is working on/);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-bot-tasks-all'] === 'bot-b')[0].props.onClick();
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-tasks-bot'])[0].props.value, 'bot-b');
+    // A row opens its task.
+    click(v.tree, 'data-dsh-bots-task', 'tworking1');
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tworking1').length, 1);
+    v.hooks.runCleanups();
+  });
+});
+
+test('the dispatcher: How it works saves the team setting, and a router gets the light-model hint', async () => {
+  const v = await openTab('profile', 'bot-a');
+  const modes = () => findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-modes'])[0];
+  assert.equal(modes().props['data-dsh-bots-dispatcher-modes'], 'router', 'router unless the settings say otherwise');
+  assert.equal(modes().props.role, 'radiogroup');
+  const radio = (id) => findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-mode'] === id)[0];
+  assert.equal(radio('router').props['aria-checked'], true);
+  assert.match(collect(modes()).join(' '), /Understands, hands out, reports/);
+  assert.match(collect(modes()).join(' '), /Also does small things itself/);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 1);
+  assert.match(collect(v.tree).join(' '), /a light, fast model is enough/);
+  radio('hands-on').props.onClick();
+  await v.rerender();
+  assert.deepEqual(v.posts.find((p) => p.path.endsWith('/settings')).body, { patch: { dispatcher: 'hands-on' } });
+  assert.equal(modes().props['data-dsh-bots-dispatcher-modes'], 'hands-on');
+  assert.equal(radio('hands-on').props['aria-checked'], true);
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0, 'no hint for a hands-on dispatcher');
+  assert.match(collect(v.tree).join(' '), /Ada does small things itself again\./);
+  v.hooks.runCleanups();
+  // Only the dispatcher has it.
+  const b = await openTab('profile', 'bot-b');
+  assert.equal(findAll(b.tree, (n) => n.props['data-dsh-bots-dispatcher-modes']).length, 0);
+  assert.equal(findAll(b.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0);
+  b.hooks.runCleanups();
+});
+
+test('router mode: abilities a router goes without are marked, and each comes back through routerAllow', async () => {
+  const saved = CATALOG.abilities;
+  CATALOG.abilities = [
+    ...saved,
+    { id: 'files', name: { en: 'Files', zh: '读写文件' }, description: { en: 'Read and write files.', zh: '读写文件。' }, tools: ['read', 'write', 'edit'], available: ['read', 'write', 'edit'] },
+  ];
+  try {
+    await withTaskState({ bots: [{ tools: { deny: [] } }] }, async () => {
+      const v = await openTab('profile', 'bot-a');
+      const rows = () => findAll(v.tree, (n) => n.props['data-dsh-bots-ability']).map((n) => [n.props['data-dsh-bots-ability'], n.props['data-on']]);
+      assert.deepEqual(rows(), [['web', true], ['code', false], ['plugins', true], ['files', true]]);
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => [n.props['data-dsh-bots-router-off'], collect(n).join('')]), [['code', 'Off in Router mode'], ['files', 'Partly off in Router mode']]);
+      assert.match(collect(v.tree).join(' '), /In Router mode it does not run commands/);
+      assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-tool'] === 'bash').length, 1, 'the per-tool list marks it too');
+      // Commands back on: through routerAllow; writing files back on: its own link.
+      click(v.tree, 'data-dsh-bots-ability-switch', 'code');
+      await v.rerender(1);
+      click(v.tree, 'data-dsh-bots-router-allow', 'files');
+      await v.rerender(1);
+      assert.deepEqual(rows(), [['web', true], ['code', true], ['plugins', true], ['files', true]]);
+      assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-allowed']).map((n) => n.props['data-dsh-bots-router-allowed']), ['code', 'files']);
+      click(v.tree, 'data-dsh-bots-save');
+      await v.rerender();
+      assert.deepEqual(v.posts.find((p) => p.path.endsWith('/save')).body.bot.tools, { deny: [], routerAllow: ['bash', 'edit', 'write'] });
+      v.hooks.runCleanups();
+    });
+    // Allowed back already: switching it off again only drops it from routerAllow (hands-on keeps it).
+    await withTaskState({ bots: [{ tools: { deny: [], routerAllow: ['bash'] } }] }, async () => {
+      const v = await openTab('profile', 'bot-a');
+      assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ability'] === 'code')[0].props['data-on'], true);
+      click(v.tree, 'data-dsh-bots-ability-switch', 'code');
+      await v.rerender(1);
+      click(v.tree, 'data-dsh-bots-save');
+      await v.rerender();
+      assert.deepEqual(v.posts.find((p) => p.path.endsWith('/save')).body.bot.tools, { deny: [], routerAllow: [] });
+      v.hooks.runCleanups();
+    });
+    // A hands-on dispatcher, and every other bot, see the abilities as before.
+    const b = await openTab('profile', 'bot-b');
+    assert.equal(findAll(b.tree, (n) => n.props['data-dsh-bots-router-off'] || n.props['data-dsh-bots-router-allowed']).length, 0);
+    assert.deepEqual(findAll(b.tree, (n) => n.props['data-dsh-bots-ability']).map((n) => n.props['data-on']), [true, true, true, true]);
+    b.hooks.runCleanups();
+    // The Host's own list wins when the catalog has one.
+    CATALOG.routerDeny = ['bash'];
+    try {
+      await withTaskState({ bots: [{ tools: { deny: [] } }] }, async () => {
+        const v = await openTab('profile', 'bot-a');
+        assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => n.props['data-dsh-bots-router-off']), ['code']);
+        v.hooks.runCleanups();
+      });
+    } finally {
+      delete CATALOG.routerDeny;
+    }
+  } finally {
+    CATALOG.abilities = saved;
+  }
+});
+
+test('settings: concurrent tasks, minutes before stuck and hours before archiving save with the rest', async () => {
+  const v = await openView('data-dsh-bots-settings');
+  const text = collect(v.tree).join(' ');
+  assert.match(text, /Tasks worked on at once/);
+  assert.match(text, /Minutes before a quiet task counts as stuck/);
+  assert.match(text, /Hours before a finished task’s conversation is archived/);
+  const field = (name) => findAll(v.tree, (n) => n.props['data-dsh-bots-setting'] === name)[0];
+  assert.deepEqual(['maxWorking', 'stallMinutes', 'archiveHours'].map((k) => field(k).props.value), [4, 20, 24], 'the Host defaults when settings have none');
+  field('maxWorking').props.onChange({ target: { value: '6' } });
+  field('stallMinutes').props.onChange({ target: { value: '' } });
+  field('archiveHours').props.onChange({ target: { value: '0' } });
+  await v.rerender(1);
+  click(v.tree, 'data-dsh-bots-settings-save');
+  await v.rerender();
+  const post = v.posts.find((p) => p.path.endsWith('/settings'));
+  assert.deepEqual(post.body.patch.tickets, { maxWorking: 6, stallMinutes: 20, archiveHours: 0 });
+  assert.deepEqual(post.body.patch.topics, { idleHours: 6, maxContextK: 128 });
+  assert.equal('dispatcher' in post.body.patch, false, 'the settings dialog leaves the dispatcher mode alone');
+  v.hooks.runCleanups();
+});
+
+test('the router notice shows once, opens the dispatcher, and is dismissed through its route', async () => {
+  await withTaskState({ state: { routerNoticePending: true } }, async () => {
+    const { exports, hooks } = await loadClient();
+    const { ctx, seen } = fakeContext();
+    exports.apply(ctx);
+    const posts = mockFetch();
+    const panel = seen.slots.find((s) => s.options.name === 'main').component;
+    let tree = await renderSettled(panel, {}, hooks);
+    const [notice] = findAll(tree, (n) => n.props['data-dsh-bots-router-notice']);
+    assert.ok(notice);
+    const words = collect(notice).join(' ');
+    assert.match(words, /Your dispatcher now hands out the work/);
+    assert.match(words, /set How it works to Hands-on/);
+    // Two sentences: what changed, and where to switch back.
+    for (const lang of ['en', 'zh']) assert.equal(seen.locale.dict[lang].routerNoticeBody.split(/(?<=[.。])\s*/).filter(Boolean).length, 2, lang);
+    click(tree, 'data-dsh-bots-router-notice-open');
+    hooks.rewind();
+    tree = panel({});
+    assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-tab'] === 'profile')[0].props['data-active'], true);
+    assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-detail'] === 'bot-a').length, 1);
+    click(tree, 'data-dsh-bots-router-notice-dismiss');
+    await flush();
+    hooks.rewind();
+    tree = panel({});
+    assert.ok(posts.some((p) => p.path === '/__dsh_bots/router-notice/dismiss'));
+    assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-router-notice']).length, 0);
+    hooks.runCleanups();
+  });
+  // Without the flag: no notice.
+  const v = await openView('data-dsh-bots-usage-entry');
+  assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 0);
+  v.hooks.runCleanups();
+});
+
+test('usage: a by-task table, and the old task counts read as runs', async () => {
+  USAGE.tickets = [{ id: 'tquestion', title: 'Which logo do you prefer?', bot: 'bot-b', stage: 'question', runs: 2, tokens: 15_000, cost: { USD: 0.025 } }];
+  USAGE.tasks[1].ticket = 'tworking1';
+  try {
+    const v = await openView('data-dsh-bots-usage-entry');
+    const text = collect(v.tree).join(' ');
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-tile'] === 'runs')[0]).join(' '), /Runs 7/);
+    assert.match(text, /Recent runs/);
+    assert.match(text, /By task/);
+    assert.doesNotMatch(text, /Recent tasks/);
+    const bots = findAll(v.tree, (n) => n.props['data-dsh-bots-usage-bots'])[0];
+    assert.match(collect(bots.children[0]).join(' '), /Bot Runs Tokens Cost/);
+    const [row] = findAll(v.tree, (n) => n.props['data-dsh-bots-usage-ticket'] === 'tquestion');
+    assert.match(collect(row).join(' '), /Which logo do you prefer\? Needs your answer Bob 2 15K \$0\.025/);
+    // A run that belongs to a task links to it; a task row opens it.
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-usage-run-task'] === 'tworking1').length, 1);
+    row.props.onClick();
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tquestion').length, 1);
+    v.hooks.runCleanups();
+  } finally {
+    delete USAGE.tickets;
+    delete USAGE.tasks[1].ticket;
+  }
+  // zh: runs are 回合, by task is 按任务.
+  const { exports } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const zh = seen.locale.dict.zh;
+  assert.equal(zh.tileRuns, '回合');
+  assert.equal(zh.recentRuns, '最近的回合');
+  assert.equal(zh.byTask, '按任务');
+  assert.equal(zh.tasks, '任务');
+});
+
+test('chat: a delegation shows as a task card that opens the detail; a report shows its status', async () => {
+  await withFixtures(() => {
+    MESSAGES.push(
+      { id: 'm6', from: 'bot-a', to: 'bot-b', text: 'Draw two logos and ask Kada', at: Date.now() - 4_000, kind: 'dm', ticket: 'tquestion' },
+      { id: 'm7', from: 'bot-b', to: 'bot-a', text: 'Blue or green?', at: Date.now() - 2_000, kind: 'dm', ticket: 'tquestion', status: 'question' },
+    );
+  }, async () => {
+    const v = await openTab('chat', 'bot-a');
+    await v.rerender();
+    const [card] = findAll(v.tree, (n) => n.props['data-dsh-bots-task-card'] === 'tquestion');
+    assert.ok(card, 'the delegation is a task card');
+    const words = collect(card).join(' ');
+    assert.match(words, /Which logo do you prefer\?/, 'the title from the Host');
+    assert.match(words, /Task · Bob/);
+    assert.match(words, /Needs your answer/);
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-report']).map((n) => n.props['data-dsh-bots-report']), ['question']);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-task-card']).length, 1, 'a report is not a second card');
+    card.props.onClick({ stopPropagation() {} });
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tquestion').length, 1);
+    // The activity view marks the same two messages.
+    click(v.tree, 'data-dsh-bots-activity');
+    await v.rerender();
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-event-task']).map((n) => n.props['data-dsh-bots-event-task']), ['tquestion', 'tquestion']);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-report'] === 'question').length, 1);
+    v.hooks.runCleanups();
+  });
+});
+
+test('the conversation: bot_send_message shows the task it opened, a report its status; a task conversation’s badge opens the task', async () => {
+  const { exports, hooks } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  mockFetch();
+  const view = seen.slots.find((s) => s.options.name === 'tool.call.toolview' && s.options.key === 'bot_send_message').component;
+  const meta = { to: { id: 'bot-b', name: 'Bob', handle: 'bob', avatar: BOTS[1].avatar }, from: { id: 'bot-a', name: 'Ada', handle: 'ada', avatar: BOTS[0].avatar }, ticket: { id: 'tqueued01', title: 'Translate the docs' }, stage: 'queued' };
+  hooks.reset();
+  let tree = view({ phase: 'result', block: { callId: 'c2', call: { argsRaw: '{"to":"@bob","text":"Translate the docs into German"}' }, content: [{ type: 'text', text: 'Task tqueued01 opened' }], isError: false, meta } });
+  const [card] = findAll(tree, (n) => n.props['data-dsh-bots-task-card'] === 'tqueued01');
+  assert.match(collect(card).join(' '), /Translate the docs .*Task · Bob .*Queued/);
+  card.props.onClick({ stopPropagation() {} });
+  assert.deepEqual(seen.selected, ['bots'], 'it opens the panel on the task');
+  hooks.reset();
+  tree = view({ phase: 'result', block: { callId: 'c3', call: { argsRaw: '{"status":"done","text":"All translated."}' }, content: [], isError: false, meta: { from: meta.to, ticket: 'tqueued01' } } });
+  assert.match(collect(tree).join(' '), /Report/);
+  assert.deepEqual(findAll(tree, (n) => n.props['data-dsh-bots-report']).map((n) => n.props['data-dsh-bots-report']), ['done']);
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-task-card']).length, 0);
+  assert.equal(findAll(tree, (n) => n.props['data-dsh-bots-report-task'] === 'tqueued01').length, 1);
+
+  const badge = seen.slots.find((s) => s.options.name === 'conversation.session.header.utilities').component;
+  hooks.reset();
+  badge({ sessionId: 'ticket-tquestion' });
+  await flush();
+  await flush();
+  hooks.rewind();
+  const b = badge({ sessionId: 'ticket-tquestion' });
+  assert.equal(b.props['data-dsh-bots-badge'], 'bot-b', 'the bot from the task when the session map lacks it');
+  assert.equal(b.props['data-dsh-bots-badge-task'], 'tquestion');
+  assert.match(b.props.title, /A task of Bob: Which logo do you prefer\?/);
+  b.props.onClick();
+  assert.deepEqual(seen.selected, ['bots', 'bots']);
+  hooks.runCleanups();
+});
+
+test('task words: every stage, report status and action has English and Chinese', async () => {
+  const { exports } = await loadClient();
+  const { ctx, seen } = fakeContext();
+  exports.apply(ctx);
+  const { en, zh } = seen.locale.dict;
+  const keys = [
+    ...['question', 'failed', 'stalled', 'queued', 'working', 'done', 'stopped'].map((s) => `stage_${s}`),
+    ...['progress', 'done', 'blocked', 'question'].map((s) => `report_${s}`),
+    ...['stop', 'retry', 'close'].map((a) => `taskDid_${a}`),
+    'kind_report',
+  ];
+  for (const k of keys) {
+    assert.ok(en[k], `en ${k}`);
+    assert.ok(zh[k] && zh[k] !== en[k], `zh ${k}`);
+  }
+  // The screen says task, never ticket.
+  for (const [k, v] of Object.entries(en)) assert.doesNotMatch(String(v), /ticket/i, k);
+  for (const [k, v] of Object.entries(zh)) assert.doesNotMatch(String(v), /ticket|工单/i, k);
 });

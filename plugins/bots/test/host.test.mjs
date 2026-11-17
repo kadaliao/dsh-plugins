@@ -22,9 +22,21 @@ function fakeHarness() {
       id: sessionId,
       status: 'idle',
       session: { id: sessionId },
+      // Every delivery lands here (0.7's only way was followup); `deliveries` says how each came.
       inbox: [],
+      deliveries: [],
+      injected: [],
       followup(m) {
         agent.inbox.push(m);
+        agent.deliveries.push({ mode: 'followup', message: m });
+      },
+      steer(m) {
+        agent.inbox.push(m);
+        agent.deliveries.push({ mode: 'steer', message: m });
+      },
+      inject(m) {
+        agent.injected.push(m);
+        agent.deliveries.push({ mode: 'inject', message: m });
       },
       model: { select(sel) { agent.selected = sel; } },
       sections,
@@ -90,7 +102,8 @@ function fakeHarness() {
     },
     logger: { warn() {} },
   };
-  return { ctx, tools, agentsById, tasks, listeners, effects, emit: (n, ...a) => (listeners[n] ?? []).forEach((fn) => fn(...a)) };
+  const tools_call = (name, args, sessionId) => tools.get(name).execute(args, sessionId ? { agent: { session: { id: sessionId } } } : {});
+  return { ctx, tools, agentsById, tasks, listeners, effects, tools_call, emit: (n, ...a) => (listeners[n] ?? []).forEach((fn) => fn(...a)) };
 }
 
 const h = fakeHarness();
@@ -133,7 +146,10 @@ test('a DM creates the target conversation, applies the persona and lands in its
   assert.match(text, /Deep dive/);
 });
 
-test('bot-to-bot DMs carry the sender and are rate limited per pair', async () => {
+test('bot-to-bot DMs carry the sender and are rate limited per pair (hands-on mode: 0.7 DMs)', async (t) => {
+  // In router mode (0.8's default) the dispatcher's message opens a ticket instead (tickets-host.test.mjs).
+  api.routes.settings.post({ patch: { dispatcher: 'hands-on' } });
+  t.after(() => api.routes.settings.post({ patch: { dispatcher: 'router' } }));
   const atlas = api.store.find('atlas');
   const res = await call('bot_send_message', { to: 'researcher', text: 'hi' }, 'not-a-bot-session');
   assert.equal(res.from, null);
@@ -523,6 +539,57 @@ test('chat channels: a Telegram app connects, pairs, routes messages and sends r
   for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
   await settle();
   assert.equal(fake.live().length, 0, 'plugin dispose stops every connector');
+});
+
+test('router mode: a delegation from a Telegram turn takes that chat as its origin; the worker never writes to the chat', async () => {
+  const fake = fakeChannelModule();
+  const { hh, api: capi } = channelHarness(fake.load);
+  const atlas = capi.store.find('atlas');
+  const forge = capi.store.save({ name: 'Forge' });
+  capi.routes.save.post({ bot: { id: atlas.id, apps: [{ template: 'telegram', name: 'Telegram', serverName: 'telegram', enabled: true, values: { token: TG_TOKEN } }] } });
+  await settle();
+  const c = fake.made[0];
+  const appId = capi.store.get(atlas.id).apps[0].id;
+  const code = (await capi.routes['channels/code'].post({ botId: atlas.id, appId })).code;
+  c.emit({ chatId: '42', messageId: '1', userId: '42', userName: 'Kada', text: `/start ${code}`, isDirect: true, mentioned: true });
+  await settle();
+  c.emit({ chatId: '42', messageId: '2', userId: '42', userName: 'Kada', text: 'Ship the fix today', isDirect: true, mentioned: true });
+  await settle();
+  const atlasNow = capi.store.get(atlas.id);
+  const home = seeInbox(hh, atlasNow);
+  assert.equal(home.deliveries.at(-1).mode, 'steer', 'a router home takes chat messages by steering');
+  const r = await hh.tools_call('bot_send_message', { to: '@forge', text: 'Ship the login fix today.' }, atlasNow.sessionId);
+  const t = capi.tickets.get(r.ticket.id);
+  const key = `telegram:${atlas.id}/${appId}:42`;
+  assert.deepEqual(t.origin, { threadKey: key, via: 'telegram', who: 'Kada' });
+  assert.deepEqual(t.threads, [key]);
+  assert.equal(capi.tickets.thread(key).label, 'Telegram · Kada');
+  assert.equal(r.ticket.via, 'telegram');
+  assert.match(hh.agentsById.get(t.sessionId).inbox[0].content[0].text, /It started with Kada in Telegram · Kada \(telegram\)\./);
+  // The worker's plain text stays in its Session: nothing to the chat, nothing in the timeline.
+  const sent = c.sent.length;
+  hh.emit('session/event', { id: t.sessionId }, { type: 'user/message', data: hh.agentsById.get(t.sessionId).inbox[0] });
+  says(hh, { sessionId: t.sessionId }, 'Working on the fix now.');
+  await settle();
+  assert.equal(c.sent.length, sent);
+  assert.ok(!capi.store.messages({ bot: forge.id }).some((m) => m.text === 'Working on the fix now.'));
+  // The done report wakes Atlas; its answer goes back to the chat.
+  await hh.tools_call('bot_send_message', { status: 'done', text: 'Shipped: v2.4.1 is out.' }, t.sessionId);
+  const relay = home.inbox.at(-1);
+  assert.match(relay.content[0].text, /^Report from @forge on task/);
+  hh.emit('session/event', home.session, { type: 'user/message', data: relay });
+  says(hh, atlasNow, 'Forge shipped v2.4.1.');
+  await settle();
+  assert.deepEqual(c.sent.at(-1), { chatId: '42', text: 'Forge shipped v2.4.1.' });
+  // A ticket the user asked for (no Session to tell) needs the person once its worker reports.
+  const own = capi.tickets.create({ text: 'Check the logs', botId: forge.id, requester: { kind: 'user' } });
+  assert.ok(!capi.state().attention.some((x) => x.id === own.id));
+  capi.tickets.addReport(own.id, { status: 'done', text: 'Logs are clean.' });
+  assert.ok(capi.state().attention.some((x) => x.id === own.id && x.requester.kind === 'user'));
+  capi.tickets.end(own.id, { by: 'user', outcome: 'done' });
+  assert.ok(!capi.state().attention.some((x) => x.id === own.id));
+  for (const dispose of hh.effects) if (typeof dispose === 'function') dispose();
+  await settle();
 });
 
 test('chat channels: deleting a bot stops its connector; the persona tells bots about the chat app', async () => {

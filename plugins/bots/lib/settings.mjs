@@ -1,7 +1,9 @@
 /**
  * Team-wide settings of the bots plugin, kept in `settings.json` beside the
- * roster: when a bot starts a new topic by itself, how memory is written and
- * consolidated, and the prices the usage view counts with.
+ * roster: how the dispatcher works, how many tasks (tickets) run at once and
+ * when they are judged stalled or archived, when a bot starts a new topic by
+ * itself, how memory is written and consolidated, and the prices the usage
+ * view counts with.
  *
  * @module @kadaliao/dsh-bots/lib/settings
  */
@@ -10,6 +12,24 @@ import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'no
 import { join } from 'node:path';
 
 export const DEFAULTS = Object.freeze({
+  /**
+   * How the dispatcher works in its home conversation: 'router' only understands, hands out
+   * (each delegation is a ticket with its own conversation) and reports; 'hands-on' is 0.7.
+   */
+  dispatcher: 'router',
+  tickets: Object.freeze({
+    /** Tickets whose conversations run at once; past this they queue (a person's follow-up may take one more). */
+    maxWorking: 4,
+    /** Minutes a working ticket may stay quiet before the watchdog asks for a report, and again before it is stalled. */
+    stallMinutes: 20,
+    /** Hours an ended ticket keeps its conversation before it is archived; 0 = at the next upkeep. */
+    archiveHours: 24,
+  }),
+  /**
+   * The one-time panel notice that an upgraded team now runs in router mode: 'pending' until the
+   * user dismisses it (or picks a mode), 'dismissed' after; null before the first run of 0.8 decided.
+   */
+  routerNotice: null,
   topics: Object.freeze({
     /** A conversation quiet for this many hours starts a new topic before its next task; 0 = never. */
     idleHours: 6,
@@ -67,6 +87,7 @@ export function normalizeSettings(input) {
   const s = input && typeof input === 'object' ? input : {};
   const t = s.topics ?? {};
   const m = s.memory ?? {};
+  const tk = s.tickets ?? {};
   const prices = {};
   if (s.prices && typeof s.prices === 'object') {
     for (const [k, v] of Object.entries(s.prices).slice(0, 300)) {
@@ -77,6 +98,13 @@ export function normalizeSettings(input) {
   }
   const model = m.model && typeof m.model === 'object' && typeof m.model.provider === 'string' && m.model.provider && typeof m.model.model === 'string' && m.model.model ? { provider: m.model.provider.slice(0, 200), model: m.model.model.slice(0, 200) } : null;
   return {
+    dispatcher: s.dispatcher === 'hands-on' ? 'hands-on' : 'router',
+    tickets: {
+      maxWorking: Math.round(num(tk.maxWorking, DEFAULTS.tickets.maxWorking, 1, 32)),
+      stallMinutes: Math.round(num(tk.stallMinutes, DEFAULTS.tickets.stallMinutes, 1, 24 * 60)),
+      archiveHours: num(tk.archiveHours, DEFAULTS.tickets.archiveHours, 0, 24 * 30),
+    },
+    routerNotice: s.routerNotice === 'pending' || s.routerNotice === 'dismissed' ? s.routerNotice : null,
     topics: {
       idleHours: num(t.idleHours, DEFAULTS.topics.idleHours, 0, 24 * 30),
       maxContextK: Math.round(num(t.maxContextK, DEFAULTS.topics.maxContextK, 0, 4096)),
