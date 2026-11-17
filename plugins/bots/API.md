@@ -322,7 +322,7 @@ files and `TaskView` keep the name `task` for runs.
 settings += {
   dispatcher: 'router' | 'hands-on',   // default 'router'; anything else reads as 'router'
   tickets: {
-    maxWorking: number,                // 4; 1–32. Task Sessions working at once; a message to a started task may take one more
+    maxWorking: number,                // 4; 1–32. Task Sessions working at once; a person's message to a started task may take one more
     stallMinutes: number,              // 20; 1–1440. Quiet minutes before the status check, and again before the stall
     archiveHours: number,              // 24; 0–720. Hours after a task ended before its Session is archived (0: next upkeep)
   },
@@ -342,9 +342,11 @@ Router mode denies them. A save whose `tools` leaves `routerAllow` out keeps the
 
 `catalog.routerDeny: string[]` — what Router mode denies the dispatcher's home by default: the `code` ability (`bash`,
 `job_list`, `job_output`, `job_kill`, `load_workspace_dependencies`), `write`, `edit`, the `delegate` ability, the
-`images` ability and the `office` ability. A router home also gets a `tools.guard` that refuses `bash` running `sleep`
-or with a timeout over 30 s, and `job_output` waits over 5 s (or without `timeout_ms`). A task Session of the
-dispatcher is an ordinary worker: none of this applies there.
+`images` ability, the `office` ability, and `pwsh`, the terminals (`terminal_open`, `terminal_send`, `terminal_read`,
+`terminal_signal`, `terminal_close`, `terminal_list`), `apply_patch` and `str_replace_editor`. A router home also gets a
+`tools.guard` that refuses `bash` and `pwsh` running `sleep`, or in the foreground without a `timeoutMs` of at most
+30 s (left out, it is Harness's 120 s; `run_in_background` passes), and `job_output` waits over 5 s (or without
+`timeout_ms`). A task Session of the dispatcher is an ordinary worker: none of this applies there.
 
 ### State
 ```ts
@@ -372,7 +374,8 @@ Ticket = {
   sessionId: string | null,            // 'ticket-<id>' once started
   requester: { kind: 'session' | 'user', sessionId?, botId?, ticketId? },  // ticketId: asked from that task (a sub-task)
   parentId?: string,
-  origin: { threadKey?, via?, who? },  // via: 'telegram' | 'discord' | 'feishu' | 'slack' | 'schedule'
+  origin: { threadKey?, via?, who?, replyTo? },  // via: 'telegram' | 'discord' | 'feishu' | 'slack' | 'schedule'
+                                       // replyTo: id of the group message that asked; the answer there quotes it
   threads: string[],                   // Thread keys it is subscribed to (its origin's, when it has one)
   reports: { at, status: 'progress' | 'done' | 'blocked' | 'question', text }[],  // newest 200, each ≤ 20 000 characters
   createdAt, updatedAt, startedAt?,
@@ -380,6 +383,7 @@ Ticket = {
   lastHumanAt?, lastRequesterAt?,      // latest message from a person / from the requester
   nudgedAt?, stalledAt?, remindedAt?,  // watchdog
   retries: number,                     // "continue"s sent after temporary errors in a row
+  parked?: { key, content, source, at, human? }[],  // messages for a started task waiting for a worker slot, oldest first
   error?: string,
   ended?: { at, by: 'worker' | 'requester' | 'user' | 'system', outcome: 'done' | 'stopped' | 'failed' },
   archivedAt?,
@@ -388,7 +392,15 @@ Ticket = {
 Thread = { key, kind, appKey, chatId, rootId?, label?, tickets: string[] /* subscribed task ids */, lastAt }
 ```
 Only bots open tasks (`bot_send_message`), so `requester.kind` is `'session'`. The newest 500 archived tasks are kept;
-Threads no task is subscribed to are dropped.
+Threads no task is subscribed to are dropped. A file that is not JSON in this shape is set aside as
+`tickets.json.corrupt-<ms>` and tasks start empty; one that cannot be read (permissions, a directory in its place)
+stops the plugin from starting, with a log line, so nothing writes over it.
+
+A started task's Session gets a message only while the task holds a worker slot. A person's message (from the panel,
+a chat follow-up, or a `bot_ticket` `retry` or `status` from a conversation of no bot) may take one slot over
+`maxWorking`; any other (a bot's, the watchdog's) waits in `parked` while every slot is taken, and the task counts as
+`queued` until the messages go in, oldest first, as a slot frees. Parked messages outlast a restart; the task ending
+drops them.
 
 Stage (`stageOf`, first match wins; "answered" means `lastHumanAt` or `lastRequesterAt` is later than that report):
 
@@ -397,7 +409,7 @@ Stage (`stageOf`, first match wins; "answered" means `lastHumanAt` or `lastReque
 | `failed` | `ended.outcome === 'failed'`, or open with an unanswered `blocked` report last | Failed |
 | `question` | open with an unanswered `question` report last | Needs your answer |
 | `stalled` | open and `stalledAt` set | Stuck |
-| `queued` | open and never started (`startedAt` unset) | Queued |
+| `queued` | open and never started (`startedAt` unset), or started with messages in `parked` | Queued |
 | `working` | open otherwise | Working |
 | `done` | `ended.outcome === 'done'` (a `done` report, or closed) | Done |
 | `stopped` | `ended.outcome === 'stopped'` | Stopped |
@@ -406,7 +418,7 @@ Stage (`stageOf`, first match wins; "answered" means `lastHumanAt` or `lastReque
 TicketRow = { id, title, botId, stage, requester: { kind: 'bot', botId } | { kind: 'user' }, via?, createdAt, updatedAt,
   lastReport?: { status, preview /* ≤ 200 characters */ } }
 TicketView = TicketRow & {
-  text, parentId?, children: string[], requesterSessionId: string | null, origin: { threadKey?, via?, who? },
+  text, parentId?, children: string[], requesterSessionId: string | null, origin: { threadKey?, via?, who?, replyTo? },
   startedAt?, ended?, error?, archivedAt?, nudgedAt?, stalledAt?, retries? /* when not 0 */,
   reports: { at, status, text }[],
   threads: { key, kind, label }[],
@@ -423,13 +435,15 @@ TicketView = TicketRow & {
 | GET | `tickets` | `?bot=<id>&stage=<stage>[,<stage>…]&archived=0\|1&limit=50&offset=0` (limit 1–200) | `{ items: TicketRow[], next_offset: number \| null }`, latest change first |
 | GET | `tickets/<id>` | – | `TicketView` |
 | POST | `tickets/<id>/stop` | `{}` | `{ ok, …TicketView }` ends it as stopped by the user and cancels its running turn |
-| POST | `tickets/<id>/close` | `{}` | `{ ok, …TicketView }` ends it as done |
+| POST | `tickets/<id>/close` | `{}` | `{ ok, …TicketView }` ends it as done and cancels its running turn |
 | POST | `tickets/<id>/retry` | `{}` | `{ ok, …TicketView }` opens it again and hands the assignment over afresh (also one the user stopped) |
 | POST | `tickets/<id>/message` | `{ text }` | `{ ok, …TicketView }` the user's message into its Session; an ended task opens again; a queued one gets it added to its assignment |
 | GET | `threads/<key>` | key URI-encoded | `{ key, label, kind, tickets: TicketRow[], recent: { at, from, to, who?, text }[] }` (the last 10 timeline messages of that Thread, text ≤ 300 characters) |
 
 An unknown id answers `{ ok: false, reason: 'no such task' }`; an archived task cannot be retried or messaged. A
-task's requester hears of a stop or close by the user through an injected note that does not wake it.
+task's requester hears of a stop or close by the user through an injected note that does not wake it (on a Harness
+without `inject`, it hears nothing). `delete` of a bot stops and archives its tasks, and stops every open task it asked
+for (from its home or its tasks), which stays unarchived with `error: '@<handle>, who asked for it, was removed'`.
 
 ### Thread keys
 `kind:appKey:chatId[:rootId]`, with `appKey` = `<botId>/<appId>` of the chat app; inside a part `%` and `:` are written
@@ -447,8 +461,8 @@ Inbound routing (`lib/threads.mjs` `routeInbound`):
 1. A leading `@handle` of another bot goes to that bot's home; the channel owner's own handle goes to its home.
 2. Tasks subscribed to the message's Thread that are not archived and not stopped take it, steered into each task
    Session as a person's message (an ended task opens again), and the owner's home gets a `[follow_up]` note injected
-   without waking it. On a whole-chat Thread (no `rootId`) only tasks whose latest report is an unanswered
-   `question` take it.
+   without waking it. On a whole-chat Thread (no `rootId`) only a task whose latest report is an unanswered
+   `question` takes it, and only when it is the one such task: with two or more, the message goes to the router (3).
 3. Otherwise the owner's home (the router).
 
 Plain replies (`createOrigins`): each turn of a home collects the Threads of its inputs (user messages, and the
@@ -457,10 +471,12 @@ and nothing else: the reply goes there. Only the panel, or nothing: it stays in 
 and one chat included: it stays in the panel (timeline entry `notSent: true`), and the bot sends each answer with
 `bot_reply`. A task Session's text reaches no chat.
 
-Deliveries the plugin makes with a key get the message id `bots:<key>`; one already pending or in the Session's
-stored log is not delivered again. Router homes, task Sessions and relayed reports use `agent.steer` (messages that
-arrive during a turn are taken together at its next step), notes that should not wake use `agent.inject`, and other
-homes take user messages and 0.7 DMs with `followup` as before; a Harness without `steer` or `inject` gets `followup`.
+Deliveries the plugin makes with a key get the message id `bots:<key>`; one already pending, in the Session's stored
+log or parked on its task is not delivered again. Router homes, task Sessions and relayed reports use `agent.steer`
+(messages that arrive during a turn are taken together at its next step), notes that should not wake use
+`agent.inject`, and other homes take user messages and 0.7 DMs with `followup` as before. A Harness without `steer`
+gets `followup`; one without `inject` gets no such note (the `[follow_up]` note, a stop or close by the user): it is
+dropped, never turned into a turn.
 
 ### Watchdog and restarts
 The 5-minute upkeep (`lib/watchdog.mjs`):
@@ -471,12 +487,16 @@ The 5-minute upkeep (`lib/watchdog.mjs`):
   billing errors), gets a "continue" after 15, 30 and 60 s (`retries`); then, or for any other error, the task ends as
   `failed` and the requester gets a `[Failed]` note. A completed turn resets `retries`;
 - a requester Session that is idle, whose unarchived tasks have all settled (`done`, `failed`, `stopped`,
-  `stalled`) and that said nothing since: one `[Reminder]` (`remindedAt`), at least a minute after the last one settled;
+  `stalled`) and that said nothing since (a home: a timeline `reply` not marked `notSent`; a task Session: a report):
+  one `[Reminder]` (`remindedAt`), at least a minute after the last one settled. A task Session whose task has ended
+  gets none;
 - tasks ended `archiveHours` ago: their Session is archived and `archivedAt` set.
 
-At start, working tasks take their slots again. 3 s after the plugin starts, one whose Session was mid-turn, or holds
-input it never took, gets a `[Recovery]` note, one whose Session had to be made anew gets the note and its
-assignment, and queued tasks start while slots are free.
+At start, working tasks take their slots again. 3 s after the plugin starts, one whose Session had to be made anew
+gets a `[Recovery]` note and its assignment; one whose stored log holds no message gets its assignment again; one whose
+Session was mid-turn, or holds input it never took, gets the note. The note's id names the latest turn that did not end
+cleanly, so a second restart before it is read sends nothing new, and a recovery turn cut off again gets a note of its
+own. Then queued tasks start, and parked messages are handed over, while slots are free.
 
 ### Timeline
 ```ts
@@ -505,16 +525,21 @@ Entries written before 0.8 have none of these fields.
   context.
 
 ### Tools
-Every conversation gets `bot_reply`, `bot_recall` and `bot_ticket` besides the 0.7 tools.
+Every conversation gets `bot_reply`, `bot_recall` and `bot_ticket` besides the 0.7 tools. A Harness sub-agent or fork
+(Session header `origin: 'subagent'` with a `parentSession`) uses the bot tools and the memory tools as the bot home or
+task Session it descends from, with that one's limits; a helper of a conversation of no bot acts as no bot. One whose
+line cannot be traced (a creator that is gone and was no bot's, or a loop) acts for no one: `bot_send_message`,
+`bot_reply`, `bot_ticket`, `bot_create`, `bot_delete` and the memory tools refuse it (`bot_schedule` too, unless it
+names `bot`), and `bot_recall` reads nothing.
 
 `bot_send_message { to?, text, ticket?, status?, title?, thread? }`:
 
 | Called from | Arguments | Does | Result |
 |---|---|---|---|
-| a task Session | no `to` (or the requesting bot, or `ticket` = its own id), `text`, `status` (required) | a report: `progress` is only recorded; `done`, `blocked`, `question` reach the requester at once; `done` ends the task | `{ ok, text, ticket: TicketRow, to, from }` |
+| a task Session | no `to` (or the requesting bot, or `ticket` = its own id), `text`, `status` (required) | a report: `progress` is only recorded; `done`, `blocked`, `question` reach the requester at once; `done` ends the task. From a task that has ended, or a sub-task whose parent has ended, any report is only recorded (no relay, no timeline entry) | `{ ok, text, ticket: TicketRow, to, from }` |
 | a task Session | `to`, `text`, `title?` | opens a sub-task (requester: this task) | `{ ok, text, ticket, stage, to, from }` |
 | a bot's home, `dispatcher: 'router'` | `to`, `text`, `title?`, `thread?` | opens a task; starts at once when a slot is free, else queued | `{ ok, text, ticket, stage, to, from }` |
-| the requester's Session, the requesting bot's current home, or the router home | `ticket`, `text`, `to?` (must be the task's bot) | adds a message to the task; an ended task opens again, except one the user stopped | `{ ok, text, ticket, to, from }` |
+| the requester's Session, the requesting bot's current home, or the router home | `ticket`, `text`, `to?` (must be the task's bot) | adds a message to the task; an ended task opens again, except one the user stopped; with every slot taken it waits in `parked` | `{ ok, text, ticket, to, from }` |
 | a bot's home in hands-on mode, or any other conversation | `to`, `text` | 0.7: into the other bot's home | `{ ok, text, to, from }` |
 
 `title` defaults to the first line of `text`. `thread` names, when a turn has several chats, the Thread (one of the
@@ -544,9 +569,10 @@ leave out `children`, `threads` and `error`). From a task Session only that task
 Threads can be read. `recent` comes from the timeline, whose entries carry a Thread from 0.8 on.
 
 `bot_ticket { id, action: 'stop' | 'close' | 'retry' | 'status' }` — on a task this conversation asked for (the router
-home and conversations of no bot: any task; a task Session: only its sub-tasks). `stop` cancels its running turn;
-`close` ends it as done; `retry` opens it again with the assignment (a bot cannot retry one the user stopped);
-`status` asks an idle working task for a report. Result `{ ok, text, ticket: TicketRow }`.
+home and conversations of no bot: any task; a task Session: only its sub-tasks). `stop` ends it as stopped and
+`close` as done, both cancelling its running turn; `retry` opens it again with the assignment (a bot cannot retry one
+the user stopped); `status` asks an idle working task for a report. Result `{ ok, text, ticket: TicketRow }`.
 
 `memory_search { query }` also matches tasks: every word in the title, else in one of its reports (most recently
-changed first, ≤ 10). From a task Session only its task, parent and sub-tasks. Result `+= { tickets: string[] }`.
+changed first, ≤ 10). From a task Session only its task, parent and sub-tasks, and only their journal lines; no
+digests. Result `+= { tickets: string[] }`.

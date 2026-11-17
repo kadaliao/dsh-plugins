@@ -72,19 +72,25 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 - **Reports**: the bot doing a task reports to the bot that asked, with a status: **done** with the result,
   **question** when it needs an answer, **blocked** when it cannot go on, or **progress**, which is kept on the task
   without interrupting anyone. Done, question and blocked reach the bot that asked at once, and it passes them on
-  (the dispatcher, to you). Anything else the working bot writes stays in the task's conversation.
+  (the dispatcher, to you). A report from a task that has already ended, or from a sub-task whose task has ended, is
+  only kept on the task. Anything else the working bot writes stays in the task's conversation.
 - **Sub-tasks**: a bot working on a task can ask a teammate for help; that opens a sub-task, whose report comes back
   to the task that asked for it.
 - **How many at once**: 4 tasks are worked on at the same time; more wait in line and start as others finish. A
-  message to a task that has already started (a follow-up, an answer) may use one place more, so new work cannot hold
-  it up. A task that waits for an answer, is stuck or has failed gives its place back once its conversation is idle.
+  person's message to a task that has already started (a follow-up, an answer) may use one place more, so new work
+  cannot hold it up; a bot's message to it, the dispatcher's too, waits for a free place, and the task shows as
+  **Queued** until then. A task that waits for an answer, is stuck or has failed gives its place back once its
+  conversation is idle.
 - **Stages**: **Working**, **Queued**, **Needs your answer** (it asked a question), **Stuck** (see the watchdog
   below), **Failed** (an error, or a blocked report nobody has answered yet), **Done** and **Stopped**.
 - **Tasks** in the sidebar groups them into **Needs you** (needs your answer, stuck or failed), **In progress**
   (working or queued) and **Recently done** (done or stopped). A task's page shows the bot doing it, who asked, where
   the request came from, what was asked, the reports, related tasks and the task's usage, with **Open conversation**,
-  **Retry**, **Mark done**, **Stop** and a box for a message to the task (to answer its question, for instance). Each
-  bot's **Tasks** tab lists what it is working on, and in a bot's chat a hand-off shows as a card that opens the task.
+  **Retry**, **Mark done**, **Stop** and a box for a message to the task (to answer its question, for instance);
+  **Mark done** and **Stop** both end the task and stop its bot's work on it at once. Each bot's **Tasks** tab lists
+  what it is working on, and in a bot's chat a hand-off shows as a card that opens the task.
+- **Removing a bot** stops the tasks it was doing, which are archived, and the tasks it asked for, which stay in
+  **Tasks**, stopped, where you can still retry one.
 - **Settings → Tasks**: how many tasks are worked on at once (4), the minutes before a quiet task counts as stuck
   (20), and the hours before a finished task's conversation is archived (24).
 
@@ -95,11 +101,12 @@ The dispatcher works in one of two ways, chosen under **How it works** on its **
 - **Router** (the default): it understands the request, hands the work out and reports back. It does not run
   commands, write or edit files, use sub-agents and workflows, draw images or make Office files; it can still read
   files, search the web and use its skills. Its **Abilities** section marks what Router mode turns off, and **Turn
-  back on** gives an ability back (even then it may not `sleep` or wait long for a command). It never waits for a
-  teammate: it ends its turn and is woken when a report arrives, so a new request is not stuck behind work in
-  progress, and messages that arrive while it is busy are taken together at its next step. Since it only routes, a
-  light, fast model is enough for it; its **Model** section says so, and Bots does not change the model for you. In
-  Router mode every bot that hands work to a teammate opens a task, not only the dispatcher.
+  back on** gives an ability back (even then it may not `sleep`, and a command must finish within 30 seconds or run in
+  the background). It never waits for a teammate: it ends its turn and is woken when a report arrives, so a new
+  request is not stuck behind work in progress, and messages that arrive while it is busy are taken together at its
+  next step. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
+  not change the model for you. In Router mode every bot that hands work to a teammate opens a task, not only the
+  dispatcher.
 - **Hands-on**: how 0.7 worked. The dispatcher also does small jobs itself, and a message from one bot's own
   conversation to another bot goes into that bot's own conversation instead of opening a task. Tasks already open keep
   going and report as before.
@@ -122,8 +129,9 @@ a Telegram topic, or the panel.
   goes on; a stopped task does not. In Slack, Discord and Feishu groups the bot answers under your message, so each
   request there starts a thread of its own.
 - **A follow-up in a private chat goes to the dispatcher.** A private chat (and a group without threads) is one long
-  conversation where new requests arrive too, so a new message there goes to the dispatcher, unless a task asked a
-  question there and is still waiting for the answer: then the task takes it.
+  conversation where new requests arrive too, so a new message there goes to the dispatcher, unless one task asked a
+  question there and is still waiting for the answer: then that task takes it. With two or more waiting, it goes to
+  the dispatcher, which works out which one it answers.
 - A message that starts with `@handle` still goes to that bot's own conversation.
 
 ### The watchdog
@@ -136,11 +144,13 @@ Every 5 minutes Bots checks the tasks in progress by fixed rules; no model judge
 - After a step fails with a temporary error (HTTP 408, 429 or 5xx, a dropped or refused connection), the task is told
   to continue 15 seconds later, then 30, then 60. A fourth such failure in a row, or any other error, and it has
   **Failed**; the bot that asked is told.
-- When every task a bot asked for has settled (done, failed, stopped or stuck) and that bot has said nothing since, it
-  gets one reminder to tell whoever asked.
+- When every task a bot asked for has settled (done, failed, stopped or stuck) and that bot has said nothing since
+  (an answer marked **Not sent** doesn't count), it gets one reminder to tell whoever asked. A task that asked for
+  sub-tasks and has ended since gets none.
 - After Harness restarts, a task that was in the middle of its work gets a note: check what was already done (files,
   commands, messages sent), don't repeat it, then go on. A task whose conversation is gone starts again from its
-  assignment with the same note. Queued tasks start as places free up, and no message is handed over twice.
+  assignment with the same note, and one whose assignment never reached its conversation gets it again. Queued tasks
+  start, and messages waiting for a place are handed over, as places free up; no message is handed over twice.
 
 ## Built on what Harness already does
 
@@ -229,7 +239,8 @@ Every bot keeps **notes** that outlast its topics, and the team shares one more 
   ends.
 - **The bot itself** saves notes with `memory_save` when you tell it to remember something, removes them
   with `memory_forget`, and looks through notes, the team journal, digests and tasks (their titles and
-  reports) with `memory_search`.
+  reports) with `memory_search`. In a task's conversation it finds, besides the notes, only the journal
+  lines and tasks of that task, the task that asked for it and its sub-tasks, and no digests.
 - **Every night** (03:00 by default) memory is **consolidated**: each bot's notes are merged, corrected
   and trimmed with its recent journal, the shared notes too, and the day's work is written up as the
   team's **daily digest**. **Consolidate now** runs it at once.
@@ -405,7 +416,9 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   `memory_forget` and `memory_search`. `bot_reply` sends an answer to a named chat; `bot_recall` reads a
   task, its reports or its conversation, or a chat thread, a page at a time, so a bot looks things up
   instead of guessing; `bot_ticket` stops, closes or retries a task the bot asked for, or asks it for a
-  status report. [API.md](API.md) lists their parameters.
+  status report. [API.md](API.md) lists their parameters. A sub-agent started in a bot's or a task's
+  conversation uses them as that bot or task; one that cannot be traced back to where it started (that
+  conversation is gone) is refused.
 - A bot's memory is a section of its system prompt, read when a topic or a task's conversation starts
   (and at the next run after a memory edit in the panel or the nightly consolidation), never in the middle
   of a run. A run ends when the bot's Agent is idle; its transcript (prompts, replies, tool calls, short
@@ -432,7 +445,9 @@ permission and restart it.
   per chat), `tickets.json` (tasks, with what was asked and their reports, and the chat threads they came
   from; the newest 500 archived tasks are kept), `avatars/`, `skills/` (skills imported from GitHub),
   `memory/` (notes, journal, digests), `usage.jsonl` and `tasks.jsonl` (token counts per call and run,
-  kept 400 days), `topics.json`, `settings.json`, `price-catalog.json`.
+  kept 400 days), `topics.json`, `settings.json`, `price-catalog.json`. If `tickets.json` cannot be read
+  (permissions, say), Bots does not start and says why in the Harness log, so the file is never written over;
+  a damaged one is kept as `tickets.json.corrupt-<time>` and tasks start empty.
 - Custom endpoints and a borrowed Codex login are written to Harness's own model settings (`llm-pi-ai`) and
   credential store. With the Codex login in use, tokens Harness refreshes are written back to
   `~/.codex/auth.json`.
