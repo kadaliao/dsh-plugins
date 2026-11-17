@@ -372,11 +372,20 @@ test('reports from two chats in one turn: plain text stays in the panel (marked)
   ]);
   const replies = api.store.messages({ bot: api.store.find('atlas').id }).filter((m) => m.kind === 'reply');
   assert.deepEqual(replies.slice(0, 2).map((m) => [m.via, m.thread]), [['telegram', tg.key('42')], ['telegram', tg.key('43')]]);
-  const plain = replies.at(-1);
-  assert.equal(plain.text, 'Both answered.');
+  // Every chat of the turn got its answer with bot_reply: the closing words reach no one and are not shown (0.9).
+  assert.ok(!replies.some((m) => m.text === 'Both answered.'));
+  // With one of them left unanswered, plain text stays in the panel, marked with the choices.
+  await s.call('bot_send_message', { ticket: ta.id, text: 'One more: the logout bug.' }, sid);
+  await s.call('bot_send_message', { status: 'done', text: 'Logout fixed.' }, ta.sessionId);
+  await s.call('bot_send_message', { ticket: tb.id, text: 'Add the logout fix to the notes.' }, sid);
+  await s.call('bot_send_message', { status: 'done', text: 'Added.' }, tb.sessionId);
+  await h.step(sid, { calls: [{ name: 'bot_reply', args: { ticket: ta.id, text: 'Logout fixed too.' } }], answer: 'Both done.' });
+  const plain = api.store.messages({ bot: api.store.find('atlas').id }).filter((m) => m.kind === 'reply').at(-1);
+  assert.equal(plain.text, 'Both done.');
   assert.equal(plain.via, undefined);
   assert.equal(plain.notSent, true);
   assert.deepEqual(plain.choices, [tg.key('42'), tg.key('43')]);
+  tg.c.sent.splice(2);
   // Unknown targets are refused with the valid ones; a task conversation cannot reply to a chat.
   await assert.rejects(s.call('bot_reply', { thread: 'telegram:nope/app:1', text: 'x' }, sid), /no topic or chat thread .* can be reached from here\. This turn has no topic or chat/);
   await assert.rejects(s.call('bot_reply', { text: 'x' }, sid), /say where/);

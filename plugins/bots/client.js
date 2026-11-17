@@ -1468,7 +1468,7 @@ button.dshb-tline:hover{background:${C.hover}}
             unread ? h('span', { 'data-dsh-bots-topic-unread': m.id, title: t('topicUnread'), style: { width: 8, height: 8, borderRadius: '50%', background: C.error, flex: 'none' } }) : null,
             h('span', { style: { color: C.faint, display: 'inline-flex', flex: 'none' } }, Icon.arrow(11)),
           ),
-          last ? h('div', { className: 'dshb-clamp2', 'data-dsh-bots-topic-last': last.id ?? true, style: { color: C.muted, fontSize: SMALL, lineHeight: 1.45, wordBreak: 'break-word' } }, str(last.text).trim()) : null,
+          last ? h('div', { className: 'dshb-clamp2', 'data-dsh-bots-topic-last': last.id ?? true, style: { color: C.muted, fontSize: SMALL, lineHeight: 1.45, wordBreak: 'break-word' } }, plainPreview(last.text)) : null,
           tasks.length
             ? h(
                 'div',
@@ -2340,8 +2340,18 @@ button.dshb-tline:hover{background:${C.hover}}
     /** A message is a reply inside topic `root` (moved in, or written there), not the root itself. */
     const inTopic = (m, root) => Boolean(root) && m?.id !== root && (m?.topic === root || m?.movedTo === root);
     /** A short excerpt of a message for a quote or a label. */
+    /** Markdown as a line of plain text, for a preview: no emphasis marks, headings, list markers or link targets. */
+    const plainPreview = (text) =>
+      str(text)
+        .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, '')
+        .replace(/(\*\*|__|~~|`)/g, '')
+        .replace(/(^|[\s(])[*_](\S[^*_]*?)[*_](?=[\s).,!?:;，。！？：；]|$)/g, '$1$2')
+        .replace(/\s+/g, ' ')
+        .trim();
     const excerpt = (text, n = 48) => {
-      const line = (str(text).split('\n').find((l) => l.trim() !== '') ?? '').trim();
+      const line = plainPreview(str(text).split('\n').find((l) => plainPreview(l) !== '') ?? '');
       return [...line].length > n ? `${[...line].slice(0, n - 1).join('').trimEnd()}…` : line;
     };
     /**
@@ -2373,6 +2383,8 @@ button.dshb-tline:hover{background:${C.hover}}
         const home = str(m.movedTo) || (own && own !== m.id ? own : '');
         if (home && byId.has(home) && home !== m.id) {
           const r = rootOf(home);
+          // What bots said to each other about the topic's tasks is shown in the topic, not counted as a reply.
+          if (isTraffic(m)) continue;
           r.replies.push(m);
           const at = toMs(m.at) || 0;
           if (at >= r.lastAt) r.lastAt = at;
@@ -2927,7 +2939,7 @@ button.dshb-tline:hover{background:${C.hover}}
         stick.stick();
         void onSend(body, replyTo, '', rootId).then(() => stick.stick());
       };
-      const count = replies.length;
+      const count = replies.filter((m) => !isTraffic(m)).length;
       return h(
         'aside',
         {

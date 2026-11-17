@@ -262,11 +262,14 @@ test('one topic in a turn: the plain answer goes into it; two topics: each answe
   await assert.rejects(call('bot_send_message', { to: '@forge', text: 'Do A' }, sid), new RegExp(`several topics or chats: say which one this task is for with \`thread\`: ${a.id} \\(Panel · topic "A\\?"\\); ${b.id}`));
   const t = (await call('bot_send_message', { to: '@forge', text: 'Do B', thread: b.id }, sid)).ticket;
   assert.equal(api.tickets.get(t.id).origin.threadKey, b.thread);
+  // Each topic has its answer: the closing words are not shown anywhere.
   h.emit('session/event', home.session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Both answered.' }] } } });
   h.emit('session/event', home.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
   chat = await chatOf(api, atlas);
   const replies = chat.items.filter((m) => m.kind === 'reply');
-  assert.deepEqual(replies.slice(1).map((m) => [m.text, m.topic ?? null]), [['Answer A', a.id], ['Answer B', b.id], ['Both answered.', null]]);
+  assert.deepEqual(replies.slice(1).map((m) => [m.text, m.topic ?? null]), [['Answer A', a.id], ['Answer B', b.id]]);
+  // The delegation is a line in topic B, not in the main timeline.
+  assert.deepEqual(chat.items.filter((m) => m.ticket === t.id).map((m) => [m.kind, m.topic, m.chat]), [['dm', b.id, atlas.id]]);
   env.dispose();
 });
 
@@ -293,7 +296,8 @@ test('the router hands work to itself; the task answers in the topic itself, and
   assert.deepEqual(router.deliveries.slice(before).map((d) => d.mode), ['inject']);
   const chat = await chatOf(api, atlas);
   const inTopic = chat.items.filter((m) => m.topic === first.id).map((m) => [m.from, m.kind, m.ticket ?? null, m.status ?? null]);
-  assert.deepEqual(inTopic, [['user', 'user', null, null], [atlas.id, 'reply', null, null], [atlas.id, 'reply', t.id, 'done']]);
+  // The person's message, the delegation (a line between bots), Atlas's word, and the task's answer.
+  assert.deepEqual(inTopic, [['user', 'user', null, null], [atlas.id, 'dm', t.id, null], [atlas.id, 'reply', null, null], [atlas.id, 'reply', t.id, 'done']]);
   assert.deepEqual(chat.topics[first.id].tickets.map((x) => [x.id, x.stage]), [[t.id, 'done']]);
   env.dispose();
 });
@@ -365,7 +369,7 @@ test('a new message that continues a task is filed under that task\'s topic, and
   assert.equal(chat.items.at(-1).topic, first.id);
   // The topic lists what was filed under it; a reply to the filed message joins that topic too.
   const topic = await api.request('GET', `/__dsh_bots/messages?bot=${atlas.id}&topic=${first.id}`);
-  assert.deepEqual(topic.items.map((m) => m.id).slice(0, 2), [first.id, later.id]);
+  assert.deepEqual(topic.items.filter((m) => m.from === 'user').map((m) => m.id), [first.id, later.id]);
   const re = await sendPanel(api, atlas, '还有顺义', later.id);
   assert.equal(re.message.topic, first.id);
   assert.equal(re.message.ticket, t.id);

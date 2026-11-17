@@ -1658,6 +1658,17 @@ export function apply(ctx, config, deps = {}) {
     if (!(t.sessionId && openTasks.has(t.sessionId))) reflectTicket(t);
   }
 
+  /**
+   * Where a ticket's own lines go in the panel (Bots 0.9): a ticket that came from a panel topic
+   * logs its delegation, the messages added to it and its notices into that topic, in the chat of
+   * the bot that asked. Others log as in 0.8 (`{}`).
+   */
+  const topicFieldsOf = (t) => {
+    const key = t?.origin?.threadKey;
+    const topic = key ? panelTopicOf(key) : '';
+    return topic ? { chat: t.requester?.botId ?? t.botId, thread: key, topic } : {};
+  };
+
   /** Who may add to a ticket from `sessionId`: its requester (or the requesting bot from its current home), or the router. */
   function mayAppend(t, sender, sessionId) {
     const r = t.requester ?? {};
@@ -1719,7 +1730,7 @@ export function apply(ctx, config, deps = {}) {
     store.log(
       chat
         ? { from: 'user', to: cur.botId, text: body, kind: 'user', via: chat.kind, ...(chat.who ? { who: chat.who } : {}), ...(chat.threadKey ? { thread: chat.threadKey } : {}), ticket: cur.id }
-        : { from: sender ? sender.id : 'user', to: cur.botId, text: body, kind: 'dm', ticket: cur.id },
+        : { from: sender ? sender.id : 'user', to: cur.botId, text: body, kind: 'dm', ticket: cur.id, ...topicFieldsOf(cur) },
     );
     return tickets.get(cur.id) ?? cur;
   }
@@ -1746,7 +1757,7 @@ export function apply(ctx, config, deps = {}) {
       threads: thread ? [thread] : [],
       relay,
     });
-    store.log({ from: sender.id, to: target.id, text: body, kind: 'dm', ticket: t.id });
+    store.log({ from: sender.id, to: target.id, text: body, kind: 'dm', ticket: t.id, ...topicFieldsOf(t) });
     quietFailures.add(t.id);
     try {
       await pump();
@@ -1779,7 +1790,7 @@ export function apply(ctx, config, deps = {}) {
         await notifyRequester(next, shownNoticeText(next, report, { ...cardCtx(), where: shown.where }), { mode: 'inject', key: `shown:${next.id}:${index}:${report.at}` });
       }
     } else if (status !== 'progress' && !unread) {
-      store.log({ from: next.botId, to: next.requester?.botId ?? 'user', text: body, kind: 'dm', ticket: next.id, status });
+      store.log({ from: next.botId, to: next.requester?.botId ?? 'user', text: body, kind: 'dm', ticket: next.id, status, ...topicFieldsOf(next) });
       // A ticket the user asked for has no Session to tell: the panel shows it (attention).
       if (next.requester?.kind === 'session') {
         // The requester's turn takes this ticket's origin Thread as an input when the relay arrives in it
@@ -1929,7 +1940,7 @@ export function apply(ctx, config, deps = {}) {
           await toTicket(t, { content: [{ type: 'text', text: nudgeText(t) }], source: sourceFrom(t.requester), key: `nudge:${t.id}:${now}` });
         } else {
           const stalled = tickets.patch(t.id, { stalledAt: now });
-          store.log({ from: t.botId, to: t.requester?.botId ?? 'user', text: `Task ${t.id} stalled: no report after a status check.`, kind: 'dm', ticket: t.id, status: 'stalled' });
+          store.log({ from: t.botId, to: t.requester?.botId ?? 'user', text: `Task ${t.id} stalled: no report after a status check.`, kind: 'dm', ticket: t.id, status: 'stalled', ...topicFieldsOf(t) });
           if (slots.release(t.id)) void pump();
           // A ticket the user asked for has no Session to tell: the panel shows it (attention).
           if (stalled.requester?.kind === 'session') await notifyRequester(stalled, stalledNoticeText(stalled, cardCtx()), { key: `stalled:${t.id}:${now}` });
@@ -2004,7 +2015,7 @@ export function apply(ctx, config, deps = {}) {
     }
     const failed = tickets.end(t.id, { by: 'system', outcome: 'failed', error: reason });
     if (!failed) return;
-    store.log({ from: failed.botId, to: failed.requester?.botId ?? 'user', text: `Task ${failed.id} failed: ${reason}`, kind: 'dm', ticket: failed.id, status: 'failed' });
+    store.log({ from: failed.botId, to: failed.requester?.botId ?? 'user', text: `Task ${failed.id} failed: ${reason}`, kind: 'dm', ticket: failed.id, status: 'failed', ...topicFieldsOf(failed) });
     ticketEnded(failed);
     if (failed.requester?.kind === 'session') void notifyRequester(failed, failedNoticeText(failed, cardCtx()), { key: `failed:${failed.id}:${failed.ended.at}` });
   }
@@ -2353,11 +2364,14 @@ export function apply(ctx, config, deps = {}) {
         // were reports and that only answered those tasks (they reach no one). The dispatcher reporting
         // back after its teammates answered is a message to the user, and so is any bot passing on a
         // report from a task it asked for, also in a turn where it hands out more work.
-        const hidden = why === 'schedule-notice' || (why === 'agent-message' && (bot.role !== 'primary' || answered.has(session.id))) || (why === 'report' && closingOnly(session.id));
+        const plan = channels.replyPlan(session.id);
+        // Closing words after bot_reply answered every topic or chat of the turn (Bots 0.9): each has its answer already.
+        const topicsOfTurn = plan.origins.filter((o) => isTopicThread(o.threadKey));
+        const allAnswered = topicsOfTurn.length > 0 && topicsOfTurn.every((o) => st?.replied?.has(o.threadKey));
+        const hidden = why === 'schedule-notice' || (why === 'agent-message' && (bot.role !== 'primary' || answered.has(session.id))) || (why === 'report' && closingOnly(session.id)) || allAnswered;
         if (text && !hidden) {
           // To the turn's one chat Thread; with several (or the panel and a chat) it stays in the panel,
           // and bot_reply says where each answer goes.
-          const plan = channels.replyPlan(session.id);
           const sent = channels.noteReply(session.id, text);
           const thread = sent ? sent.threadKey : panelThreadKey(session.id);
           // A topic in the panel (Bots 0.9): the reply is shown in it.
@@ -3286,6 +3300,8 @@ export function apply(ctx, config, deps = {}) {
         const panelKey = thread ? (panelTopicOf(thread) ? thread : '') : panelTopicOf(tickets.get(ticketId)?.origin?.threadKey) ? tickets.get(ticketId).origin.threadKey : '';
         const target = panelKey ? { kind: 'panel', threadKey: panelKey } : channels.resolveReply(sessionId, thread ? { thread } : { ticket: ticketId });
         if (!target) throw new Error(`${thread ? `no topic or chat thread "${thread}"` : `no topic or chat for task ${ticketId}`} can be reached from here. ${options()}`);
+        const st = turnState.get(sessionId);
+        if (st) (st.replied ??= new Set()).add(target.threadKey);
         if (target.kind === 'panel') {
           const topic = panelTopicOf(target.threadKey);
           const chat = (topic && store.message(topic)?.chat) || bot.id;
