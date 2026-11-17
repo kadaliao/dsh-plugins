@@ -1365,11 +1365,27 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       );
     }
 
-    /** Preview cards for the links in `text` (at most MAX_CARDS). */
+    /**
+     * Preview cards for the links in `text`: none when it lists more than MAX_CARDS links
+     * (a list of sources reads better as the links it already is), one large card for a
+     * single link, compact ones for two or three. Links that resolve to the same preview
+     * (two pages of one site sharing a title and picture) show it once.
+     */
     function LinkCards({ t, text, align = 'flex-start' }) {
-      const links = linksIn(text).slice(0, MAX_CARDS);
+      const all = linksIn(text);
+      const links = all.length > MAX_CARDS ? [] : all;
+      const cards = [useUnfurl(links[0] ?? ''), useUnfurl(links[1] ?? ''), useUnfurl(links[2] ?? '')];
       if (!links.length) return null;
-      return h('div', { 'data-dsh-bots-cards': links.length, style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: align, width: '100%', minWidth: 0 } }, links.map((u) => h(LinkCard, { key: u, t, url: u })));
+      const seen = new Set();
+      const shown = links.filter((u, i) => {
+        const c = cards[i];
+        if (!c || !c.ok) return true;
+        const key = [c.kind, c.site || c.host || hostOf(u), c.title || '', c.image || ''].join('|');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      return h('div', { 'data-dsh-bots-cards': shown.length, style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: align, width: '100%', minWidth: 0 } }, shown.map((u) => h(LinkCard, { key: u, t, url: u, compact: links.length > 1 })));
     }
 
     // --- Markdown -------------------------------------------------------------------------
@@ -1665,7 +1681,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     }
 
     /** One rich preview: a playable YouTube video, an X post or profile, or a page's OpenGraph card. */
-    function LinkCard({ t, url }) {
+    function LinkCard({ t, url, compact = false }) {
       const card = useUnfurl(url);
       const host = hostOf(url);
       if (!card) {
@@ -1682,7 +1698,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       if (card.kind === 'image' && card.ok) {
         return h('a', { className: 'dshb-lc dshb-lc-image', href: card.url, target: '_blank', rel: 'noreferrer noopener', 'data-dsh-bots-card': 'image' }, h(Img, { src: card.image, alt: card.title, style: { display: 'block', maxWidth: '100%', maxHeight: 360 } }));
       }
-      if (card.ok && card.kind === 'page') return h(PageCard, { card });
+      if (card.ok && card.kind === 'page') return h(PageCard, { card, compact });
       // No preview: a slim link row still says where it goes.
       return h(
         'a',
@@ -1694,8 +1710,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       );
     }
 
-    function PageCard({ card }) {
-      const large = card.large && card.image;
+    function PageCard({ card, compact = false }) {
+      const large = !compact && card.large && card.image;
       const site = h(
         'div',
         { className: 'dshb-lc-site' },
