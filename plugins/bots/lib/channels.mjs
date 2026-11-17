@@ -313,6 +313,21 @@ export function newTopicText(bot) {
     : `New topic: ${bot.name} starts a fresh conversation and keeps what it remembers.`;
 }
 
+/**
+ * What a chat hears once when a bot waits for an answer in DeepSeek Harness (`ask_user_question`):
+ * each question with its options, as plain text. A reply in the chat does not answer it.
+ */
+export function askNoticeText(bot, questions) {
+  const zh = zhBot(bot);
+  const lines = [zh ? `${bot.name}（@${bot.handle}）在 DeepSeek Harness 里等你回答：` : `${bot.name} (@${bot.handle}) is waiting for your answer in DeepSeek Harness:`];
+  for (const q of questions ?? []) {
+    lines.push('', `${q.header ? `${q.header}: ` : ''}${q.question}`);
+    for (const o of q.options ?? []) lines.push(`- ${o.label}`);
+  }
+  lines.push('', zh ? '请到 DeepSeek Harness 里回答，在这里回复不算作答。' : 'Answer it in DeepSeek Harness; a reply here does not answer it.');
+  return lines.join('\n');
+}
+
 // --- hint for the panel ----------------------------------------------------------------
 
 /** A short code the panel words in its own language, from a connector's error text. */

@@ -554,6 +554,7 @@ window.__ModuleLoader__.load({
       user: (s = 14) => svg(s, ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 20a8 8 0 0 1 16 0']),
       refresh: (s = 14) => svg(s, ['M20 11a8 8 0 1 0-2.3 5.7', 'M20 4v7h-7']),
       alert: (s = 14) => svg(s, ['M12 4l9 16H3l9-16z', 'M12 10v4', 'M12 17h.01']),
+      question: (s = 14) => svg(s, ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', 'M9.6 9.4a2.5 2.5 0 1 1 3.4 2.4c-.6.3-1 .8-1 1.5v.4', 'M12 17h.01']),
       download: (s = 14) => svg(s, ['M12 4v12', 'M7 11l5 5 5-5', 'M4 20h16']),
       eye: (s = 14) => svg(s, ['M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z']),
       eyeOff: (s = 14) => svg(s, ['M3 3l18 18', 'M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1', 'M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2']),
@@ -1032,6 +1033,9 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       return groups.sort((a, b) => (a.id === '' ? 1 : b.id === '' ? -1 : 0)).map((g) => ({ ...g, label: label(g.id) }));
     }
 
+    /** A red count of what needs you (tasks, or a bot's questions). */
+    const NeedsBadge = ({ n, label, attr }) =>
+      h('span', { [attr]: n, 'aria-label': label, title: label, style: { minWidth: 20, height: 20, padding: '0 6px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.error, color: '#fff', fontSize: TINY, fontWeight: 700, fontVariantNumeric: 'tabular-nums', flex: 'none' } }, n > 99 ? '99+' : String(n));
     function Rail({ t, bots, primaryId, selected, onSelect, onNew, onTeams, view, onActivity, messageCount, onUsage, onMemory, onSettings, teamNotes, onTasks, attention = 0, openTasks = 0 }) {
       const lang = langOf(t);
       const [q, setQ] = useState('');
@@ -1058,6 +1062,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             ),
             h('span', { style: { fontSize: TINY, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 } }, b.bio || t('noBio')),
           ),
+          // Questions its own conversation waits to have answered (a task's show on Tasks).
+          Number(b.asking) > 0 ? h(NeedsBadge, { n: Number(b.asking), label: t('askingBadge', { n: Number(b.asking) }), attr: 'data-dsh-bots-row-asking' }) : null,
         );
       return h(
         'aside',
@@ -1118,13 +1124,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                   h('span', { style: { fontWeight: 600 } }, t('tasks')),
                   h('span', { style: { fontSize: TINY, color: attention > 0 ? C.warn : C.muted } }, attention > 0 ? t('tasksNeedYou', { n: attention }) : openTasks > 0 ? t('tasksInProgress', { n: openTasks }) : t('tasksHint')),
                 ),
-                attention > 0
-                  ? h(
-                      'span',
-                      { 'data-dsh-bots-tasks-badge': attention, 'aria-label': t('tasksNeedYou', { n: attention }), style: { minWidth: 20, height: 20, padding: '0 6px', borderRadius: 999, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.error, color: '#fff', fontSize: TINY, fontWeight: 700, fontVariantNumeric: 'tabular-nums', flex: 'none' } },
-                      attention > 99 ? '99+' : String(attention),
-                    )
-                  : null,
+                attention > 0 ? h(NeedsBadge, { n: attention, label: t('tasksNeedYou', { n: attention }), attr: 'data-dsh-bots-tasks-badge' }) : null,
               )
             : null,
           h(
@@ -1952,6 +1952,127 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       return { box, content, onScroll, stick };
     }
 
+    // --- a bot's question (Harness's ask_user_question), answered here --------------------------
+
+    /** The questions waiting in one conversation (state `asks`), oldest first. */
+    const asksIn = (sessionId) => (sessionId && Array.isArray(store.state?.asks) ? store.state.asks.filter((a) => a && typeof a.id === 'string' && a.sessionId === sessionId && Array.isArray(a.questions)) : []);
+    const NO_PICK = { selected: [], custom: '' };
+
+    /**
+     * A bot's question at the bottom of its chat or task. One single-choice question is answered by a
+     * click on an option; several questions, or a multiple choice, are ticked and submitted. "Other"
+     * takes your own words. An approval or a plan review is answered in the conversation.
+     */
+    function AskCard({ t, ask, env, onAnswered }) {
+      const [picks, setPicks] = useState({});
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const name = botName(t, ask.botId);
+      const questions = ask.questions.filter((q) => q && typeof q.id === 'string');
+      const quick = !ask.native && questions.length === 1 && !questions[0].multiSelect;
+      const pickOf = (q) => picks[q.id] ?? NO_PICK;
+      const change = (q, fn) => setPicks((all) => ({ ...all, [q.id]: { ...(all[q.id] ?? NO_PICK), ...fn(all[q.id] ?? NO_PICK) } }));
+      const item = (q, p) => ({ id: q.id, selected: p.selected, ...(p.custom.trim() ? { custom: p.custom.trim() } : {}) });
+      const complete = questions.every((q) => pickOf(q).selected.length > 0 || pickOf(q).custom.trim() !== '');
+      const post = (answers) => {
+        if (busy) return;
+        setBusy(true);
+        setError('');
+        postJson(`asks/${encodeURIComponent(ask.id)}/answer`, { answers })
+          .then((r) => {
+            if (r?.ok) {
+              onAnswered?.();
+              void refreshState();
+            } else setError(str(r?.reason) || t('askFailed'));
+          })
+          .finally(() => setBusy(false));
+      };
+      const submit = () => (complete ? post(questions.map((q) => item(q, pickOf(q)))) : undefined);
+      const choose = (q, label) => {
+        if (quick) return post([{ id: q.id, selected: [label] }]);
+        change(q, (p) => (q.multiSelect ? { selected: p.selected.includes(label) ? p.selected.filter((x) => x !== label) : [...p.selected, label] } : { selected: [label], custom: '' }));
+      };
+      const option = (q, o) => {
+        const on = !quick && pickOf(q).selected.includes(o.label);
+        return h(
+          'button',
+          {
+            key: o.label,
+            type: 'button',
+            className: 'dshb-row',
+            disabled: busy,
+            onClick: () => choose(q, o.label),
+            'data-dsh-bots-ask-option': o.label,
+            ...(quick ? {} : { role: q.multiSelect ? 'checkbox' : 'radio', 'aria-checked': on }),
+            style: { alignItems: 'flex-start', gap: 9, padding: '7px 10px', border: `1px solid ${on ? C.label : C.border1}`, background: on ? tint(C.label, 8) : C.layer1, opacity: busy ? 0.6 : 1 },
+          },
+          quick ? null : h('span', { style: { width: 14, height: 14, marginTop: 2, flex: 'none', borderRadius: q.multiSelect ? 4 : '50%', border: `1.5px solid ${on ? C.label : C.border}`, background: on ? C.label : 'transparent', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' } }, on && q.multiSelect ? Icon.check(10) : null),
+          h('span', { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 } }, h('span', { style: { fontWeight: 600, fontSize: SMALL } }, str(o.label)), o.description ? h('span', { style: { fontSize: TINY, color: C.muted } }, str(o.description)) : null),
+        );
+      };
+      const other = (q) => {
+        const p = pickOf(q);
+        const hasOptions = Array.isArray(q.options) && q.options.length > 0;
+        const send = () => (p.custom.trim() ? post([item(q, { selected: [], custom: p.custom })]) : undefined);
+        return h(
+          'div',
+          { style: { display: 'flex', gap: 6, alignItems: 'center' } },
+          h(Input, {
+            value: p.custom,
+            disabled: busy,
+            placeholder: hasOptions ? t('askOtherPlaceholder') : t('askFreePlaceholder'),
+            'aria-label': hasOptions ? t('askOtherPlaceholder') : t('askFreePlaceholder'),
+            'data-dsh-bots-ask-other': q.id,
+            onChange: (e) => change(q, () => ({ custom: e.target.value, ...(q.multiSelect ? {} : { selected: [] }) })),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter' && !e.isComposing && !e.nativeEvent?.isComposing) {
+                e.preventDefault();
+                if (quick) send();
+                else submit();
+              }
+            },
+            style: { height: 30, fontSize: SMALL },
+          }),
+          quick ? h(Btn, { kind: 'primary', size: 'sm', icon: Icon.send(13), title: t('send'), disabled: busy || !p.custom.trim(), onClick: send, 'data-dsh-bots-ask-send': q.id }) : null,
+        );
+      };
+      return h(
+        'div',
+        { className: 'dshb-card dshb-fade', 'data-dsh-bots-ask': ask.id, 'data-native': ask.native ? true : undefined, style: { borderColor: tint(C.warn, 55), display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: TINY, fontWeight: 600, color: C.warn } }, Icon.question(13), t(ask.native ? 'askNativeTitle' : 'askTitle', { name })),
+        questions.map((q) =>
+          h(
+            'div',
+            { key: q.id, 'data-dsh-bots-ask-question': q.id, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+            q.header ? h('div', null, h(Badge, { color: C.label }, str(q.header))) : null,
+            h('div', { style: { fontWeight: 600, fontSize: FONT, wordBreak: 'break-word' } }, str(q.question)),
+            q.detail ? h(Clamp, { t, text: q.detail, lines: 6, style: { fontSize: SMALL, color: C.muted } }) : null,
+            ask.native ? null : q.multiSelect ? h('div', { style: { fontSize: TINY, color: C.faint } }, t('askMulti')) : null,
+            ask.native || !Array.isArray(q.options) || q.options.length === 0 ? null : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, q.options.filter((o) => o && typeof o.label === 'string').map((o) => option(q, o))),
+            ask.native ? null : other(q),
+          ),
+        ),
+        ask.continued ? h('div', { style: { fontSize: TINY, color: C.muted } }, t('askContinued', { name })) : null,
+        ask.native
+          ? h(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+              h('span', { style: { fontSize: SMALL, color: C.muted, flex: 1, minWidth: 160 } }, t('askNativeHint')),
+              env?.canOpen?.()
+                ? h(Btn, { icon: Icon.chat(14), size: 'sm', 'data-dsh-bots-ask-open': ask.sessionId, onClick: () => (env.openSession?.(ask.sessionId) === true ? undefined : setError(t('openFailed'))) }, t('openConversation'))
+                : null,
+            )
+          : null,
+        !quick && !ask.native ? h('div', { style: { display: 'flex', justifyContent: 'flex-end' } }, h(Btn, { kind: 'primary', size: 'sm', disabled: busy || !complete, onClick: submit, 'data-dsh-bots-ask-submit': ask.id }, t('askSubmit'))) : null,
+        error ? h('div', { 'data-dsh-bots-ask-error': true, style: { fontSize: TINY, color: C.error } }, error) : null,
+      );
+    }
+    /** The waiting questions of one conversation, above its composer. */
+    const AskCards = ({ t, sessionId, env, onAnswered }) => {
+      const list = asksIn(sessionId);
+      return list.length ? h('div', { 'data-dsh-bots-asks': list.length, className: 'dshb-scroll', style: { maxHeight: '45vh' } }, list.map((a) => h(AskCard, { key: a.id, t, ask: a, env, onAnswered }))) : null;
+    };
+
     function ChatTab({ t, bot, env, toast }) {
       const { items, failed, reload } = useMessages(bot.id);
       const [text, setText] = useState('');
@@ -2023,6 +2144,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           h(
             'div',
             { style: { maxWidth: 880, margin: '0 auto' } },
+          // Questions of its own conversation; a task's wait in the task.
+          h(AskCards, { t, sessionId: bot.sessionId, env, onAnswered: () => void reload() }),
           previewUrl ? h('div', { 'data-dsh-bots-composer-preview': previewUrl, style: { marginBottom: 8, maxHeight: 260, overflow: 'auto' } }, h(LinkCard, { t, url: previewUrl })) : null,
           h(
             'div',
@@ -2136,7 +2259,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     /** Open tasks of a bot, from the polled counts. */
     const openTaskCount = (bot) => ['working', 'question', 'stalled', 'queued'].reduce((n, k) => n + (Number(bot?.tickets?.[k]) || 0), 0);
     const DONE_PAGE = 20;
-    const groupOf = (row) => (NEEDS_YOU.includes(row?.stage) ? 'needs' : FINISHED.includes(row?.stage) ? 'done' : 'progress');
+    // A task whose conversation waits for your answer to its question (`asking`) needs you too.
+    const groupOf = (row) => (row?.asking || NEEDS_YOU.includes(row?.stage) ? 'needs' : FINISHED.includes(row?.stage) ? 'done' : 'progress');
     const newestFirst = (a, b) => (toMs(b.updatedAt ?? b.createdAt) || 0) - (toMs(a.updatedAt ?? a.createdAt) || 0);
     const taskTitle = (t, row) => str(row?.title).trim() || t('untitledTask');
     const firstLine = (text) => (str(text).split('\n').find((l) => l.trim() !== '') ?? '').trim().slice(0, 120);
@@ -2156,6 +2280,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       if (!STAGE_COLOR[stage]) return null;
       return h(Badge, { color: STAGE_COLOR[stage], 'data-dsh-bots-stage': stage }, stage === 'working' ? h(StatusDot, { status: 'running', size: 6 }) : null, t(`stage_${stage}`));
     }
+    /** A task's stage, or that it waits for your answer to its question. */
+    const TaskChip = ({ t, row }) => (row?.asking ? h(Badge, { color: C.warn, 'data-dsh-bots-task-asking': row.id }, Icon.question(11), t('askingChip')) : h(StageChip, { t, stage: row?.stage }));
     const ReportChip = ({ t, status }) => (REPORT_COLOR[status] ? h(Badge, { color: REPORT_COLOR[status], 'data-dsh-bots-report': status }, t(`report_${status}`)) : null);
     /** Who asked for a task: you, or a bot (the dispatcher, or the bot of a parent task). */
     const requesterBot = (row) => {
@@ -2192,7 +2318,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             'span',
             { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } },
             h('span', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 } }, taskTitle(t, row)),
-            h(StageChip, { t, stage: row.stage }),
+            h(TaskChip, { t, row }),
           ),
           h(
             'span',
@@ -2404,7 +2530,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
             h(
               'div',
               { style: { flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: 4 } },
-              h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } }, h('span', { style: { fontWeight: 700, fontSize: 19, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: taskTitle(t, v) }, taskTitle(t, v)), h(StageChip, { t, stage })),
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 } }, h('span', { style: { fontWeight: 700, fontSize: 19, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: taskTitle(t, v) }, taskTitle(t, v)), h(TaskChip, { t, row: v })),
               h(
                 'div',
                 { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: SMALL, color: C.muted, flexWrap: 'wrap' } },
@@ -2501,6 +2627,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
               h(
                 'div',
                 { style: { maxWidth: 820 } },
+                h(AskCards, { t, sessionId: v.sessionId, env, onAnswered: () => void reload() }),
                 h(
                   'div',
                   { style: { display: 'flex', alignItems: 'flex-end', gap: 8, padding: 6, borderRadius: 14, border: `1px solid ${C.border}`, background: C.layer1 } },
@@ -7208,6 +7335,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         tasks: 'Tasks',
         tasksHint: 'Work handed to your bots',
         tasksNeedYou: '{n} need you',
+        askTitle: '{name} is asking you',
+        askNativeTitle: '{name} is waiting for you in the conversation',
+        askNativeHint: 'Answer this one in the conversation.',
+        askContinued: '{name} went on with other work; your answer still reaches it.',
+        askMulti: 'Choose all that apply',
+        askOtherPlaceholder: 'Or type your own answer',
+        askFreePlaceholder: 'Type your answer',
+        askSubmit: 'Submit',
+        askFailed: 'The answer could not be sent.',
+        askingBadge: '{n} waiting for your answer',
+        askingChip: 'Asks you',
         tasksInProgress: '{n} in progress',
         tasksSub: 'Work your bots have taken on. Each task runs in its own conversation, so several move at once.',
         tasksNeeds: 'Needs you',
@@ -8011,6 +8149,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         tasks: '任务',
         tasksHint: '交给 Bot 们的工作',
         tasksNeedYou: '{n} 个等你处理',
+        askTitle: '{name} 在问你',
+        askNativeTitle: '{name} 在对话里等你决定',
+        askNativeHint: '这一项请在对话里回答。',
+        askContinued: '{name} 先去做别的了，你的回答仍会送到。',
+        askMulti: '可多选',
+        askOtherPlaceholder: '或者输入你自己的回答',
+        askFreePlaceholder: '输入你的回答',
+        askSubmit: '提交',
+        askFailed: '回答没有发出去。',
+        askingBadge: '{n} 个问题等你回答',
+        askingChip: '在问你',
         tasksInProgress: '{n} 个进行中',
         tasksSub: 'Bot 们接手的工作。每个任务在自己的会话里进行，几件事可以同时推进。',
         tasksNeeds: '需要你处理',

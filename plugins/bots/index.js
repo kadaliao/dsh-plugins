@@ -48,7 +48,7 @@ import { TEAMS, teamTiming, teamView } from './lib/teams.mjs';
 import { maskedApp, scanExternalMcp } from './lib/mcp-import.mjs';
 import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
-import { CHANNEL_LABELS, channelEntry, channelIssue, createChannels, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
+import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
 import { describeTiming, dmBody, dmHeader, noWaitReason, personaText, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
 import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
@@ -315,6 +315,23 @@ export function apply(ctx, config, deps = {}) {
   const isRouterHome = (bot, sessionId) => isRouter(bot) && Boolean(sessionId) && bot.sessionId === sessionId && !ticketOf(sessionId);
   /** Bot-to-bot work opens tickets (router mode), or goes to the other bot's home as in 0.7 (hands-on). */
   const ticketsOn = () => dispatcherMode() === 'router';
+
+  /**
+   * Questions a bot's home or ticket Session put to the person with `ask_user_question`, by id, while
+   * they wait (see "questions a bot asks" below). In memory only: they die with the process, as the
+   * tool call does.
+   */
+  const asks = new Map();
+  const askingIn = (sessionId) => Boolean(sessionId) && [...asks.values()].some((a) => a.sessionId === sessionId);
+  /** The questions still waiting. One past its timed wait (`continued`) goes with its task's end, or with its home (a new topic). */
+  function pendingAsks() {
+    for (const a of asks.values()) {
+      if (!a.continued) continue;
+      const t = a.ticketId ? tickets.get(a.ticketId) : null;
+      if (a.ticketId ? !t || t.ended || t.archivedAt : store.get(a.botId)?.sessionId !== a.sessionId) asks.delete(a.id);
+    }
+    return [...asks.values()];
+  }
 
   // --- applying a bot to its Agent ----------------------------------------------------
   /** sessionId → {agent, signature, disposers[]} */
@@ -1167,6 +1184,8 @@ export function apply(ctx, config, deps = {}) {
       stage: stageOf(t),
       requester: t.requester?.kind === 'session' && t.requester.botId ? { kind: 'bot', botId: t.requester.botId } : { kind: 'user' },
       ...(t.origin?.via ? { via: t.origin.via } : {}),
+      // Its conversation waits for the person's answer to a question (state `asks`): it needs you.
+      ...(askingIn(t.sessionId) ? { asking: true } : {}),
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,
       ...(last ? { lastReport: { status: last.status, preview: clip(String(last.text ?? '').trim(), PREVIEW_CHARS).text } } : {}),
@@ -1673,9 +1692,10 @@ export function apply(ctx, config, deps = {}) {
     const open = tickets.open();
     const items = [];
     for (const t of open) {
-      // A ticket whose messages wait for a slot is `queued`: it is not judged until it has one.
+      // A ticket whose messages wait for a slot is `queued`: it is not judged until it has one. One
+      // waiting for the person's answer to its question is not quiet either.
       const stage = stageOf(t);
-      if (stage !== 'working') continue;
+      if (stage !== 'working' || askingIn(t.sessionId)) continue;
       const status = agentStatusOf(t.sessionId);
       // A sub-task still working (or waiting for a slot) is this ticket's background work too: it waits for its report.
       const children = tickets.children(t.id).filter((c) => ['working', 'queued'].includes(stageOf(c))).length;
@@ -2169,6 +2189,157 @@ export function apply(ctx, config, deps = {}) {
       // Ignored.
     }
   });
+
+  // --- questions a bot asks (Harness's ask_user_question), answered from the panel too --------------
+  /** The code of a user-questions error (`UserQuestionError`, or one a Client sent back as plain data). */
+  const codeOf = (error) => (error && typeof error === 'object' && typeof error.code === 'string' ? error.code : '');
+  /** One question as the panel shows it; an approval or a plan review only by its text (the conversation answers it). */
+  function askItem(q, native) {
+    const options = Array.isArray(q?.options) ? q.options.filter((o) => typeof o?.label === 'string').map((o) => ({ label: o.label, ...(typeof o.description === 'string' && o.description ? { description: o.description } : {}) })) : null;
+    return {
+      id: String(q?.id ?? ''),
+      question: String(q?.question ?? ''),
+      ...(native
+        ? {}
+        : {
+            ...(typeof q.header === 'string' && q.header ? { header: q.header } : {}),
+            ...(typeof q.detail === 'string' && q.detail ? { detail: q.detail } : {}),
+            ...(options ? { options } : {}),
+            ...(q.multiSelect === true ? { multiSelect: true } : {}),
+          }),
+    };
+  }
+  /** A waiting question in state (`asks`). */
+  const askView = (a) => ({ id: a.id, botId: a.botId, sessionId: a.sessionId, ...(a.ticketId ? { ticketId: a.ticketId } : {}), at: a.at, ...(a.native ? { native: true } : {}), ...(a.continued ? { continued: true } : {}), questions: a.questions });
+  /** The chats the asking turn came from (a home's), or the chat its task came from, hear once that it waits for an answer in Harness. */
+  function askNotice(ask, bot) {
+    const targets = ask.ticketId ? [channels.resolveReply(ask.sessionId, { ticket: ask.ticketId })] : channels.current(ask.sessionId);
+    for (const target of targets) {
+      if (!target || target.kind === 'panel' || !target.chatId) continue;
+      try {
+        channels.replyTo(ask.sessionId, target, askNoticeText(bot, ask.questions));
+      } catch (error) {
+        ctx.logger?.info?.(`bots: question notice: ${error?.message ?? error}`);
+      }
+    }
+  }
+  /**
+   * One `user-questions/request` (the Agent-scoped waterfall `ctx.userQuestions.ask` runs). A request
+   * from a bot's home or a task Session is recorded and settles with whichever answers first: the
+   * rest of the chain (`next()`: the Harness window's card) or the panel (`answerAsk`). When no window
+   * can ask (`NO_PROVIDER`) it waits for the panel; the request's abort, or any other failure, ends
+   * it. The chain gets a signal that also aborts once the panel answered, so the window's card closes.
+   * A timed question whose wait ran out (`ASK_TIMED_OUT`) stays answerable (`continued`): the panel
+   * answers it through `userQuestions.answer`. Approvals and plan reviews are only recorded; the
+   * conversation answers them.
+   */
+  function askRequest(request, next) {
+    const sessionId = request?.agent?.session?.id;
+    const bot = botOfSession(sessionId);
+    const questions = Array.isArray(request?.questions) ? request.questions : [];
+    if (!bot || questions.length === 0) return next();
+    const native = questions.some((q) => q?.intent?.kind === 'approval' || q?.intent?.kind === 'plan-review');
+    const ticket = ticketOf(sessionId);
+    const ask = { id: `ask-${randomUUID()}`, botId: bot.id, sessionId, ...(ticket ? { ticketId: ticket.id } : {}), at: nowMs(), ...(native ? { native: true } : {}), questions: questions.map((q) => askItem(q, native)) };
+    asks.set(ask.id, ask);
+    askNotice(ask, bot);
+    const chain = () => {
+      try {
+        return Promise.resolve(next());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    if (native) return chain().finally(() => asks.delete(ask.id));
+    const original = request.signal instanceof AbortSignal ? request.signal : undefined;
+    const panel = new AbortController();
+    try {
+      request.signal = original ? AbortSignal.any([original, panel.signal]) : panel.signal;
+    } catch {
+      // A frozen request keeps its own signal: the window's card then stays until the call ends.
+    }
+    const callId = request.wait?.timed === true && typeof request.wait.callId === 'string' ? request.wait.callId : '';
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (ok, value) => {
+        if (done) return;
+        done = true;
+        original?.removeEventListener('abort', onAbort);
+        delete ask.settle;
+        if (!ok && callId && codeOf(value) === 'ASK_TIMED_OUT') Object.assign(ask, { continued: true, callId });
+        else asks.delete(ask.id);
+        panel.abort(new Error('the question was settled'));
+        (ok ? resolve : reject)(value);
+      };
+      const onAbort = () => finish(false, original.reason);
+      ask.settle = (answer) => finish(true, answer);
+      if (original?.aborted) return onAbort();
+      original?.addEventListener('abort', onAbort, { once: true });
+      chain().then(
+        (answer) => finish(true, answer),
+        (error) => {
+          if (codeOf(error) !== 'NO_PROVIDER') finish(false, error);
+        },
+      );
+    });
+  }
+  // First in the chain: the Harness forwards the request to its window and holds it there until that
+  // card is answered, so a listener after it would never hear of the question while a window is open.
+  ctx.on('user-questions/request', (request, next) => askRequest(request, next), { prepend: true });
+  // A continued question answered in the conversation: its reply reaches the Session.
+  ctx.on('session/event', (session, event) => {
+    const source = event?.type === 'user/message' ? event.data?.source : null;
+    if (source?.kind !== 'user-question-reply') return;
+    for (const a of asks.values()) if (a.continued && a.sessionId === session?.id && a.callId === source.callId) asks.delete(a.id);
+  });
+
+  /** One item per question, ids matching; labels among its options; a single-select question takes one answer. A reason when not. */
+  function checkAnswers(questions, answers) {
+    if (!Array.isArray(answers) || answers.length !== questions.length) return `give one answer for each of the ${questions.length} question(s)`;
+    const out = [];
+    for (const q of questions) {
+      const mine = answers.filter((a) => a && typeof a === 'object' && a.id === q.id);
+      if (mine.length !== 1) return `answer question "${q.id}" exactly once`;
+      const a = mine[0];
+      if (!Array.isArray(a.selected) || a.selected.some((s) => typeof s !== 'string')) return `"selected" of question "${q.id}" must be a list of option labels`;
+      const selected = [...new Set(a.selected)];
+      const custom = typeof a.custom === 'string' ? a.custom.trim().slice(0, 4000) : '';
+      const unknown = selected.find((s) => !(q.options ?? []).some((o) => o.label === s));
+      if (unknown !== undefined) return `"${unknown}" is not an option of question "${q.id}"`;
+      if (selected.length === 0 && !custom) return `question "${q.id}" has no answer`;
+      if (!q.multiSelect && selected.length + (custom ? 1 : 0) > 1) return `question "${q.id}" takes one answer`;
+      out.push({ id: q.id, selected, ...(custom ? { custom } : {}) });
+    }
+    return out;
+  }
+  /** POST /asks/:id/answer `{answers}`: the panel answers a waiting question; the timeline shows what was answered. */
+  async function answerAsk(id, body) {
+    const ask = asks.get(String(id ?? ''));
+    if (!ask) return { ok: false, reason: 'no such question: it was answered already or is no longer waiting' };
+    if (ask.native) return { ok: false, reason: 'this one is answered in the conversation' };
+    const items = checkAnswers(ask.questions, body?.answers);
+    if (typeof items === 'string') return { ok: false, reason: items };
+    if (ask.continued) {
+      const uq = service(ctx, 'userQuestions');
+      const agent = agents()?.get?.(ask.sessionId);
+      if (typeof uq?.answer !== 'function' || !agent) return { ok: false, reason: 'the conversation is not running; answer the question there' };
+      try {
+        const taken = await uq.answer(agent, ask.callId, { answers: items });
+        asks.delete(ask.id);
+        if (!taken) return { ok: false, reason: 'the question is no longer waiting for an answer' };
+      } catch (error) {
+        if (codeOf(error) === 'REPLY_QUEUED') asks.delete(ask.id);
+        return { ok: false, reason: error?.message ?? String(error) };
+      }
+    } else if (ask.settle) ask.settle({ answers: items });
+    else return { ok: false, reason: 'the question is no longer waiting for an answer' };
+    const said = (q) => {
+      const a = items.find((x) => x.id === q.id);
+      return `${q.question}\n→ ${[...a.selected, ...(a.custom ? [a.custom] : [])].join(', ')}`;
+    };
+    store.log({ from: 'user', to: ask.botId, text: ask.questions.map(said).join('\n\n'), kind: 'user', ...(ask.ticketId ? { ticket: ask.ticketId } : { thread: panelThreadKey(ask.sessionId) }) });
+    return { ok: true };
+  }
 
   // --- schedules ------------------------------------------------------------------------
   const schedule = () => {
@@ -3235,6 +3406,7 @@ export function apply(ctx, config, deps = {}) {
     const tpl = templates();
     const today = todayByBot(ledger.calls(), tzMinutes());
     const live = tickets.list({ archived: false });
+    const waiting = pendingAsks();
     const counts = new Map();
     for (const t of live) {
       const stage = stageOf(t);
@@ -3274,6 +3446,8 @@ export function apply(ctx, config, deps = {}) {
         usageToday: today[b.id] ?? 0,
         memoryNotes: memory.notes(b.id).length,
         tickets: counts.get(b.id) ?? { working: 0, question: 0, stalled: 0, queued: 0 },
+        // Questions its own conversation waits to have answered (`asks`); a task's count under `attention`.
+        asking: waiting.filter((a) => a.botId === b.id && !a.ticketId).length,
       };
     });
     const sessionMap = {};
@@ -3299,7 +3473,9 @@ export function apply(ctx, config, deps = {}) {
       // The setting asks for a router, and the dispatcher has a teammate to hand work to: it routes now.
       routerActive: routerActive(),
       routerNoticePending: s.routerNotice === 'pending',
-      attention: live.filter(needsPerson).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
+      // A task whose conversation waits for an answer to its question needs you too (its row says `asking`).
+      attention: live.filter((t) => needsPerson(t) || askingIn(t.sessionId)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(ticketRow),
+      asks: waiting.sort((a, b) => a.at - b.at).map(askView),
     };
   }
 
@@ -3764,6 +3940,13 @@ export function apply(ctx, config, deps = {}) {
     },
     threads: {
       get: (rest) => threadRoute(rest.join('/')),
+    },
+    // `asks/<id>/answer`: the panel answers a bot's question (state `asks`).
+    asks: {
+      post: (rest, body) => {
+        if (rest.length !== 2 || rest[1] !== 'answer') throw new Error('no such route');
+        return answerAsk(rest[0], body);
+      },
     },
   };
   /** One request as the web server would route it (also for tests): exact routes, then the parameter ones. */

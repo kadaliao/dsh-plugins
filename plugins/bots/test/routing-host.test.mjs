@@ -22,6 +22,7 @@ const textOfMsg = (m) => m.content.map((b, i, all) => (i < all.length - 1 && !b.
 /** The Harness: agents with `inbox.{nextTurn, nextStep}`, steer / followup / inject / cancel, scoped restrict and guard; `step` runs one turn. */
 function fakeHarness({ services: extra = {} } = {}) {
   const listeners = {};
+  const onOptions = {};
   const tools = new Map();
   const agentsById = new Map();
   const archived = [];
@@ -107,8 +108,9 @@ function fakeHarness({ services: extra = {} } = {}) {
       const d = fn();
       if (typeof d === 'function') effects.push(d);
     },
-    on(name, fn) {
+    on(name, fn, options) {
       (listeners[name] ??= []).push(fn);
+      if (options) onOptions[name] = options;
     },
     get: (name) => services[name],
     inject(names, fn) {
@@ -143,7 +145,7 @@ function fakeHarness({ services: extra = {} } = {}) {
     emit('agent/status', { agent, status: 'idle' });
     return results;
   }
-  return { ctx, tools, agentsById, archived, effects, emit, step, addAgent, services };
+  return { ctx, tools, agentsById, archived, effects, emit, step, addAgent, services, listeners, onOptions };
 }
 
 /** A chat connector module stand-in: records what is sent (with its thread options) and typing. */
@@ -1192,5 +1194,207 @@ test('per-Session records go with an archived task and with a topic left behind'
   const next = await api.newTopic(api.store.get(atlas.id));
   assert.notEqual(next, sid);
   assert.deepEqual(api.tracked(sid), { trigger: false, answered: false, turn: false, delivered: false, history: false });
+  env.dispose();
+});
+
+// --- questions a bot asks (ask_user_question): the panel sees and answers them -------------------
+
+/** A user-questions error as the Harness raises it (`UserQuestionError`). */
+const questionError = (code) => Object.assign(new Error(code), { name: 'UserQuestionError', code });
+const noWindow = () => Promise.reject(questionError('NO_PROVIDER'));
+/** One `ask_user_question` through the plugin's answerer; `native` stands for the rest of the chain (the Harness window). */
+function askUser(h, agent, questions, { native = () => new Promise(() => {}), signal, wait } = {}) {
+  const request = { questions, agent, ...(signal ? { signal } : {}), ...(wait ? { wait } : {}) };
+  const [answerer] = h.listeners['user-questions/request'];
+  return { request, out: answerer(request, () => native(request)) };
+}
+const DB_QUESTION = [{ id: 'db', question: 'Which database?', header: 'Storage', options: [{ label: 'Postgres', description: 'A server.' }, { label: 'SQLite' }] }];
+const answerRoute = (api, id, answers) => api.request('POST', `/__dsh_bots/asks/${id}/answer`, { answers });
+
+test('a question from a bot\'s home: the panel answers it, the window\'s card is withdrawn, the timeline shows the answer', async () => {
+  const env = boot();
+  const { h, api } = env;
+  // First in the chain, so the Harness window's forwarder does not hold the request first.
+  assert.deepEqual(h.onOptions['user-questions/request'], { prepend: true });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'Plan the launch');
+  const agent = h.agentsById.get(sid);
+  let windowSignal;
+  const { out } = askUser(h, agent, DB_QUESTION, { native: (req) => ((windowSignal = req.signal), new Promise(() => {})) });
+  const [ask] = api.state().asks;
+  assert.match(ask.id, /^ask-/);
+  assert.deepEqual({ ...ask, id: '', at: 0 }, { id: '', botId: atlas.id, sessionId: sid, at: 0, questions: DB_QUESTION });
+  assert.equal(api.state().bots.find((b) => b.id === atlas.id).asking, 1);
+  assert.equal(api.state().attention.length, 0, 'a home question is no task');
+  // Answers that do not fit are refused, and the question keeps waiting.
+  for (const [answers, reason] of [
+    [[], /one answer for each of the 1 question/],
+    [[{ id: 'other', selected: ['SQLite'] }], /answer question "db" exactly once/],
+    [[{ id: 'db', selected: ['MySQL'] }], /"MySQL" is not an option of question "db"/],
+    [[{ id: 'db', selected: ['Postgres', 'SQLite'] }], /takes one answer/],
+    [[{ id: 'db', selected: ['SQLite'], custom: 'Or DuckDB' }], /takes one answer/],
+    [[{ id: 'db', selected: [] }], /has no answer/],
+  ]) assert.match((await answerRoute(api, ask.id, answers)).reason, reason);
+  assert.match((await answerRoute(api, 'ask-nope', [])).reason, /no such question/);
+  assert.equal(api.state().asks.length, 1);
+  assert.deepEqual(await answerRoute(api, ask.id, [{ id: 'db', selected: ['Postgres'] }]), { ok: true });
+  assert.deepEqual(await out, { answers: [{ id: 'db', selected: ['Postgres'] }] });
+  assert.equal(windowSignal.aborted, true, 'the window card is withdrawn');
+  assert.deepEqual(api.state().asks, []);
+  assert.equal(api.state().bots.find((b) => b.id === atlas.id).asking, 0);
+  const last = api.store.messages({ bot: atlas.id }).at(-1);
+  assert.deepEqual([last.from, last.kind, last.text, last.thread], ['user', 'user', 'Which database?\n→ Postgres', `panel:${sid}`]);
+  assert.match((await answerRoute(api, ask.id, [{ id: 'db', selected: ['Postgres'] }])).reason, /no such question/);
+  // A free-text answer; a question from another conversation passes straight on.
+  const second = askUser(h, agent, [{ id: 'name', question: 'Name it?' }]);
+  assert.deepEqual(await answerRoute(api, api.state().asks[0].id, [{ id: 'name', selected: [], custom: '  Apollo ' }]), { ok: true });
+  assert.deepEqual(await second.out, { answers: [{ id: 'name', selected: [], custom: 'Apollo' }] });
+  const other = askUser(h, { session: { id: 'someone-else' } }, DB_QUESTION, { native: async () => ({ answers: [{ id: 'db', selected: ['SQLite'] }] }) });
+  assert.deepEqual(api.state().asks, []);
+  assert.deepEqual(await other.out, { answers: [{ id: 'db', selected: ['SQLite'] }] });
+  env.dispose();
+});
+
+test('the window answers first and the question clears; with no window the panel still can; an abort or a failure ends it', async () => {
+  const env = boot();
+  const { h, api } = env;
+  const agent = h.agentsById.get(await api.userSend(api.store.find('atlas'), 'Plan the launch'));
+  // The window answers.
+  let answerInWindow;
+  const first = askUser(h, agent, DB_QUESTION, { native: () => new Promise((resolve) => (answerInWindow = resolve)) });
+  const id = api.state().asks[0].id;
+  answerInWindow({ answers: [{ id: 'db', selected: ['SQLite'] }] });
+  assert.deepEqual(await first.out, { answers: [{ id: 'db', selected: ['SQLite'] }] });
+  assert.deepEqual(api.state().asks, []);
+  assert.match((await answerRoute(api, id, [{ id: 'db', selected: ['Postgres'] }])).reason, /no such question/);
+  // No window to ask: the question waits for the panel.
+  const second = askUser(h, agent, DB_QUESTION, { native: noWindow });
+  await settle();
+  assert.equal(api.state().asks.length, 1);
+  assert.deepEqual(await answerRoute(api, api.state().asks[0].id, [{ id: 'db', selected: ['SQLite'] }]), { ok: true });
+  assert.deepEqual(await second.out, { answers: [{ id: 'db', selected: ['SQLite'] }] });
+  // The call is aborted (the turn stopped): it ends with the abort's reason and clears.
+  const stop = new AbortController();
+  const third = askUser(h, agent, DB_QUESTION, { native: noWindow, signal: stop.signal });
+  await settle();
+  const reason = questionError('ASK_ABORTED');
+  stop.abort(reason);
+  await assert.rejects(third.out, (e) => e === reason);
+  assert.deepEqual(api.state().asks, []);
+  // Any other failure of the chain is passed on.
+  const fourth = askUser(h, agent, DB_QUESTION, { native: () => Promise.reject(questionError('CALLER_NOT_LIVE')) });
+  await assert.rejects(fourth.out, /CALLER_NOT_LIVE/);
+  assert.deepEqual(api.state().asks, []);
+  env.dispose();
+});
+
+test('approvals and plan reviews show in the panel as waiting in the conversation, pass on unchanged, and are not answered there', async () => {
+  const env = boot();
+  const { h, api } = env;
+  const agent = h.agentsById.get(await api.userSend(api.store.find('atlas'), 'Clean up'));
+  const approval = [{ id: 'perm', question: 'Allow rm -rf build?', detail: 'Deletes the build folder.', options: [{ label: 'Allow' }, { label: 'Deny' }], intent: { kind: 'approval', approve: 'Allow', reject: 'Deny' } }];
+  let seen;
+  let answerInWindow;
+  const { request, out } = askUser(h, agent, approval, { native: (req) => ((seen = req), new Promise((resolve) => (answerInWindow = resolve))) });
+  assert.equal(seen, request);
+  assert.equal(request.signal, undefined, 'passed on unchanged');
+  const [ask] = api.state().asks;
+  assert.equal(ask.native, true);
+  assert.deepEqual(ask.questions, [{ id: 'perm', question: 'Allow rm -rf build?' }]);
+  assert.match((await answerRoute(api, ask.id, [{ id: 'perm', selected: ['Allow'] }])).reason, /answered in the conversation/);
+  answerInWindow({ answers: [{ id: 'perm', selected: ['Deny'] }] });
+  assert.deepEqual(await out, { answers: [{ id: 'perm', selected: ['Deny'] }] });
+  assert.deepEqual(api.state().asks, []);
+  // With no window, a plan review fails as it does without the plugin.
+  const review = [{ id: 'plan', question: 'Approve the plan?', detail: '1. Do it', options: [{ label: 'Approve' }, { label: 'Revise' }], intent: { kind: 'plan-review', approve: 'Approve' } }];
+  await assert.rejects(askUser(h, agent, review, { native: noWindow }).out, /NO_PROVIDER/);
+  assert.deepEqual(api.state().asks, []);
+  env.dispose();
+});
+
+test('a task waiting on its question needs you (attention and its row), and the watchdog leaves it alone', async () => {
+  const clock = { t: Date.now() };
+  const env = boot({ now: () => clock.t });
+  const { h, api } = env;
+  api.store.save({ name: 'Forge' });
+  const sid = await api.userSend(api.store.find('atlas'), 'Fix the login bug');
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.' } }] });
+  const t = api.tickets.get(r.ticket.id);
+  await h.step(t.sessionId, { answer: 'Looking.' });
+  const worker = h.agentsById.get(t.sessionId);
+  const forge = api.store.find('forge');
+  // Asked while its Session reads idle (a question past its timed wait leaves the turn).
+  const { out } = askUser(h, worker, DB_QUESTION, { native: noWindow });
+  await settle();
+  const state = api.state();
+  assert.equal(state.asks[0].ticketId, t.id);
+  assert.equal(state.bots.find((b) => b.id === forge.id).asking, 0, 'a task\'s question counts under attention, not on the bot');
+  assert.deepEqual(state.attention.map((x) => [x.id, x.stage, x.asking]), [[t.id, 'working', true]]);
+  assert.equal((await api.request('GET', `/__dsh_bots/tickets?bot=${forge.id}`)).items[0].asking, true);
+  assert.equal((await api.request('GET', `/__dsh_bots/tickets/${t.id}`)).asking, true);
+  clock.t += 21 * 60_000;
+  await api.ticketUpkeep(clock.t);
+  const checks = () => worker.deliveries.filter((d) => /^\[Status check\]/.test(textOfMsg(d.message))).length;
+  assert.equal(checks(), 0, 'no status check while it waits for the person');
+  assert.deepEqual(await answerRoute(api, state.asks[0].id, [{ id: 'db', selected: ['Postgres'] }]), { ok: true });
+  await out;
+  const logged = api.store.messages({ bot: forge.id }).at(-1);
+  assert.deepEqual([logged.from, logged.ticket, logged.thread], ['user', t.id, undefined]);
+  assert.equal(api.state().attention.length, 0);
+  assert.equal((await api.request('GET', `/__dsh_bots/tickets/${t.id}`)).asking, undefined);
+  await api.ticketUpkeep(clock.t);
+  assert.equal(checks(), 1, 'answered, it is judged as before');
+  env.dispose();
+});
+
+test('a question in a turn that came from a chat is posted to that chat once, as plain text; a task\'s goes to the chat it came from', async () => {
+  const s = await twoChats();
+  const { h, api, tg, sid, ta } = s;
+  tg.c.sent.length = 0;
+  let pending;
+  h.tools.set('ask_user_question', { name: 'ask_user_question', execute: async (args, exec) => ((pending = askUser(h, exec.agent, args.questions, { native: noWindow })), {}) });
+  tg.say('42', 20, 'Set up the database');
+  await settle();
+  await h.step(sid, { calls: [{ name: 'ask_user_question', args: { questions: DB_QUESTION } }] });
+  await settle();
+  assert.deepEqual(tg.c.sent, [{ chatId: '42', text: 'Atlas (@atlas) is waiting for your answer in DeepSeek Harness:\n\nStorage: Which database?\n• Postgres\n• SQLite\n\nAnswer it in DeepSeek Harness; a reply here does not answer it.' }]);
+  assert.deepEqual(await answerRoute(api, api.state().asks[0].id, [{ id: 'db', selected: ['SQLite'] }]), { ok: true });
+  await pending.out;
+  await settle();
+  assert.equal(tg.c.sent.length, 1, 'once');
+  // Forge's task came from Kada's chat: its question is posted there.
+  const task = askUser(h, h.agentsById.get(ta.sessionId), [{ id: 'q', question: 'Keep the old cookie?', options: [{ label: 'Yes' }, { label: 'No' }] }], { native: noWindow });
+  await settle();
+  assert.equal(tg.c.sent.length, 2);
+  assert.equal(tg.c.sent[1].chatId, '42');
+  assert.match(tg.c.sent[1].text, /^Forge \(@forge\) is waiting for your answer in DeepSeek Harness:\n\nKeep the old cookie\?\n• Yes\n• No\n/);
+  assert.deepEqual(await answerRoute(api, api.state().asks[0].id, [{ id: 'q', selected: ['No'] }]), { ok: true });
+  await task.out;
+  s.dispose();
+});
+
+test('a timed question past its wait stays answerable: the panel answers through userQuestions.answer; a reply in the conversation clears it', async () => {
+  const answered = [];
+  const env = boot({ services: { userQuestions: { answer: async (agent, callId, answer) => (answered.push({ agent, callId, answer }), true) } } });
+  const { h, api } = env;
+  const sid = await api.userSend(api.store.find('atlas'), 'Plan the launch');
+  const agent = h.agentsById.get(sid);
+  const wait = new AbortController();
+  const { out } = askUser(h, agent, DB_QUESTION, { native: noWindow, signal: wait.signal, wait: { callId: 'call-1', timed: true } });
+  await settle();
+  wait.abort(questionError('ASK_TIMED_OUT'));
+  await assert.rejects(out, /ASK_TIMED_OUT/);
+  const [ask] = api.state().asks;
+  assert.equal(ask.continued, true);
+  assert.deepEqual(await answerRoute(api, ask.id, [{ id: 'db', selected: ['Postgres'] }]), { ok: true });
+  assert.deepEqual(answered, [{ agent, callId: 'call-1', answer: { answers: [{ id: 'db', selected: ['Postgres'] }] } }]);
+  assert.deepEqual(api.state().asks, []);
+  // Answered in the conversation instead: its reply clears the question here.
+  const again = new AbortController();
+  const second = askUser(h, agent, DB_QUESTION, { native: () => Promise.reject(questionError('ASK_TIMED_OUT')), signal: again.signal, wait: { callId: 'call-2', timed: true } });
+  await assert.rejects(second.out, /ASK_TIMED_OUT/);
+  assert.equal(api.state().asks[0].continued, true);
+  h.emit('session/event', agent.session, { type: 'user/message', seq: 999, time: Date.now(), data: { id: 'm-reply', content: [{ type: 'text', text: '{}' }], source: { kind: 'user-question-reply', callId: 'call-2', outcome: 'answered' } } });
+  assert.deepEqual(api.state().asks, []);
   env.dispose();
 });

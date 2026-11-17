@@ -2129,3 +2129,117 @@ test('task words: every stage, report status and action has English and Chinese'
   for (const [k, v] of Object.entries(en)) assert.doesNotMatch(String(v), /ticket/i, k);
   for (const [k, v] of Object.entries(zh)) assert.doesNotMatch(String(v), /ticket|工单/i, k);
 });
+
+// --- questions a bot asks (ask_user_question) -------------------------------------------------------
+
+const DB_ASK = { id: 'ask-1', botId: 'bot-a', sessionId: 'sess-a', at: Date.now(), questions: [{ id: 'db', question: 'Which database?', header: 'Storage', detail: 'For the launch site.', options: [{ label: 'Postgres', description: 'A server.' }, { label: 'SQLite' }] }] };
+/** The panel with some questions waiting (state `asks`), and what it posted; `answer` replies to the answer route. */
+async function withAsks({ asks, rows = {}, answer = () => ({ ok: true }) }, fn) {
+  const saved = { asks: STATE.asks, asking: BOTS.map((b) => b.asking), rows: TICKETS.map((r) => r.asking) };
+  STATE.asks = asks;
+  BOTS.forEach((b) => (b.asking = asks.filter((a) => a.botId === b.id && !a.ticketId).length));
+  TICKETS.forEach((r) => (r.asking = rows[r.id]));
+  try {
+    const { exports, hooks } = await loadClient();
+    const { ctx, seen } = fakeContext();
+    exports.apply(ctx);
+    const posts = mockFetch();
+    const inner = globalThis.fetch;
+    globalThis.fetch = async (url, init) => (/\/asks\/[^/]+\/answer$/.test(String(url)) ? (posts.push({ path: String(url), body: JSON.parse(init.body) }), { ok: true, json: async () => answer() }) : inner(url, init));
+    const panel = seen.slots.find((s) => s.options.name === 'main').component;
+    const v = { hooks, posts, seen, tree: await renderSettled(panel, {}, hooks) };
+    v.rerender = async (n = 3) => {
+      for (let i = 0; i < n; i += 1) {
+        hooks.rewind();
+        v.tree = panel({});
+        await flush();
+      }
+      hooks.rewind();
+      v.tree = panel({});
+      return v.tree;
+    };
+    await fn(v);
+    hooks.runCleanups();
+  } finally {
+    STATE.asks = saved.asks;
+    if (saved.asks === undefined) delete STATE.asks;
+    BOTS.forEach((b, i) => (saved.asking[i] === undefined ? delete b.asking : (b.asking = saved.asking[i])));
+    TICKETS.forEach((r, i) => (saved.rows[i] === undefined ? delete r.asking : (r.asking = saved.rows[i])));
+  }
+}
+const askCard = (tree, id) => findAll(tree, (n) => n.props['data-dsh-bots-ask'] === id)[0];
+const askOption = (tree, label) => findAll(tree, (n) => n.props['data-dsh-bots-ask-option'] === label)[0];
+
+test('questions: the bot\'s chat shows its question, one click answers it, and it leaves with the next state', async () => {
+  await withAsks({ asks: [DB_ASK] }, async (v) => {
+    const [badge] = findAll(v.tree, (n) => n.props['data-dsh-bots-row-asking'] !== undefined);
+    assert.equal(badge.props['data-dsh-bots-row-asking'], 1);
+    assert.equal(badge.props['aria-label'], '1 waiting for your answer');
+    const card = askCard(v.tree, 'ask-1');
+    const text = collect(card).join(' ');
+    for (const s of ['Ada is asking you', 'Storage', 'Which database?', 'For the launch site.', 'Postgres', 'A server.', 'SQLite']) assert.ok(text.includes(s), s);
+    assert.equal(findAll(card, (n) => n.props['data-dsh-bots-ask-submit']).length, 0, 'one single choice needs no Submit');
+    assert.equal(askOption(card, 'SQLite').props.role, undefined);
+    askOption(v.tree, 'Postgres').props.onClick();
+    await v.rerender(0);
+    assert.equal(askOption(v.tree, 'Postgres').props.disabled, true, 'disabled while posting');
+    delete STATE.asks;
+    await v.rerender();
+    assert.deepEqual(v.posts.filter((p) => p.path.includes('/asks/')), [{ path: '/__dsh_bots/asks/ask-1/answer', body: { answers: [{ id: 'db', selected: ['Postgres'] }] } }]);
+    assert.equal(askCard(v.tree, 'ask-1'), undefined, 'answered: gone');
+  });
+  // Your own words go as `custom`; a refusal shows its reason and the card stays.
+  await withAsks({ asks: [DB_ASK], answer: () => ({ ok: false, reason: 'the question is no longer waiting for an answer' }) }, async (v) => {
+    const [other] = findAll(v.tree, (n) => n.props['data-dsh-bots-ask-other'] === 'db');
+    assert.equal(other.props.placeholder, 'Or type your own answer');
+    other.props.onChange({ target: { value: ' DuckDB ' } });
+    await v.rerender(1);
+    findAll(v.tree, (n) => n.props['data-dsh-bots-ask-send'] === 'db')[0].props.onClick();
+    await v.rerender();
+    assert.deepEqual(v.posts.at(-1).body, { answers: [{ id: 'db', selected: [], custom: 'DuckDB' }] });
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-ask-error'])[0]).join(''), /no longer waiting/);
+    assert.ok(askCard(v.tree, 'ask-1'));
+  });
+});
+
+test('questions: a task\'s question puts it under Needs you; several questions are ticked and submitted; an approval opens the conversation', async () => {
+  const taskAsk = { id: 'ask-2', botId: 'bot-b', sessionId: 'ticket-tworking1', ticketId: 'tworking1', at: Date.now(), continued: true, questions: [{ id: 'tools', question: 'Which checks?', multiSelect: true, options: [{ label: 'Lint' }, { label: 'Test' }] }, { id: 'name', question: 'Name the release?' }] };
+  const approval = { id: 'ask-3', botId: 'bot-a', sessionId: 'sess-a', at: Date.now(), native: true, questions: [{ id: 'perm', question: 'Allow rm -rf build?' }] };
+  await withAsks({ asks: [taskAsk, approval], rows: { tworking1: true } }, async (v) => {
+    // The home's approval: answered in the conversation.
+    const native = askCard(v.tree, 'ask-3');
+    assert.match(collect(native).join(' '), /Ada is waiting for you in the conversation .*Allow rm -rf build\? .*Answer this one in the conversation\./);
+    assert.equal(findAll(native, (n) => n.props['data-dsh-bots-ask-option'] !== undefined || n.props['data-dsh-bots-ask-other'] !== undefined).length, 0);
+    click(v.tree, 'data-dsh-bots-ask-open', 'sess-a');
+    assert.deepEqual(v.seen.opened, ['sess-a']);
+    assert.equal(askCard(v.tree, 'ask-2'), undefined, 'a task\'s question is not in the home chat');
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-row-asking'] !== undefined).map((n) => n.props['data-dsh-bots-row-asking']), [1], 'only Ada\'s row: Bob\'s question is a task\'s');
+    // The task needs you, and says why.
+    click(v.tree, 'data-dsh-bots-tasks-entry');
+    await v.rerender();
+    const needs = findAll(v.tree, (n) => n.props['data-dsh-bots-task-group'] === 'needs')[0];
+    assert.ok(findAll(needs, (n) => n.props['data-dsh-bots-task'] === 'tworking1').length === 1);
+    assert.match(collect(findAll(v.tree, (n) => n.props['data-dsh-bots-task-asking'] === 'tworking1')[0]).join(''), /Asks you/);
+    click(v.tree, 'data-dsh-bots-task', 'tworking1');
+    await v.rerender();
+    const card = askCard(v.tree, 'ask-2');
+    assert.match(collect(card).join(' '), /Bob is asking you .*Choose all that apply/);
+    assert.match(collect(card).join(' '), /Bob went on with other work; your answer still reaches it\./);
+    const submit = () => findAll(v.tree, (n) => n.props['data-dsh-bots-ask-submit'] === 'ask-2')[0];
+    assert.equal(submit().props.disabled, true, 'every question needs an answer');
+    assert.equal(askOption(v.tree, 'Lint').props.role, 'checkbox');
+    askOption(v.tree, 'Lint').props.onClick();
+    await v.rerender(1);
+    askOption(v.tree, 'Test').props.onClick();
+    await v.rerender(1);
+    assert.equal(askOption(v.tree, 'Test').props['aria-checked'], true);
+    const [free] = findAll(v.tree, (n) => n.props['data-dsh-bots-ask-other'] === 'name');
+    assert.equal(free.props.placeholder, 'Type your answer');
+    free.props.onChange({ target: { value: 'Apollo' } });
+    await v.rerender(1);
+    assert.equal(submit().props.disabled, false);
+    submit().props.onClick();
+    await v.rerender();
+    assert.deepEqual(v.posts.filter((p) => p.path.includes('/asks/')), [{ path: '/__dsh_bots/asks/ask-2/answer', body: { answers: [{ id: 'tools', selected: ['Lint', 'Test'] }, { id: 'name', selected: [], custom: 'Apollo' }] } }]);
+  });
+});
