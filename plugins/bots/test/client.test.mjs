@@ -1920,7 +1920,7 @@ test('usage: a by-task table, and the old task counts read as runs', async () =>
     assert.match(text, /By task/);
     assert.doesNotMatch(text, /Recent tasks/);
     const bots = findAll(v.tree, (n) => n.props['data-dsh-bots-usage-bots'])[0];
-    assert.match(collect(bots.children[0]).join(' '), /Bot Runs Tokens Cost/);
+    assert.match(collect(bots.children.find((c) => c.type === 'thead')).join(' '), /Bot Runs Tokens Cost/);
     const [row] = findAll(v.tree, (n) => n.props['data-dsh-bots-usage-ticket'] === 'tquestion');
     assert.match(collect(row).join(' '), /Which logo do you prefer\? Needs your answer Bob 2 15K \$0\.025/);
     // A run that belongs to a task links to it; a task row opens it.

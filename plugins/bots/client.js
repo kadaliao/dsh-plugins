@@ -5584,12 +5584,22 @@ button.dshb-tline:hover{background:${C.hover}}
           : null,
       );
     }
-    const th = (label, right) => h('th', { style: { textAlign: right ? 'right' : 'left', fontWeight: 600, fontSize: TINY, color: C.muted, padding: '6px 8px', borderBottom: `1px solid ${C.border1}` } }, label);
-    const td = (content, right, extra = {}) => h('td', { style: { textAlign: right ? 'right' : 'left', padding: '7px 8px', borderBottom: `1px solid ${C.border1}`, fontVariantNumeric: 'tabular-nums', verticalAlign: 'middle', ...extra } }, content);
-    const Table = ({ head, rows, attr }) => h('table', { [attr]: true, style: { width: '100%', borderCollapse: 'collapse', fontSize: SMALL } }, h('thead', null, h('tr', null, head)), h('tbody', null, rows));
+    const th = (label, right) => h('th', { style: { textAlign: right ? 'right' : 'left', fontWeight: 600, fontSize: TINY, color: C.muted, padding: '6px 8px', borderBottom: `1px solid ${C.border1}`, whiteSpace: 'nowrap' } }, label);
+    // Text cells give way (and cut with an ellipsis); numbers never wrap or leave their card.
+    const td = (content, right, extra = {}) => h('td', { style: { textAlign: right ? 'right' : 'left', padding: '7px 8px', borderBottom: `1px solid ${C.border1}`, fontVariantNumeric: 'tabular-nums', verticalAlign: 'middle', overflow: 'hidden', ...(right ? { whiteSpace: 'nowrap' } : {}), ...extra } }, content);
+    /** A table that stays inside its card: the first column takes what is left, the others have fixed widths (`cols`, px; null for the flexible one). */
+    const NUM_COLS = [null, 56, 72, 84];
+    const Table = ({ head, rows, attr, cols = NUM_COLS }) =>
+      h(
+        'table',
+        { [attr]: true, style: { width: '100%', tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: SMALL } },
+        h('colgroup', null, cols.map((w, i) => h('col', { key: i, style: w ? { width: w } : undefined }))),
+        h('thead', null, h('tr', null, head)),
+        h('tbody', null, rows),
+      );
     function BotCell({ t, id }) {
       const b = botById(id);
-      return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0 } }, b ? h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 20 }) : h('span', { style: { width: 20, height: 20, borderRadius: '50%', background: C.layer2 } }), h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, botName(t, id)));
+      return h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, maxWidth: '100%' } }, b ? h(Avatar, { avatar: b.avatar, name: b.name || b.handle, size: 20 }) : h('span', { style: { width: 20, height: 20, borderRadius: '50%', background: C.layer2 } }), h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, botName(t, id)));
     }
     function triggerText(t, task) {
       if (task.trigger === 'schedule') return t('trigger_schedule');
@@ -5618,7 +5628,10 @@ button.dshb-tline:hover{background:${C.hover}}
       const tot = data?.totals;
       const prev = data?.prev;
       const empty = tot && tot.calls === 0;
-      const tickets = usageTickets(data);
+      const allTickets = usageTickets(data);
+      const [moreTasks, setMoreTasks] = useState(false);
+      const TASK_ROWS = 8;
+      const tickets = moreTasks ? allTickets : allTickets.slice(0, TASK_ROWS);
       const section = (title, body, right) => h('section', { className: 'dshb-card', style: { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 } }, h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } }, h('span', { style: { fontWeight: 700, fontSize: SMALL } }, title), h('span', { style: { flex: 1 } }), right ?? null), body);
       return h(
         'div',
@@ -5670,7 +5683,7 @@ button.dshb-tline:hover{background:${C.hover}}
                             h(
                               'tr',
                               { key: `${r.provider}/${r.model}` },
-                              td(h('span', { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } }, h('span', { className: 'dshb-mono', style: { fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } }, r.model), h('span', { style: { fontSize: TINY, color: C.faint } }, r.provider))),
+                              td(h('span', { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } }, h('span', { className: 'dshb-mono', style: { fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.model }, r.model), h('span', { style: { fontSize: TINY, color: C.faint } }, r.provider))),
                               td(String(r.calls), true),
                               td(fmtNum(r.tokens), true),
                               td(r.priced ? fmtCost(r.cost) : h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY }, onClick: () => setPrices(r.model) }, t('setPrice')), true),
@@ -5689,7 +5702,10 @@ button.dshb-tline:hover{background:${C.hover}}
                       tickets.length
                         ? section(
                             t('byTask'),
-                            h(Table, {
+                            h(
+                              'div',
+                              { style: { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 } },
+                              h(Table, {
                               attr: 'data-dsh-bots-usage-tickets',
                               head: [th(t('colTask')), th(t('colRunCount'), true), th(t('colTokens'), true), th(t('colCost'), true)],
                               rows: tickets.map((r) =>
@@ -5699,7 +5715,7 @@ button.dshb-tline:hover{background:${C.hover}}
                                   td(
                                     h(
                                       'span',
-                                      { style: { display: 'flex', flexDirection: 'column', minWidth: 0, maxWidth: 260 } },
+                                      { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } },
                                       h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 } }, h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: taskTitle(t, r) }, taskTitle(t, r)), h(StageChip, { t, stage: r.stage })),
                                       h('span', { style: { fontSize: TINY, color: C.faint } }, botName(t, r.bot)),
                                     ),
@@ -5709,7 +5725,9 @@ button.dshb-tline:hover{background:${C.hover}}
                                   td(fmtCost(r.cost), true),
                                 ),
                               ),
-                            }),
+                              }),
+                              allTickets.length > TASK_ROWS ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-usage-more-tasks': true, style: { fontSize: TINY, alignSelf: 'flex-start' }, onClick: () => setMoreTasks((v) => !v) }, moreTasks ? t('showLess') : t('usageAllTasks', { n: allTickets.length })) : null,
+                            ),
                           )
                         : null,
                       data.schedules.length
@@ -5718,7 +5736,7 @@ button.dshb-tline:hover{background:${C.hover}}
                             h(Table, {
                               attr: 'data-dsh-bots-usage-schedules',
                               head: [th(t('colTask')), th(t('colRuns'), true), th(t('colTokens'), true), th(t('colCost'), true)],
-                              rows: data.schedules.map((r) => h('tr', { key: r.id }, td(h('span', { style: { display: 'flex', flexDirection: 'column' } }, h('span', null, r.title), h('span', { style: { fontSize: TINY, color: C.faint } }, botName(t, r.bot)))), td(String(r.runs), true), td(fmtNum(r.tokens), true), td(fmtCost(r.cost), true))),
+                              rows: data.schedules.map((r) => h('tr', { key: r.id }, td(h('span', { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } }, h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.title }, r.title), h('span', { style: { fontSize: TINY, color: C.faint } }, botName(t, r.bot)))), td(String(r.runs), true), td(fmtNum(r.tokens), true), td(fmtCost(r.cost), true))),
                             }),
                           )
                         : null,
@@ -5729,6 +5747,7 @@ button.dshb-tline:hover{background:${C.hover}}
                       t('recentRuns'),
                       h(Table, {
                         attr: 'data-dsh-bots-usage-tasks',
+                        cols: [null, 150, 110, 72, 84],
                         head: [th(t('colRun')), th(t('colBot')), th(t('colWhen')), th(t('colTokens'), true), th(t('colCost'), true)],
                         rows: data.tasks.map((r) =>
                           h(
@@ -5737,7 +5756,7 @@ button.dshb-tline:hover{background:${C.hover}}
                             td(
                               h(
                                 'span',
-                                { style: { display: 'flex', flexDirection: 'column', minWidth: 0, maxWidth: 380 } },
+                                { style: { display: 'flex', flexDirection: 'column', minWidth: 0 } },
                                 h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.title }, r.title),
                                 h(
                                   'span',
@@ -5792,6 +5811,7 @@ button.dshb-tline:hover{background:${C.hover}}
             ? h('div', { style: { color: C.faint, fontSize: SMALL } }, t('noUsage'))
             : h(Table, {
                 attr: 'data-dsh-bots-price-table',
+                cols: [null, 96, 96, 72],
                 head: [th(t('colModel')), th(t('priceInput'), true), th(t('priceOutput'), true), th('')],
                 rows: data.models.map((m) =>
                   h(
@@ -7914,6 +7934,7 @@ button.dshb-tline:hover{background:${C.hover}}
         setStall: 'Minutes before a quiet task counts as stuck',
         setStallHint: 'A working task quiet this long is asked for a report; still quiet after that, it is marked stuck.',
         setArchive: 'Hours before a finished task’s conversation is archived',
+        usageAllTasks: 'Show all {n} tasks',
         setArchiveHint: 'Until then, a new message in its chat thread picks the task up again.',
         // Usage, memory, topics, settings, model sources
         settings: 'Settings',
@@ -8779,6 +8800,7 @@ button.dshb-tline:hover{background:${C.hover}}
         setStall: '多少分钟没动静算卡住',
         setStallHint: '进行中的任务这么久没动静，先请它汇报；之后仍没动静就标为卡住。',
         setArchive: '任务完成多少小时后归档会话',
+        usageAllTasks: '显示全部 {n} 个任务',
         setArchiveHint: '在此之前，它所在话题或回复串里的新消息会让这个任务继续。',
         // 用量、记忆、话题、设置、模型来源
         settings: '设置',
