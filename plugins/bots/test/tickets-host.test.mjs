@@ -194,13 +194,13 @@ test('setup: router mode is the default; a fresh install gets no upgrade notice'
 test('router home: tools that do the work are denied, waiting is guarded, the persona routes', () => {
   const agent = agentOf(atlasSid);
   const deny = agent.restricts.at(-1).deny;
-  for (const n of ['bash', 'write', 'edit', 'job_output', 'generate_image']) assert.ok(deny.includes(n), n);
-  for (const n of ['read', 'read_image', 'web_search', 'skill']) assert.ok(!deny.includes(n), n);
+  for (const n of ['bash', 'write', 'edit', 'job_output', 'generate_image', 'web_search']) assert.ok(deny.includes(n), n);
+  for (const n of ['read', 'read_image', 'skill']) assert.ok(!deny.includes(n), n);
   assert.equal(agent.guards.length, 1);
   assert.match(agent.guards[0]({ name: 'bash', arguments: { command: 'sleep 30' } }), /no sleep/);
   assert.match(agent.guards[0]({ name: 'job_output', arguments: { wait: true } }), /job waits/);
   assert.equal(agent.guards[0]({ name: 'read', arguments: { path: 'x' } }), undefined);
-  assert.match(agent.prompts[0], /You do three things: understand what the person wants, hand the work out, and report back/);
+  assert.match(agent.prompts[0], /You do three things: understand what the person wants, hand the work out, and keep track of it/);
 });
 
 test('delegation opens a ticket Session decorated as the bot, with the assignment steered in first', async () => {
@@ -286,18 +286,23 @@ test('progress is only recorded: it does not wake the router', async () => {
   await assert.rejects(call('bot_send_message', { to: '@forge', status: 'done', text: 'x' }, atlasSid), /only for reports/);
 });
 
-test('a done report reaches the router as one steered message, ends the ticket and frees its slot', async () => {
+test('a done report is shown to the person as it is, ends the ticket and frees its slot; the router is told without waking (0.9)', async () => {
   const router = agentOf(atlasSid);
   const before = router.deliveries.length;
   const r = await call('bot_send_message', { status: 'done', text: 'Fixed: the cookie lacked SameSite=None; Secure.' }, t1.sessionId);
-  assert.match(r.text, /Reported "done" on task .* to @atlas/);
+  assert.match(r.text, /^Shown to the person as it is, in Panel; @atlas is told\. The task is done/);
   const fresh = router.deliveries.slice(before);
   assert.equal(fresh.length, 1);
-  assert.equal(fresh[0].mode, 'steer');
-  assert.match(fresh[0].message.id, new RegExp(`^bots:report:${t1.id}:0:`));
+  assert.equal(fresh[0].mode, 'inject');
+  assert.match(fresh[0].message.id, new RegExp(`^bots:shown:${t1.id}:0:`));
   assert.deepEqual(fresh[0].message.source, { kind: 'agent-message', form: 'relay', senderSessionId: t1.sessionId });
-  assert.match(textOfMsg(fresh[0].message), new RegExp(`^Report from @forge on task ${t1.id} — status: done`));
+  assert.match(textOfMsg(fresh[0].message), new RegExp(`^\\[Shown\\] @forge's report on task ${t1.id} \\(@forge, done: Fix the login bug\\.\\) — status: done — went to the person as it is, in Panel:`));
   assert.match(textOfMsg(fresh[0].message), /SameSite=None/);
+  assert.match(textOfMsg(fresh[0].message), /needs no reply: do not repeat the result/);
+  // In Atlas's chat, from Forge, as the answer.
+  const shown = api.store.messages({ bot: atlas().id }).filter((m) => m.ticket === t1.id && m.kind === 'reply');
+  assert.deepEqual(shown.map((m) => [m.from, m.to, m.chat, m.status, m.thread, m.text]), [[forge().id, 'user', atlas().id, 'done', `panel:${atlasSid}`, 'Fixed: the cookie lacked SameSite=None; Secure.']]);
+  assert.ok(!api.store.messages({ bot: forge().id }).some((m) => m.ticket === t1.id && m.kind === 'reply'), "it is in the chat of the bot that asked, not in Forge's");
   const ended = api.tickets.get(t1.id);
   assert.equal(ended.ended.outcome, 'done');
   assert.equal(ended.ended.by, 'worker');
@@ -307,9 +312,9 @@ test('a done report reaches the router as one steered message, ends the ticket a
   assert.equal(started.sessionId, `ticket-${t3.id}`);
   assert.equal(agentOf(started.sessionId).deliveries[0].message.id, `bots:assign:${t3.id}`);
   assert.equal(api.slots.count(), 2);
-  // The router passes the report on: its reply is shown to the user.
-  await h.step(atlasSid, { answer: 'Forge fixed the login bug.' });
-  assert.ok(api.store.messages({ bot: atlas().id }).some((m) => m.kind === 'reply' && m.text === 'Forge fixed the login bug.'));
+  // The note is no input: a turn that takes it (with something else) is not a turn about the task.
+  await h.step(atlasSid, { claim: [fresh[0].message], answer: 'Noted.' });
+  assert.ok(!api.store.messages({ bot: atlas().id }).some((m) => m.kind === 'reply' && m.text === 'Noted.' && m.ticket));
 });
 
 test('a sub-ticket opened from a ticket Session reports back to that Session, not to the router', async () => {

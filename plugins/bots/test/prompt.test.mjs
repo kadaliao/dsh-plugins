@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ABILITIES } from '../lib/abilities.mjs';
-import { DEFAULT_COMMAND_MS, ROUTER_DENY, noWaitReason, personaText, runsSleep } from '../lib/prompt.mjs';
+import { DEFAULT_COMMAND_MS, ROUTER_DENY, noWaitReason, personaText, reportsGoDirect, runsSleep } from '../lib/prompt.mjs';
 
 const atlas = { id: 'b-atlas', name: 'Atlas', handle: 'atlas', role: 'primary', persona: 'Chief of staff.', bio: 'Runs the team', skills: [] };
 const coder = { id: 'b-coder', name: 'Coder', handle: 'coder', role: 'bot', persona: '', bio: 'Writes code', skills: [] };
@@ -31,10 +31,16 @@ test('hands-on stays the default and keeps the 0.7 dispatcher text', () => {
 test('a router dispatcher understands, hands out and reports', () => {
   const text = personaText(atlas, roster, { dispatcher: 'router', channels: ['Slack'] });
   assert.doesNotMatch(text, /Do small or general tasks yourself/);
-  assert.match(text, /You do three things: understand what the person wants, hand the work out, and report back\./);
+  assert.match(text, /You do three things: understand what the person wants, hand the work out, and keep track of it\./);
+  assert.match(text, /never do the work in this conversation, not even a quick lookup/);
+  assert.match(text, /or your own, @atlas, when no teammate fits/);
+  assert.match(text, /never drop a request because another came after it/);
+  assert.match(text, /The bot doing a task answers the person itself/);
+  assert.match(text, /`report_to: "me"`/);
+  assert.match(text, /"\[Shown\]" note/);
   assert.match(text, /Every delegation with `bot_send_message` opens a task \(ticket\) for that bot and returns at once/);
   assert.match(text, /arrive by themselves\. Never wait, sleep or poll for them: end your turn/);
-  assert.match(text, /more than one chat, answer each with `bot_reply`/);
+  assert.match(text, /more than one topic or chat, answer each with `bot_reply`/);
   assert.match(text, /`bot_recall`/);
   assert.match(text, /100 words at most/);
   assert.match(text, /pass `ticket` \(its id\) instead of `to`/);
@@ -74,11 +80,35 @@ test('a ticket session frames the conversation as one task', () => {
   assert.match(sub, /asked by task t9z9z9z9z \(@atlas\)/);
 });
 
+test('0.9: a task from a topic or chat answers the person there itself, unless its requester asked for the reports', () => {
+  const fromTopic = { ...ticket, origin: { threadKey: 'panel:s1:p1234abcd', who: 'the user' } };
+  const text = personaText(coder, roster, { ticket: fromTopic, dispatcher: 'router' });
+  assert.match(text, /Your `done`, `question` and `blocked` reports are shown to the person as they are, in the panel, in the topic the request came from/);
+  assert.match(text, /Put everything the person needs in the report/);
+  assert.doesNotMatch(text, /Put everything the requester needs/);
+  const fromChat = personaText(coder, roster, { ticket: { ...ticket, origin: { threadKey: 'slack:b/a:C1:1.2', via: 'slack', who: 'Kada' } }, channels: ['Slack'] });
+  assert.match(fromChat, /in the chat \(slack\) the request came from/);
+  assert.match(fromChat, /answer in a report, which is posted there\./);
+  // Asked back by its requester, or a sub-task, or no thread: 0.8's relay.
+  for (const t of [{ ...fromTopic, relay: true }, { ...fromTopic, parentId: 't9z9z9z9z', requester: { kind: 'session', botId: 'b-atlas', ticketId: 't9z9z9z9z' } }, { ...ticket, origin: { who: 'Kada' } }]) {
+    assert.equal(reportsGoDirect(t), false);
+    assert.match(personaText(coder, roster, { ticket: t }), /Put everything the requester needs in the report/);
+  }
+  assert.equal(reportsGoDirect(fromTopic), true);
+});
+
+test('0.9: a non-dispatcher home that opens tasks learns that the worker answers the person', () => {
+  const text = personaText(coder, roster, { tickets: true });
+  assert.match(text, /that bot answers them there itself and you get a "\[Shown\]" note/);
+  assert.match(text, /Pass `report_to: "me"` when you need the result back yourself/);
+});
+
 test('the router is denied commands, writes, sub-agents, images and Office, and keeps reading tools', () => {
-  for (const name of ['bash', 'write', 'edit', 'subagent', 'workflow', 'wait_agent', 'generate_image', 'office_render', 'office_convert', 'office_recalculate', 'job_output']) {
+  // 0.9: the web too — a search keeps the person waiting, so it is a task.
+  for (const name of ['bash', 'write', 'edit', 'subagent', 'workflow', 'wait_agent', 'generate_image', 'office_render', 'office_convert', 'office_recalculate', 'job_output', 'web_search', 'web_fetch']) {
     assert.ok(ROUTER_DENY.includes(name), name);
   }
-  for (const name of ['read', 'read_image', 'skill', 'web_search', 'web_fetch', 'glob', 'grep', 'bot_send_message', 'bot_reply', 'bot_recall']) {
+  for (const name of ['read', 'read_image', 'skill', 'glob', 'grep', 'bot_send_message', 'bot_reply', 'bot_recall']) {
     assert.ok(!ROUTER_DENY.includes(name), name);
   }
   // Harness's other ways to run commands or change files, which no ability lists, are denied too.

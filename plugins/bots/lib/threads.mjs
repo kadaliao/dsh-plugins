@@ -6,8 +6,11 @@
  * conversation in the panel. Its key is `kind:appKey:chatId[:rootId]`
  * (`appKey` is the channel's record key in channels.mjs, `botId/appId`); a
  * message with no thread id of its own belongs to the whole-chat thread
- * `kind:appKey:chatId`. A panel conversation is `panel:<sessionId>`. Inside a
- * part, `%` and `:` are written `%25` and `%3A`, so any id survives the trip.
+ * `kind:appKey:chatId`. A panel conversation is `panel:<sessionId>`, and a
+ * topic in it (a message in the panel and the replies under it, Bots 0.9) is
+ * `panel:<sessionId>:<rootId>`, `rootId` being the id of that first message.
+ * Inside a part, `%` and `:` are written `%25` and `%3A`, so any id survives
+ * the trip.
  *
  * This module decides, with no I/O:
  *
@@ -17,10 +20,10 @@
  *   woken); otherwise the Router (the channel owner's home) does;
  * - where a conversation's plain replies go (`createOrigins`): each turn
  *   collects the threads its inputs came from (user messages, and the origin
- *   threads of the tickets whose reports arrived). One chat thread: replies go
- *   there. Only the panel, or nothing: the panel. More than one, including the
- *   panel plus one chat: the panel only, and the bot names a target with
- *   `bot_reply` (`resolve`).
+ *   threads of the tickets whose reports arrived). One thread (a chat thread or
+ *   a panel topic): replies go there. Only the panel as a whole, or nothing:
+ *   the panel. More than one, including the panel plus one chat: the panel
+ *   only, and the bot names a target with `bot_reply` (`resolve`).
  *
  * @module @kadaliao/dsh-bots/lib/threads
  */
@@ -52,7 +55,7 @@ const unesc = (s) => s.replace(/%(25|3A)/gi, (_, c) => (c === '25' ? '%' : ':'))
  */
 export function threadKey(kind, appKey, msg = {}) {
   const k = part(kind);
-  if (k === PANEL) return panelThreadKey(msg?.sessionId ?? msg?.chatId);
+  if (k === PANEL) return panelThreadKey(msg?.sessionId ?? msg?.chatId, msg?.rootId ?? msg?.threadId);
   if (!KIND_RE.test(k)) return null;
   const app = part(appKey);
   const chat = part(msg?.chatId);
@@ -61,15 +64,20 @@ export function threadKey(kind, appKey, msg = {}) {
   return [k, esc(app), esc(chat), ...(root ? [esc(root)] : [])].join(':');
 }
 
-/** The thread of a home conversation in the panel: replies to it stay in the panel. */
-export function panelThreadKey(sessionId) {
+/**
+ * The thread of a home conversation in the panel (replies to it stay in the
+ * panel), or with `rootId` one topic in it: a message and the replies under it.
+ */
+export function panelThreadKey(sessionId, rootId) {
   const s = part(sessionId);
-  return s ? `${PANEL}:${esc(s)}` : null;
+  if (!s) return null;
+  const r = part(rootId);
+  return r ? `${PANEL}:${esc(s)}:${esc(r)}` : `${PANEL}:${esc(s)}`;
 }
 
 /**
  * A thread key taken apart.
- * @returns {{kind: string, appKey: string, chatId: string, rootId?: string} | {kind: 'panel', sessionId: string} | null}
+ * @returns {{kind: string, appKey: string, chatId: string, rootId?: string} | {kind: 'panel', sessionId: string, rootId?: string} | null}
  */
 export function parseThreadKey(key) {
   if (typeof key !== 'string' || key === '') return null;
@@ -77,8 +85,8 @@ export function parseThreadKey(key) {
   const kind = parts[0];
   if (!KIND_RE.test(kind)) return null;
   if (kind === PANEL) {
-    if (parts.length !== 2 || parts[1] === '') return null;
-    return { kind: PANEL, sessionId: unesc(parts[1]) };
+    if (parts.length < 2 || parts.length > 3 || parts.slice(1).some((p) => p === '')) return null;
+    return { kind: PANEL, sessionId: unesc(parts[1]), ...(parts.length === 3 ? { rootId: unesc(parts[2]) } : {}) };
   }
   if (parts.length < 3 || parts.length > 4 || parts.slice(1).some((p) => p === '')) return null;
   const [, app, chat, root] = parts;
@@ -94,11 +102,11 @@ export function parseThreadKey(key) {
 export function toThreadKey(ref) {
   if (typeof ref === 'string') {
     const p = parseThreadKey(ref);
-    return p ? (p.kind === PANEL ? panelThreadKey(p.sessionId) : threadKey(p.kind, p.appKey, p)) : null;
+    return p ? (p.kind === PANEL ? panelThreadKey(p.sessionId, p.rootId) : threadKey(p.kind, p.appKey, p)) : null;
   }
   if (!ref || typeof ref !== 'object') return null;
   if (typeof ref.threadKey === 'string') return toThreadKey(ref.threadKey);
-  if (ref.kind === PANEL) return panelThreadKey(ref.sessionId ?? ref.chatId);
+  if (ref.kind === PANEL) return panelThreadKey(ref.sessionId ?? ref.chatId, ref.rootId);
   if (ref.appKey == null && typeof ref.key === 'string' && parseThreadKey(ref.key)) return toThreadKey(ref.key);
   return threadKey(ref.kind, ref.appKey ?? ref.key, ref);
 }
@@ -109,11 +117,23 @@ export function sameThread(a, b) {
   return ka !== null && ka === toThreadKey(b);
 }
 
-/** Whether a reference names a panel conversation. */
+/** Whether a reference names a panel conversation (a whole one, or a topic in it). */
 export function isPanelThread(ref) {
   const k = toThreadKey(ref);
   return k !== null && k.startsWith(`${PANEL}:`);
 }
+
+/** The root message id of a panel topic a reference names, or '' (a chat thread, the panel as a whole). */
+export function panelTopicOf(ref) {
+  const p = parseThreadKey(toThreadKey(ref) ?? '');
+  return p?.kind === PANEL ? (p.rootId ?? '') : '';
+}
+
+/** Whether a reference is a thread replies can be aimed at: a chat thread, or a topic in the panel (not the panel as a whole). */
+export const isTopicThread = (ref) => {
+  const k = toThreadKey(ref);
+  return k !== null && (!k.startsWith(`${PANEL}:`) || panelTopicOf(k) !== '');
+};
 
 const cleanName = (s, max = 60) =>
   String(s ?? '')
@@ -136,7 +156,8 @@ export function threadLabel(meta) {
   const parts = [cleanName(m.source) || KIND_LABELS[kind] || cleanName(kind) || 'Chat'];
   const chat = cleanName(m.chatTitle) || (kind === PANEL ? '' : cleanName(m.who) || cleanName(m.chatId));
   if (chat) parts.push(chat);
-  if (kind !== PANEL && part(m.rootId)) parts.push(cleanName(m.threadTitle) || (kind === 'telegram' ? 'topic' : 'thread'));
+  if (kind === PANEL && part(m.rootId)) parts.push(cleanName(m.threadTitle) ? `topic "${cleanName(m.threadTitle, 40)}"` : `topic ${part(m.rootId)}`);
+  else if (kind !== PANEL && part(m.rootId)) parts.push(cleanName(m.threadTitle) || (kind === 'telegram' ? 'topic' : 'thread'));
   return parts.join(' · ');
 }
 
@@ -253,7 +274,7 @@ function originOf(key, given) {
   const { rootId: _root, key: _key, appKey: _app, chatId: _chat, ...extra } = rest;
   if (p.kind === PANEL) {
     const { replyTo: _replyTo, ...panelExtra } = extra;
-    return { ...panelExtra, threadKey: key, kind: PANEL, sessionId: p.sessionId };
+    return { ...panelExtra, threadKey: key, kind: PANEL, sessionId: p.sessionId, ...(p.rootId !== undefined ? { rootId: p.rootId } : {}) };
   }
   return { ...extra, threadKey: key, kind: p.kind, key: p.appKey, appKey: p.appKey, chatId: p.chatId, ...(p.rootId !== undefined ? { rootId: p.rootId } : {}) };
 }
@@ -280,8 +301,9 @@ function refOf(ref) {
  * Per conversation, the threads this turn's inputs came from (plan §4.3).
  *
  * Rules for plain replies (`replyPlan`, `replyTarget`):
- * - no input, or only panel inputs: `panel` (the text stays in the panel);
- * - exactly one chat thread and no panel input: `thread`, sent there (0.7's behaviour);
+ * - no input, or only inputs from the panel as a whole: `panel` (the text stays in the panel);
+ * - exactly one thread (a chat thread, or a topic in the panel) and nothing
+ *   else: `thread`, the text goes there (0.7's behaviour for a chat);
  * - anything more, including the panel plus one chat: `choose` (the text stays
  *   in the panel; `bot_reply` names where it goes).
  *
@@ -322,9 +344,9 @@ export function createOrigins(opts = {}) {
 
   function replyPlan(sessionId) {
     const origins = list(sessionId);
-    const chats = origins.filter((o) => o.kind !== PANEL);
-    const mode = chats.length === 0 ? 'panel' : chats.length === 1 && origins.length === 1 ? 'thread' : 'choose';
-    return { mode, target: mode === 'thread' ? copyOrigin(chats[0]) : null, origins: origins.map(copyOrigin) };
+    const threads = origins.filter((o) => o.kind !== PANEL || o.rootId !== undefined);
+    const mode = threads.length === 0 ? 'panel' : threads.length === 1 && origins.length === 1 ? 'thread' : 'choose';
+    return { mode, target: mode === 'thread' ? copyOrigin(threads[0]) : null, origins: origins.map(copyOrigin) };
   }
 
   return {
@@ -395,6 +417,37 @@ export function createOrigins(opts = {}) {
       const origin = originOf(foundKey, typeof found === 'object' ? found : {});
       if (r.ticket) origin.tickets = [r.ticket];
       return origin;
+    },
+
+    /**
+     * One of this turn's threads turned out to belong to another (a panel topic
+     * whose message was filed under an existing task's topic): it is replaced by
+     * `to` in its place, so plain replies go there. A `to` already in the turn
+     * keeps its place and the other is dropped. Returns the stored origin, or
+     * null when `from` is not one of this turn's threads.
+     * @param {string} sessionId
+     * @param {string} from - a thread key of this turn
+     * @param {string} to - the thread key replies go to instead
+     * @param {object} [origin] - details of `to` (as `noteInput` takes them)
+     */
+    retarget(sessionId, from, to, origin = {}) {
+      const s = setOf(part(sessionId));
+      const fromKey = toThreadKey(from);
+      const toKey = toThreadKey(to);
+      if (!s || !fromKey || !toKey || !s.items.has(fromKey)) return null;
+      if (fromKey === toKey) return copyOrigin(s.items.get(fromKey));
+      const prev = s.items.get(fromKey);
+      const next = originOf(toKey, { ...(s.items.get(toKey) ?? {}), ...origin });
+      const tickets = [...new Set([...(s.items.get(toKey)?.tickets ?? []), ...(prev.tickets ?? [])])];
+      if (tickets.length) next.tickets = tickets;
+      const items = new Map();
+      for (const [k, v] of s.items) {
+        if (k === fromKey) {
+          if (!s.items.has(toKey)) items.set(toKey, next);
+        } else items.set(k, k === toKey ? next : v);
+      }
+      s.items = items;
+      return copyOrigin(next);
     },
 
     /** The turn ended: its threads are forgotten. Returns them. */

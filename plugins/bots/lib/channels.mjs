@@ -994,12 +994,17 @@ export function createChannels(deps) {
      * @param {object} bot
      * @param {string} kind - the message source kind ('user', 'schedule', 'agent-message', …)
      * @param {string} text - the message text
-     * @param {{id?: string, report?: boolean}} [opts] - `id`: the message id (a delivery made with a key)
+     * @param {{id?: string, report?: boolean, threadKey?: string}} [opts] - `id`: the message id (a delivery made
+     *   with a key); `threadKey`: the panel topic a message typed in the panel belongs to (Bots 0.9)
      */
     noteUserMessage(sessionId, bot, kind, text, opts = {}) {
       if (!sessionId || !bot) return null;
       if (kind === 'user') {
         humanTurns.add(sessionId);
+        if (opts.threadKey) {
+          noteInput(sessionId, { threadKey: opts.threadKey, ...(opts.origin ? { origin: opts.origin } : {}) });
+          return null;
+        }
         const origin = claim(bot.id, text, opts.id);
         if (origin) {
           noteInput(sessionId, { threadKey: origin.threadKey, origin: targetView(origin) });
@@ -1049,6 +1054,8 @@ export function createChannels(deps) {
       if (!String(text ?? '').trim()) return null;
       const plan = origins.replyPlan(sessionId);
       if (plan.mode !== 'thread') return null;
+      // A topic in the panel: the timeline is where it is shown, nothing is sent.
+      if (plan.target.kind === 'panel') return targetView(plan.target);
       const target = withKnown(plan.target);
       if (sentThisTurn.get(sessionId)?.has(`${target.threadKey}|${norm(text)}`)) return targetView(target);
       return sendText(sessionId, target, text) ? targetView(target) : null;
@@ -1075,6 +1082,34 @@ export function createChannels(deps) {
       sent.add(`${target.threadKey}|${norm(text)}`);
       sentThisTurn.set(sessionId, sent);
       return targetView(target);
+    },
+
+    /**
+     * One of `sessionId`'s turn Threads turned out to belong to another (lib/threads.mjs
+     * `retarget`): plain replies go to `to` instead. Returns the stored origin, or null.
+     */
+    retarget(sessionId, from, to, origin) {
+      return origins.retarget(sessionId, from, to, origin);
+    },
+
+    /**
+     * Post `text` to a chat Thread outside any turn (Bots 0.9: a worker's report shown where its
+     * task came from). `ref`: `{thread}` (a key) and `replyTo` (the chat message to quote, when the
+     * chat app threads by replies). The Thread must be known here or stored, its channel connected
+     * and someone paired (see `lookupThread`). Typing shown there for `typingOf` (a Session) stops.
+     * Returns the target, or null when it cannot be reached.
+     */
+    post(ref, text, { replyTo = '', typingOf = '' } = {}) {
+      if (!String(text ?? '').trim()) return null;
+      const found = lookupThread(ref);
+      if (!found) return null;
+      // What the key itself says (kind, app, chat, root), under what was seen of the Thread lately.
+      const p = parseThreadKey(found.threadKey);
+      const fromKey = { kind: p.kind, key: p.appKey, appKey: p.appKey, chatId: p.chatId, ...(p.rootId !== undefined ? { rootId: p.rootId } : {}) };
+      const target = withKnown({ ...fromKey, ...found, ...(replyTo ? { replyTo: String(replyTo) } : {}) });
+      const sent = sendText(typingOf || '', target, text);
+      if (typingOf) stopTyping(typingOf, target.threadKey);
+      return sent ? targetView(target) : null;
     },
 
     /** What is known of a chat Thread from its latest message (who, chat title, …), or undefined. */

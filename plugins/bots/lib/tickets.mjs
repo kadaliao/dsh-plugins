@@ -177,7 +177,8 @@ export function createSlots(max = DEFAULT_MAX_WORKING) {
 /** Kind, app, chat and root from a Thread key (`kind:appKey:chatId[:rootId]`, `panel:<sessionId>`). */
 function partsOfKey(key) {
   const [kind = '', ...rest] = key.split(':');
-  if (kind === 'panel') return { kind, appKey: '', chatId: rest.join(':') };
+  // A panel conversation, or a topic in it (`panel:<sessionId>:<rootId>`).
+  if (kind === 'panel') return { kind, appKey: '', chatId: rest[0] ?? '', ...(rest.length > 1 && rest.slice(1).join(':') !== '' ? { rootId: rest.slice(1).join(':') } : {}) };
   const [appKey = '', chatId = '', ...root] = rest;
   return { kind, appKey, chatId, ...(root.length > 0 && root.join(':') !== '' ? { rootId: root.join(':') } : {}) };
 }
@@ -408,9 +409,11 @@ export function createTickets(dir, { now = Date.now } = {}) {
      * `parentId` defaults to the requesting ticket (`requester.ticketId`); the
      * origin Thread is subscribed, as is each of `threads` (keys, or Thread
      * metadata with a `key`).
-     * @param {{title?: string, text: string, botId: string, requester?: object, parentId?: string, origin?: {threadKey?: string, via?: string, who?: string}, threads?: Array<string|{key: string}>}} input
+     * `relay`: its requester asked for the reports (`report_to: "me"`), so they go to it rather
+     * than to the person in the origin Thread (Bots 0.9).
+     * @param {{title?: string, text: string, botId: string, requester?: object, parentId?: string, origin?: {threadKey?: string, via?: string, who?: string}, threads?: Array<string|{key: string}>, relay?: boolean}} input
      */
-    create({ title, text, botId, requester, parentId, origin, threads = [] } = {}) {
+    create({ title, text, botId, requester, parentId, origin, threads = [], relay = false } = {}) {
       load();
       if (typeof botId !== 'string' || botId === '') throw new Error('a ticket needs the bot that does the work');
       const body = str(text);
@@ -432,6 +435,7 @@ export function createTickets(dir, { now = Date.now } = {}) {
         origin: normalizeOrigin(origin),
         threads: [],
         reports: [],
+        ...(relay ? { relay: true } : {}),
         createdAt: at,
         updatedAt: at,
         retries: 0,

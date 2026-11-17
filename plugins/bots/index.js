@@ -50,14 +50,14 @@ import { createUnfurler } from './lib/unfurl.mjs';
 import { isLogoName, withLogo } from './lib/logos.mjs';
 import { askNoticeText, CHANNEL_LABELS, channelEntry, channelIssue, createChannels, credentialsOf, maskBot, threadNote, unmaskApps } from './lib/channels.mjs';
 import { createActivity } from './lib/activity.mjs';
-import { describeTiming, dmBody, dmHeader, noWaitReason, personaText, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
+import { describeTiming, dmBody, dmHeader, noWaitReason, personaText, reportsGoDirect, ROUTER_DENY, textOf, timingFrom, timingOfEntry } from './lib/prompt.mjs';
 import { createSettings } from './lib/settings.mjs';
 import { createPriceCatalog, priceOf } from './lib/prices.mjs';
 import { createLedger, promptTokens, report, ticketUsage, todayByBot, usageRow } from './lib/usage.mjs';
 import { createSlots, createTickets, parkedOf, REPORT_STATUSES, sessionIdOf, stageOf } from './lib/tickets.mjs';
-import { assignmentText, clip, failedNoticeText, followUpNoticeText, nudgeText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, stalledNoticeText } from './lib/cards.mjs';
+import { assignmentText, clip, failedNoticeText, followUpNoticeText, nudgeText, panelHeaderText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, shownNoticeText, stalledNoticeText } from './lib/cards.mjs';
 import { checkTickets, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
-import { isPanelThread, panelThreadKey, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
+import { isLiveSubscriber, isPanelThread, isTopicThread, panelThreadKey, panelTopicOf, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
 import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
 import { createTopics, rotationReason } from './lib/topics.mjs';
 import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
@@ -715,9 +715,9 @@ export function apply(ctx, config, deps = {}) {
     }
     return firstLine(said);
   }
-  function startTask(bot, sessionId, kind, event, via) {
+  function startTask(bot, sessionId, kind, event, via, typed) {
     const content = event.data?.content;
-    const said = textOf(content);
+    const said = typed ?? textOf(content);
     const sched = kind === 'schedule' ? (/schedule_id_json:\s*"([^"]+)"/.exec(said)?.[1] ?? /"schedule_id":\s*"([^"]+)"/.exec(said)?.[1] ?? '') : '';
     const from = kind === 'agent-message' ? (botOfSession(event.data?.source?.senderSessionId)?.id ?? 'user') : '';
     const ticket = ticketOf(sessionId);
@@ -1167,22 +1167,178 @@ export function apply(ctx, config, deps = {}) {
     return agent.session.id;
   }
 
+  // --- the panel chat: topics (Bots 0.9) -------------------------------------------------
+  /** A new id for a message typed in the panel: `p` and 8 letters or digits, short enough for a model to copy. */
+  const newPanelId = () => {
+    for (;;) {
+      const id = `p${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+      if (!store.message(id)) return id;
+    }
+  };
+  /** Whether a timeline message belongs to `botId`'s panel chat (lib/store.mjs `messages`). */
+  const inChat = (m, botId) => Boolean(m) && (m.chat ? m.chat === botId : m.from === botId || m.to === botId);
+  /** Who wrote a timeline message, as a header names them. */
+  const writerOf = (m) => (m.from === 'user' ? 'the user' : store.get(m.from) ? `@${store.get(m.from).handle}` : 'a bot');
+  /** The tasks a dispatcher's panel message may continue: open, or ended within a day; the latest change first. */
+  function openTasksOf(bot) {
+    const since = nowMs() - 24 * 3600_000;
+    return tickets
+      .list({ archived: false })
+      .filter((t) => t.requester?.botId === bot.id && !t.requester?.ticketId && (!t.ended || t.ended.at >= since))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
   /**
-   * The user writes to a bot from the panel: an ordinary user prompt in its conversation.
-   * `/new` (or `/clear`, `/新话题`) first starts a new topic; text after it goes there.
+   * The topic a panel message goes into: a new one it starts, or for a reply the topic of the
+   * message it answers (one filed under another topic counts as there). A message that was in no
+   * topic becomes the first of one. `{root, key, quoted}`.
    */
-  async function userSend(target, text) {
+  function topicFor(bot, sessionId, id, replyTo) {
+    if (!replyTo) return { root: id, key: panelThreadKey(sessionId, id), quoted: null };
+    const quoted = store.message(replyTo);
+    if (!quoted || !inChat(quoted, bot.id)) throw new Error('that message is not in this chat');
+    const root = quoted.movedTo || quoted.topic || quoted.id;
+    const first = root === quoted.id ? quoted : store.message(root);
+    const key = first?.thread && panelTopicOf(first.thread) === root ? first.thread : panelThreadKey(sessionId, root);
+    if (first && first.topic !== root) store.patchMessage(first.id, { topic: root, thread: key });
+    return { root, key, quoted };
+  }
+  /** A timeline message as the panel reads it: `pending` while no model has taken it yet; internal fields left out. */
+  function messageView(m) {
+    const { sid, ...rest } = m;
+    if (m.from !== 'user' || m.kind !== 'user' || !/^p[a-z0-9]{8}$/.test(m.id)) return rest;
+    const waiting = (sessionId, msgId) => pendingOf(agents()?.get?.(sessionId)).some((x) => x?.id === `${MESSAGE_PREFIX}${msgId}`);
+    let pending = false;
+    if (m.ticket && !sid) {
+      const t = tickets.get(m.ticket);
+      const key = `panel:${m.id}:${m.ticket}`;
+      // Queued (its assignment carries the message), waiting for a worker slot, or not taken yet.
+      pending = Boolean(t) && !t.ended && (!t.startedAt || parkedOf(t).some((x) => x.key === key) || (Boolean(t.sessionId) && waiting(t.sessionId, key)));
+    } else if (sid) pending = waiting(sid, `panel:${m.id}`);
+    return pending ? { ...rest, pending: true } : rest;
+  }
+
+  /**
+   * The user writes to a bot from the panel. `/new` (or `/clear`, `/新话题`) first starts a new
+   * topic of its conversation; text after it goes there. Every message is logged before it is
+   * handed over (the panel shows it at once, `pending` until a model takes it) and is a topic of
+   * its own, or with `replyTo` joins the topic of that message. A reply in a topic with live tasks
+   * goes to them directly (the bot's home hears of it without waking); anything else goes to the
+   * bot's home: a router steers it (a header names its topic and the tasks it may continue), other
+   * homes take it as a turn of its own. Returns `{sessionId, message?}`.
+   */
+  async function userSend(target, text, { replyTo = '' } = {}) {
     let body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     const cmd = TOPIC_COMMAND.exec(body);
     if (cmd) {
       const sessionId = await newTopic(target, 'manual');
       body = body.slice(cmd[0].length).trim();
-      if (!body) return sessionId;
+      if (!body) return { sessionId };
     } else await autoTopic(store.get(target.id) ?? target, 'user');
-    const agent = await agentOf(store.get(target.id) ?? target);
-    await sendTo(agent, { content: [{ type: 'text', text: body }], source: { kind: 'user' }, mode: homeMode(target) });
-    return agent.session.id;
+    const bot = store.get(target.id) ?? target;
+    const agent = await agentOf(bot);
+    const sid = agent.session.id;
+    const id = newPanelId();
+    const { root, key, quoted } = topicFor(bot, sid, id, String(replyTo ?? '').trim());
+    const live = quoted ? tickets.subscribers(key).filter(isLiveSubscriber) : [];
+    const base = { id, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, thread: key, topic: root, ...(quoted ? { replyTo: quoted.id } : {}) };
+    store.log(base);
+    if (live.length) {
+      try {
+        const sessions = await toTopicTasks(bot, live, body, { key, root, id, quoted });
+        return { sessionId: sessions[0] ?? sid, message: messageView(store.message(id)) };
+      } catch (error) {
+        // No task took it (one ended meanwhile, say): the bot's home does.
+        ctx.logger?.warn?.(`bots: a panel reply did not reach its task (${error?.message ?? error}); @${bot.handle} takes it`);
+      }
+    }
+    store.patchMessage(id, { sid });
+    const router = isRouterHome(bot, sid);
+    const header = router || quoted ? panelHeaderText({ topic: root, ...(quoted ? { replyTo: { who: writerOf(quoted), text: quoted.text } } : {}), open: router ? openTasksOf(bot) : [] }, cardCtx()) : '';
+    try {
+      await sendTo(agent, { content: header ? [{ type: 'text', text: header }, { type: 'text', text: body }] : [{ type: 'text', text: body }], source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
+    } catch (error) {
+      store.patchMessage(id, { failed: true });
+      throw error;
+    }
+    return { sessionId: sid, message: messageView(store.message(id)) };
+  }
+
+  /**
+   * A reply in a panel topic whose tasks are live: into each task's Session as the person's
+   * message (a done one opens again; it may take the extra slot), and the chat's bot hears of it
+   * without waking. Returns the task Sessions; throws when no task took it.
+   */
+  async function toTopicTasks(bot, list, body, { key, root, id, quoted }) {
+    const reached = [];
+    let lastError = null;
+    const header = quoted && quoted.id !== root ? panelHeaderText({ replyTo: { who: writerOf(quoted), text: quoted.text } }) : '';
+    for (const t of list) {
+      const cur = tickets.get(t.id) ?? t;
+      try {
+        reached.push(await appendToTicket(cur, body, { human: true, logged: true, header, key: `panel:${id}:${cur.id}` }));
+      } catch (error) {
+        lastError = error;
+        ctx.logger?.warn?.(`bots: a panel reply did not reach task ${cur.id}: ${error?.message ?? error}`);
+      }
+    }
+    if (!reached.length) throw lastError ?? new Error('no task took the reply');
+    store.patchMessage(id, { ticket: reached[0].id });
+    if (bot.sessionId) {
+      try {
+        const found = await service(ctx, 'sessionController')?.resolveAgent?.(bot.sessionId);
+        if (found?.agent) {
+          const text = followUpNoticeText({ tickets: reached, thread: { key: root, label: threadLabel({ threadKey: key, threadTitle: store.message(root)?.text }) }, who: 'The user', text: body }, cardCtx());
+          await sendTo(found.agent, { content: [{ type: 'text', text }], source: { kind: 'agent-message', form: 'relay' }, mode: 'inject', key: `followup:panel:${id}` });
+        }
+      } catch (error) {
+        ctx.logger?.warn?.(`bots: the follow-up notice for @${bot.handle}: ${error?.message ?? error}`);
+      }
+    }
+    return reached.map((t) => t.sessionId).filter(Boolean);
+  }
+
+  /**
+   * A thread a tool call names, as a key: a key as is; a panel topic by the id its header shows
+   * (`p…`), or by any message in it (one filed under another topic names that one). '' for none.
+   */
+  function threadRef(ref, sessionId) {
+    const r = String(ref ?? '').trim().replace(/^(?:thread|topic)\//, '');
+    if (!r || parseThreadKey(r)) return r;
+    const hit = channels.current(sessionId).find((o) => o.kind === 'panel' && o.rootId === r);
+    if (hit) return hit.threadKey;
+    const m = store.message(r);
+    if (!m) return r;
+    const root = m.movedTo || m.topic || '';
+    const first = root ? store.message(root) : undefined;
+    return first?.thread && panelTopicOf(first.thread) === root ? first.thread : r;
+  }
+  /** The panel topics of a turn, and its chat Threads, as a tool error lists them. */
+  const turnChoices = (sessionId) =>
+    channels
+      .current(sessionId)
+      .filter((o) => o.kind !== 'panel' || o.rootId)
+      .map((o) => (o.kind === 'panel' ? `${o.rootId} (${threadLabel(o)})` : `${o.threadKey} (${threadLabel(o)}${o.tickets?.length ? `; task ${o.tickets.join(', ')}` : ''})`));
+  /**
+   * A home added a person's new message to an open task (`bot_send_message` with `ticket`): when
+   * that task came from a panel topic and this turn has one other panel topic that is only that
+   * message (or the one `chosen` names), the message is filed under the task's topic (`movedTo`),
+   * and this turn's replies go there. Returns the task's topic root, or ''.
+   */
+  function fileUnder(t, sessionId, chosen) {
+    const target = t.origin?.threadKey;
+    const toRoot = target ? panelTopicOf(target) : '';
+    if (!toRoot) return '';
+    const candidates = channels.current(sessionId).filter((o) => o.kind === 'panel' && o.rootId && o.threadKey !== target && tickets.subscribers(o.threadKey).length === 0);
+    const pick = chosen ? candidates.find((o) => o.threadKey === chosen) : candidates.length === 1 ? candidates[0] : undefined;
+    if (!pick) return '';
+    const first = store.message(pick.rootId);
+    if (!first || first.from !== 'user' || first.movedTo) return '';
+    // Only a topic nobody answered in yet is filed away whole.
+    if (store.messages({ topic: pick.rootId, limit: 5 }).some((m) => m.id !== pick.rootId)) return '';
+    store.patchMessage(pick.rootId, { movedTo: toRoot });
+    channels.retarget(sessionId, pick.threadKey, target, { threadTitle: clip(store.message(toRoot)?.text ?? '', 60).text });
+    return toRoot;
   }
 
   // --- tickets: delegated work in Sessions of their own ---------------------------------
@@ -1277,6 +1433,9 @@ export function apply(ctx, config, deps = {}) {
     }
     if (plan.mode === 'thread') return originFrom(plan.target);
     if (plan.mode === 'choose') {
+      // Several topics or chats a person is waiting in (Bots 0.9): the task must say which one is its own.
+      const topics = plan.origins.filter((o) => isTopicThread(o.threadKey));
+      if (topics.length > 1) throw new Error(`this turn involves several topics or chats: say which one this task is for with \`thread\`: ${turnChoices(sessionId).join('; ')}`);
       // Several Threads and none named: the task belongs to none of them (its report reaches the requester only).
       const people = [...new Set(plan.origins.map((o) => o.who).filter(Boolean))];
       return { origin: { ...(people.length === 1 ? { who: people[0] } : { who: 'the user' }) } };
@@ -1516,7 +1675,7 @@ export function apply(ctx, config, deps = {}) {
    * take the extra one); until then it waits on the ticket. A message whose `key` was delivered (or
    * parked) already changes nothing: a replay after a restart neither reopens nor wakes the ticket.
    */
-  async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', chat = null, key = '' } = {}) {
+  async function appendToTicket(t, text, { sender = null, senderSessionId = '', human = false, force = false, header = '', chat = null, key = '', logged = false } = {}) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
     if (t.archivedAt) throw new Error(`task ${t.id} is archived; open a new task instead`);
@@ -1555,6 +1714,8 @@ export function apply(ctx, config, deps = {}) {
         : [{ type: 'text', text: body }];
     // A person's follow-up may take the extra slot (new work cannot crowd it out); a bot's may not.
     await toTicket(cur, { content, source: sender && senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' }, key: key || `msg:${cur.id}:${randomUUID()}`, human: human && !sender });
+    // A panel message is in the timeline already (logged when it was sent).
+    if (logged) return tickets.get(cur.id) ?? cur;
     store.log(
       chat
         ? { from: 'user', to: cur.botId, text: body, kind: 'user', via: chat.kind, ...(chat.who ? { who: chat.who } : {}), ...(chat.threadKey ? { thread: chat.threadKey } : {}), ticket: cur.id }
@@ -1567,10 +1728,11 @@ export function apply(ctx, config, deps = {}) {
    * Open a ticket for `target`, asked from `senderSessionId` (a bot's home or a ticket Session),
    * and start it when a slot is free. Returns the ticket; a start that failed shows as stage `failed`.
    */
-  async function openTicket(sender, target, text, senderSessionId, { title, thread: chosen } = {}) {
+  async function openTicket(sender, target, text, senderSessionId, { title, thread: chosen, relay = false } = {}) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
-    if (sender.id === target.id) throw new Error('a bot cannot message itself');
+    // The dispatcher may hand work to itself (Bots 0.9): it does it in a task of its own, with all its tools.
+    if (sender.id === target.id && !isRouterHome(sender, senderSessionId)) throw new Error('a bot cannot message itself');
     if (!service(ctx, 'sessionController')) throw new Error('tasks need the Web profile (no session controller here)');
     const parent = ticketOf(senderSessionId);
     const { origin, thread } = originOfTurn(senderSessionId, chosen);
@@ -1582,6 +1744,7 @@ export function apply(ctx, config, deps = {}) {
       requester: { kind: 'session', sessionId: senderSessionId, botId: sender.id, ...(parent ? { ticketId: parent.id } : {}) },
       origin,
       threads: thread ? [thread] : [],
+      relay,
     });
     store.log({ from: sender.id, to: target.id, text: body, kind: 'dm', ticket: t.id });
     quietFailures.add(t.id);
@@ -1608,7 +1771,14 @@ export function apply(ctx, config, deps = {}) {
     // they are kept on the task (its reports) and the panel shows them.
     const parent = next.requester?.ticketId ? tickets.get(next.requester.ticketId) : undefined;
     const unread = !wasOpen ? 'ended' : next.requester?.ticketId && (!parent || parent.ended) ? 'parent' : '';
-    if (status !== 'progress' && !unread) {
+    // Bots 0.9: the person reads it as it is, where the task came from; whoever asked is told without waking.
+    const shown = status !== 'progress' && !unread && reportsGoDirect(next) ? showReport(next, report) : null;
+    if (shown) {
+      relayed = true;
+      if (next.requester?.kind === 'session') {
+        await notifyRequester(next, shownNoticeText(next, report, { ...cardCtx(), where: shown.where }), { mode: 'inject', key: `shown:${next.id}:${index}:${report.at}` });
+      }
+    } else if (status !== 'progress' && !unread) {
       store.log({ from: next.botId, to: next.requester?.botId ?? 'user', text: body, kind: 'dm', ticket: next.id, status });
       // A ticket the user asked for has no Session to tell: the panel shows it (attention).
       if (next.requester?.kind === 'session') {
@@ -1618,7 +1788,38 @@ export function apply(ctx, config, deps = {}) {
       }
     }
     if (status === 'done' && wasOpen) ticketEnded(next);
-    return { ticket: next, relayed, ...(unread ? { unread, ...(parent ? { parent: parent.id } : {}) } : {}) };
+    return { ticket: next, relayed, ...(shown ? { shown } : {}), ...(unread ? { unread, ...(parent ? { parent: parent.id } : {}) } : {}) };
+  }
+
+  /**
+   * Post a worker's report where its task came from (Bots 0.9): a panel topic (or the panel as a
+   * whole, for a task from before topics) shows it in the chat of the bot that asked; a chat Thread
+   * gets it through that chat's app, signed with the worker's name when the worker is not the one
+   * the chat belongs to. Returns `{where}` (how the place reads), or null when it cannot be reached
+   * (the report then goes to whoever asked, as in 0.8).
+   */
+  function showReport(t, report) {
+    const key = t.origin?.threadKey;
+    if (!key) return null;
+    const worker = store.get(t.botId);
+    const owner = t.requester?.botId ? store.get(t.requester.botId) : undefined;
+    const chat = owner?.id ?? t.botId;
+    const body = String(report.text ?? '').trim();
+    if (isPanelThread(key)) {
+      const topic = panelTopicOf(key);
+      store.log({ from: t.botId, to: 'user', chat, text: body, kind: 'reply', thread: key, ...(topic ? { topic } : {}), ticket: t.id, status: report.status });
+      return { where: threadLabel({ threadKey: key, ...(topic ? { threadTitle: store.message(topic)?.text } : {}) }) };
+    }
+    const signed = worker && owner && worker.id !== owner.id ? `【${worker.name}】\n${body}` : body;
+    let sent = null;
+    try {
+      sent = channels.post({ thread: key }, signed, { replyTo: t.origin?.replyTo ?? '', typingOf: t.sessionId ?? '' });
+    } catch (error) {
+      ctx.logger?.warn?.(`bots: the report on task ${t.id} was not posted to its chat: ${error?.message ?? error}`);
+    }
+    if (!sent) return null;
+    store.log({ from: t.botId, to: 'user', chat, text: body, kind: 'reply', via: sent.kind, thread: key, ticket: t.id, status: report.status });
+    return { where: tickets.thread(key)?.label ?? threadLabel(sent) };
   }
 
   /** A person (the panel) or the requester ends a ticket (stop, or close as done); either cancels its running turn. */
@@ -1749,7 +1950,9 @@ export function apply(ctx, config, deps = {}) {
       const reportedAt = asTicket ? Number(asTicket.reports.at(-1)?.at) || 0 : bot ? lastReplyAt(bot.id) : 0;
       return { status: agents()?.get?.(sessionId) ? agentStatusOf(sessionId) : 'offline', reportedAt, remindedAt };
     };
-    for (const r of requesterReminders(all.map((t) => ({ ticket: t, stage: stageOf(t) })), facts, now)) {
+    // A task that answers the person itself (Bots 0.9) leaves its requester nothing to pass on.
+    const relayed = all.filter((t) => !reportsGoDirect(t));
+    for (const r of requesterReminders(relayed.map((t) => ({ ticket: t, stage: stageOf(t) })), facts, now)) {
       const list = r.ticketIds.map((id) => tickets.get(id)).filter(Boolean);
       if (!list.length) continue;
       try {
@@ -2066,6 +2269,8 @@ export function apply(ctx, config, deps = {}) {
     let via = null;
     let kind;
     let ticket;
+    // A panel message's own text, without the header it reached the model with.
+    let typedText;
     try {
       bot = botOfSession(session?.id);
       if (!bot || !event) return;
@@ -2088,8 +2293,9 @@ export function apply(ctx, config, deps = {}) {
         const id = String(event.data?.id ?? '');
         // The Harness tells a session about task edits made elsewhere; that is not a delivery.
         if (kind === 'schedule' && /^\[SCHEDULE CHANGE\]/.test(textOf(event.data.content))) kind = 'schedule-notice';
-        if (/^bots:followup:/.test(id)) {
-          // A follow-up went to its tasks directly; this notice (injected, it woke nothing) is no input of the turn.
+        if (/^bots:(?:followup|shown):/.test(id)) {
+          // A follow-up went to its tasks directly, or a report went to the person (injected notes that
+          // woke nothing): no input of the turn.
           kind = 'followup-notice';
         } else {
           // A report (or notice) on a ticket this conversation asked for: answering it is speaking to the user.
@@ -2104,9 +2310,14 @@ export function apply(ctx, config, deps = {}) {
           st.answers = new Set();
           st.acted = false;
           turnState.set(session.id, st);
-          const said = textOf(event.data.content);
-          // A chat message adds its Thread to the turn's; a panel message adds the panel (lib/threads.mjs).
-          via = channels.noteUserMessage(session.id, bot, kind, said, { id, report: isReport });
+          let said = textOf(event.data.content);
+          // A message typed in the panel (Bots 0.9) is logged already; its topic joins the turn's Threads.
+          const panelId = kind === 'user' ? /^bots:panel:(p[a-z0-9]{8})$/.exec(id)?.[1] : undefined;
+          const typed = panelId ? store.message(panelId) : undefined;
+          if (typed) said = typedText = typed.text;
+          const topicTitle = typed?.thread ? store.message(panelTopicOf(typed.thread))?.text : undefined;
+          // A chat message adds its Thread to the turn's; a panel message its topic, or the panel (lib/threads.mjs).
+          via = channels.noteUserMessage(session.id, bot, kind, said, { id, report: isReport, ...(typed?.thread ? { threadKey: typed.thread, origin: topicTitle ? { threadTitle: clip(topicTitle, 60).text } : {} } : {}) });
           // A drawing's note: the answer goes to the chats the person asked for it in.
           for (const o of drawingOrigins.get(id) ?? []) channels.noteInput(session.id, { threadKey: o.threadKey, origin: o });
           drawingOrigins.delete(id);
@@ -2119,7 +2330,9 @@ export function apply(ctx, config, deps = {}) {
             channels.noteInput(session.id, { threadKey: key, origin: { ...(t.origin?.who ? { who: t.origin.who } : {}), ...(th?.label ? { label: th.label } : {}), ...(t.origin?.replyTo ? { replyTo: t.origin.replyTo } : {}) }, ticket: t.id });
           }
           const thread = via ? via.threadKey : panelThreadKey(session.id);
-          if (kind === 'user') store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who, ...(thread ? { thread } : {}) } : { from: 'user', to: bot.id, text: said, kind: 'user', ...(thread ? { thread } : {}) });
+          if (kind === 'user' && typed) {
+            // Logged when it was sent.
+          } else if (kind === 'user') store.log(via ? { from: 'user', to: bot.id, text: via.body, kind: 'user', via: via.kind, who: via.who, ...(thread ? { thread } : {}) } : { from: 'user', to: bot.id, text: said, kind: 'user', ...(thread ? { thread } : {}) });
           else if (kind === 'schedule') store.log({ from: 'schedule', to: bot.id, text: said, kind: 'system' });
         }
       } else if (event.type === 'assistant/message') {
@@ -2147,8 +2360,10 @@ export function apply(ctx, config, deps = {}) {
           const plan = channels.replyPlan(session.id);
           const sent = channels.noteReply(session.id, text);
           const thread = sent ? sent.threadKey : panelThreadKey(session.id);
+          // A topic in the panel (Bots 0.9): the reply is shown in it.
+          const topic = sent?.kind === 'panel' ? panelTopicOf(sent.threadKey) : '';
           const choices = plan.mode === 'choose' ? plan.origins.filter((o) => o.kind !== 'panel').map((o) => o.threadKey) : [];
-          store.log({ from: bot.id, to: 'user', text, kind: 'reply', ...(sent ? { via: sent.kind } : {}), ...(thread ? { thread } : {}), ...(choices.length ? { notSent: true, choices } : {}) });
+          store.log({ from: bot.id, to: 'user', chat: bot.id, text, kind: 'reply', ...(sent && sent.kind !== 'panel' ? { via: sent.kind } : {}), ...(thread ? { thread } : {}), ...(topic ? { topic } : {}), ...(choices.length ? { notSent: true, choices } : {}) });
         }
       } else if (event.type === 'turn/end') {
         channels.noteTurnEnd(session.id);
@@ -2163,8 +2378,8 @@ export function apply(ctx, config, deps = {}) {
       const sid = session.id;
       if (event.type === 'user/message') {
         if (!TASK_KINDS.has(kind)) return;
-        const task = openTasks.get(sid) ?? startTask(bot, sid, kind, event, via);
-        const said = textOf(event.data?.content);
+        const task = openTasks.get(sid) ?? startTask(bot, sid, kind, event, via, typedText);
+        const said = typedText ?? textOf(event.data?.content);
         const who = kind === 'schedule' ? 'scheduled' : kind === 'agent-message' ? (ticket ? 'task message' : 'bot message') : via ? `user via ${via.kind}` : 'user';
         logLine(task, `[${who}] ${via ? via.body : said}`);
       } else if (event.type === 'assistant/message') {
@@ -2960,8 +3175,10 @@ export function apply(ctx, config, deps = {}) {
       description: [
         'Message another bot, or report on the task this conversation works on. Make the text self-contained: the other bot cannot see this conversation. Do not reply to acknowledgements.',
         "- To delegate: `to` (the bot's @handle) and `text`. Depending on how the team works, this opens a task (ticket) that the bot works on in a conversation of its own, or drops the text into that bot's own conversation; the result says which. Either way the call returns at once and the answer (a report, or a bot message) arrives here by itself: never wait or poll for it.",
-        '- When this turn involves several chats, name the one a new task is for with `thread` (its key), so its report answers there.',
-        '- To add to an open task you asked for (an answer to its question, a change): `ticket` (its id) and `text`.',
+        '- When this turn involves several topics or chats, name the one a new task is for with `thread` (as its message header shows it), so its answer goes there.',
+        '- The dispatcher may name itself in `to`: it then does the work in a task conversation of its own, with all its tools.',
+        '- A task from a topic or chat answers the person there itself; pass `report_to: "me"` to get its reports back instead (to combine several results).',
+        '- To add to an open task you asked for (an answer to its question, a change, a message of the person\'s that continues it): `ticket` (its id) and `text`.',
         '- In a task conversation, to report to whoever asked: leave out `to`, give `text` and a `status` (progress, done, blocked, question).',
       ].join('\n'),
       parameters: {
@@ -2970,7 +3187,8 @@ export function apply(ctx, config, deps = {}) {
         ticket: { type: 'string', description: 'Id of an open task to add this message to.' },
         status: { type: 'string', enum: REPORT_STATUSES, description: 'Required when reporting from a task conversation: progress (an update worth keeping), done (with the result), blocked, question.' },
         title: { type: 'string', description: 'A short title for a new task; taken from the first line of text when left out.' },
-        thread: { type: 'string', description: 'Only when this turn involves several chats: the key of the thread (as the message header "(thread …)" shows it) the new task is for. Its report then answers there, and follow-ups there reach the task. Left out with several chats, the task belongs to none of them.' },
+        thread: { type: 'string', description: 'Only when this turn involves several topics or chats: the thread (as the message header "(thread …)" shows it) the new task, or the message added to a task, is for. A new task then answers there, and follow-ups there reach it. Left out with several, a new task belongs to none of them.' },
+        report_to: { type: 'string', enum: ['thread', 'me'], description: 'For a new task: "thread" (default) — its bot answers the person in the topic or chat the request came from; "me" — its reports come back to you.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ to: v.to, from: v.from, ...(v.ticket ? { ticket: v.ticket } : {}) }) },
       isConcurrencySafe: () => true,
@@ -2988,11 +3206,13 @@ export function apply(ctx, config, deps = {}) {
           const isReport = wantTicket ? wantTicket === mine.id : !named || (named.id === requesterBot && named.id !== sender.id);
           if (isReport) {
             if (!status) throw new Error(`a report on task ${mine.id} needs a status: progress (an update), done (with the result), blocked or question`);
-            const { ticket, relayed, unread, parent } = await reportTicket(mine, status, args.text);
+            const { ticket, relayed, unread, parent, shown } = await reportTicket(mine, status, args.text);
             const to = requesterBot ? store.get(requesterBot) : null;
             const said =
               status === 'progress'
                 ? `Recorded on task ${ticket.id}; progress does not interrupt whoever asked. Go on with the work.`
+                : shown
+                  ? `Shown to the person as it is, in ${shown.where}${to ? `; @${to.handle} is told` : ''}.${status === 'done' ? ' The task is done: end your turn without a summary.' : ' Their answer will arrive here by itself; end your turn now.'}`
                 : unread
                   ? `Recorded "${status}" on task ${ticket.id}, but nobody is told: ${unread === 'ended' ? `the task has ended (${stageOf(ticket)})` : `the task that asked for it${parent ? `, ${parent},` : ''} has ended`}. The report is kept on the task; end your turn now.`
                   : `Reported "${status}" on task ${ticket.id} to ${to ? `@${to.handle}` : 'the user'}${relayed || !to ? '' : ' (it could not be reached just now; the report is kept on the task)'}.${status === 'done' ? ' The task is done: end your turn without a summary.' : ' An answer will arrive here by itself; end your turn now.'}`;
@@ -3001,6 +3221,7 @@ export function apply(ctx, config, deps = {}) {
         }
         if (status) throw new Error(mine ? `\`status\` is for reports to whoever asked for task ${mine.id} (leave out "to"); to ask @${named?.handle ?? 'a bot'} for help, leave out \`status\`` : '`status` is only for reports from a task conversation; leave it out here');
 
+        const chosen = typeof args.thread === 'string' && args.thread.trim() !== '' ? threadRef(args.thread, sessionId) : '';
         // Adding to an existing ticket.
         if (wantTicket) {
           const t = tickets.get(wantTicket);
@@ -3010,19 +3231,26 @@ export function apply(ctx, config, deps = {}) {
           const next = await appendToTicket(t, args.text, { sender: sender ?? null, senderSessionId: sessionId });
           const target = store.get(next.botId);
           const waits = next.startedAt && parkedOf(next).length > 0 ? ': every worker slot is taken, so it is handed over when one frees' : '';
-          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${handleOf(next.botId)}'s report will arrive here by itself; do not wait for it.`, ticket: row(next), to: face(target), from: face(sender) };
+          // The person's new message that continues this task joins the task's topic (Bots 0.9).
+          const filed = !mine && sender ? fileUnder(next, sessionId, chosen) : '';
+          const after = reportsGoDirect(next) ? `${handleOf(next.botId)} answers the person in the task's ${isPanelThread(next.origin?.threadKey) ? 'topic' : 'chat'} itself` : `${handleOf(next.botId)}'s report will arrive here by itself`;
+          return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}).${filed ? " The person's message is filed under that task's topic." : ''} ${after}; do not wait for it.`, ticket: row(next), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
 
         // A new ticket: from a task conversation (a sub-task), or from a bot's home when tasks are on.
-        const chosen = typeof args.thread === 'string' && args.thread.trim() !== '' ? args.thread.trim() : '';
         if (sender && sessionId && (mine || (ticketsOn() && sender.sessionId === sessionId))) {
-          const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen });
+          const relay = String(args.report_to ?? '').trim().toLowerCase() === 'me';
+          const t = await openTicket(sender, named, args.text, sessionId, { title: args.title, thread: chosen, relay });
           const stage = stageOf(t);
+          const who = named.id === sender.id ? 'yourself' : `@${named.handle}`;
+          const answer = reportsGoDirect(t)
+            ? `${named.id === sender.id ? 'You answer' : `@${named.handle} answers`} the person in ${isPanelThread(t.origin?.threadKey) ? 'the topic' : 'the chat'} it came from, and you get a note; do not wait for it or repeat it — tell the person in one line who is on it and end your turn.`
+            : 'Its report will arrive here by itself; never wait or poll for it — go on with other work or end your turn.';
           const said =
             stage === 'failed'
-              ? `Task ${t.id} for @${named.handle} could not start: ${t.error ?? 'unknown error'}.`
-              : `Opened task ${t.id} for @${named.handle} (${stage === 'queued' ? 'queued: it starts when another task finishes' : stage}). Its report will arrive here by itself; never wait or poll for it — go on with other work or end your turn.`;
+              ? `Task ${t.id} for ${who} could not start: ${t.error ?? 'unknown error'}.`
+              : `Opened task ${t.id} for ${who} (${stage === 'queued' ? 'queued: it starts when another task finishes' : stage}). ${answer}`;
           return { ok: stage !== 'failed', text: said, ticket: row(t), stage, to: face(named), from: face(sender) };
         }
         // 0.7: into the other bot's home (the user from any conversation; any home in hands-on mode).
@@ -3034,10 +3262,10 @@ export function apply(ctx, config, deps = {}) {
     defineTool({
       name: 'bot_reply',
       description:
-        'Send text to a chat: the chat a task came from (`ticket`: its id) or a chat thread (`thread`: its key, as message headers "(thread …)" and task cards show it). Use it when this turn involves more than one chat, so each answer reaches its own chat; your plain text then stays in the panel. With a single chat in the turn, plain text goes there already.',
+        'Answer in a topic or chat: the one a task came from (`ticket`: its id), or a thread (`thread`: as message headers "(thread …)" and task cards show it — a panel topic `p…`, or a chat thread key). Use it when this turn involves more than one topic or chat, so each answer stays in its own; your plain text then reaches none of them. With a single one in the turn, plain text goes there already.',
       parameters: {
-        ticket: { type: 'string', description: 'Id of a task (t…): the reply goes to the chat that task came from.' },
-        thread: { type: 'string', description: 'Key of a chat thread of this turn (or of a task you know of).' },
+        ticket: { type: 'string', description: 'Id of a task (t…): the reply goes to the topic or chat that task came from.' },
+        thread: { type: 'string', description: 'A panel topic (p…) or chat thread key of this turn (or of a task you know of).' },
         text: { type: 'string', required: true, description: 'The reply, as the person should read it.' },
       },
       output: { schema: anyValue, render: (_a, v) => text(v.text), presentationMeta: (_a, v) => ({ via: v.via, thread: v.thread }) },
@@ -3047,23 +3275,25 @@ export function apply(ctx, config, deps = {}) {
         if (!bot) throw new Error("bot_reply answers from a bot's own conversation; this conversation has no chats");
         const body = String(args.text ?? '').trim();
         if (body === '') throw new Error('text must not be empty');
-        const thread = typeof args.thread === 'string' && args.thread.trim() !== '' ? args.thread.trim().replace(/^thread\//, '') : '';
+        const thread = typeof args.thread === 'string' && args.thread.trim() !== '' ? threadRef(args.thread, sessionId) : '';
         const ticketId = typeof args.ticket === 'string' && args.ticket.trim() !== '' ? args.ticket.trim().replace(/^(?:ticket|task)\//, '') : '';
         const options = () => {
-          const list = channels.current(sessionId).filter((o) => o.kind !== 'panel');
-          return list.length
-            ? `This turn's chats: ${list.map((o) => `${o.threadKey} (${threadLabel(o)}${o.tickets?.length ? `; task ${o.tickets.join(', ')}` : ''})`).join('; ')}.`
-            : 'This turn has no chat; a task id names the chat it came from.';
+          const list = turnChoices(sessionId);
+          return list.length ? `This turn's topics and chats: ${list.join('; ')}.` : 'This turn has no topic or chat; a task id names the one it came from.';
         };
-        if (!thread && !ticketId) throw new Error(`say where: \`ticket\` (a task id) or \`thread\` (a thread key). ${options()}`);
-        const target = channels.resolveReply(sessionId, thread ? { thread } : { ticket: ticketId });
-        if (!target) throw new Error(`${thread ? `no chat thread "${thread}"` : `no chat for task ${ticketId}`} can be reached from here. ${options()}`);
+        if (!thread && !ticketId) throw new Error(`say where: \`ticket\` (a task id) or \`thread\` (a topic or thread). ${options()}`);
+        // A topic in the panel (Bots 0.9): this turn's, one a task came from, or any the bot's chat has.
+        const panelKey = thread ? (panelTopicOf(thread) ? thread : '') : panelTopicOf(tickets.get(ticketId)?.origin?.threadKey) ? tickets.get(ticketId).origin.threadKey : '';
+        const target = panelKey ? { kind: 'panel', threadKey: panelKey } : channels.resolveReply(sessionId, thread ? { thread } : { ticket: ticketId });
+        if (!target) throw new Error(`${thread ? `no topic or chat thread "${thread}"` : `no topic or chat for task ${ticketId}`} can be reached from here. ${options()}`);
         if (target.kind === 'panel') {
-          store.log({ from: bot.id, to: 'user', text: body, kind: 'reply', thread: panelThreadKey(sessionId) });
-          return { ok: true, text: 'That thread is the panel: the reply is shown there.', thread: target.threadKey };
+          const topic = panelTopicOf(target.threadKey);
+          const chat = (topic && store.message(topic)?.chat) || bot.id;
+          store.log({ from: bot.id, to: 'user', chat, text: body, kind: 'reply', thread: topic ? target.threadKey : panelThreadKey(sessionId), ...(topic ? { topic } : {}) });
+          return { ok: true, text: topic ? `Shown in the panel, in topic ${topic}.` : 'That thread is the panel: the reply is shown there.', thread: target.threadKey };
         }
         channels.replyTo(sessionId, target, body);
-        store.log({ from: bot.id, to: 'user', text: body, kind: 'reply', via: target.kind, thread: target.threadKey });
+        store.log({ from: bot.id, to: 'user', chat: bot.id, text: body, kind: 'reply', via: target.kind, thread: target.threadKey });
         return { ok: true, text: `Sent to ${threadLabel(target)}.`, thread: target.threadKey, via: target.kind };
       },
     }),
@@ -3926,7 +4156,7 @@ export function apply(ctx, config, deps = {}) {
         const text = zhText
           ? `请为你自己写一个新技能：${ask}\n\n如果有 skill-creator 技能，先加载它并按它的方法写。写好后调用 bot_update（bot: @${bot.handle}，add_skills）保存：name 用小写英文短横线，description 一句话写清楚何时使用，content 是完整的 Markdown 指南。最后用两三句话告诉我这个技能能做什么。`
           : `Write a new skill for yourself: ${ask}\n\nIf the skill-creator skill is available, load it and follow it. Save the result with bot_update (bot: @${bot.handle}, add_skills): a lowercase-dashed name, a one-sentence description of when to use it, and the full Markdown instructions as content. Then tell me in two or three sentences what the skill does.`;
-        return { ok: true, sessionId: await userSend(bot, text) };
+        return { ok: true, sessionId: (await userSend(bot, text)).sessionId };
       },
     },
     'apps/external': { get: () => ({ items: scanExternalMcp().map(maskedApp) }) },
@@ -3952,9 +4182,7 @@ export function apply(ctx, config, deps = {}) {
     catalog: { get: () => catalog() },
     // A link preview card for the chat: YouTube, X posts, or any page's OpenGraph meta.
     unfurl: { get: (url) => unfurlLink(url.searchParams.get('url') ?? '') },
-    messages: {
-      get: (url) => ({ items: store.messages({ bot: url.searchParams.get('bot') ?? '', limit: Number(url.searchParams.get('limit')) || 200 }) }),
-    },
+    messages: { get: (url) => messagesView(url) },
     schedules: {
       get: async (url) => {
         const id = url.searchParams.get('bot');
@@ -3999,7 +4227,8 @@ export function apply(ctx, config, deps = {}) {
       post: async (body) => {
         const bot = store.get(String(body.to ?? ''));
         if (!bot) return { ok: false, reason: 'no such bot' };
-        return { ok: true, sessionId: await userSend(bot, body.text) };
+        const sent = await userSend(bot, body.text, { replyTo: String(body.replyTo ?? '') });
+        return { ok: true, sessionId: sent.sessionId, ...(sent.message ? { message: sent.message } : {}) };
       },
     },
     avatar: {
@@ -4140,6 +4369,26 @@ export function apply(ctx, config, deps = {}) {
     'channels/reconnect': { post: (body) => ({ ok: channels.reconnect(String(body.botId ?? ''), String(body.appId ?? '')) }) },
   };
 
+  /**
+   * GET /messages?bot=&topic=&limit=: a bot's chat (or one topic of it, or everything), oldest first,
+   * and per topic seen there its key and the tasks it has (PLAN-0.9 §7.3).
+   */
+  function messagesView(url) {
+    const bot = url.searchParams.get('bot') ?? '';
+    const topic = url.searchParams.get('topic') ?? '';
+    const limit = Number(url.searchParams.get('limit')) || (topic ? 500 : 200);
+    const items = store.messages({ bot, limit, topic }).map(messageView);
+    const roots = new Set(items.flatMap((m) => [m.topic, m.movedTo]).filter(Boolean));
+    const topics = {};
+    for (const root of roots) {
+      const first = items.find((m) => m.id === root) ?? store.message(root);
+      const key = first?.thread && panelTopicOf(first.thread) === root ? first.thread : items.find((m) => m.topic === root && m.thread)?.thread;
+      if (!key) continue;
+      topics[root] = { key, tickets: tickets.subscribers(key).filter((t) => !t.archivedAt).map(ticketRow) };
+    }
+    return { items, topics };
+  }
+
   /** GET /tickets?bot=&stage=&limit=&offset=: rows, the latest change first; `stage` may list several (a,b). */
   function ticketList(url) {
     const bot = url.searchParams.get('bot') || undefined;
@@ -4158,9 +4407,11 @@ export function apply(ctx, config, deps = {}) {
     const th = tickets.thread(key);
     const parsed = parseThreadKey(key);
     if (!th && !parsed) return { ok: false, reason: 'no such thread' };
+    // The panel as a whole holds its topics (`panel:<sessionId>:<root>`).
+    const whole = isPanelThread(key) && !panelTopicOf(key);
     const recent = store
       .messages({ limit: 2000 })
-      .filter((m) => m.thread === key)
+      .filter((m) => m.thread === key || (whole && String(m.thread ?? '').startsWith(`${key}:`)))
       .slice(-10)
       .map((m) => ({ at: m.at, from: m.from, to: m.to, ...(m.who ? { who: m.who } : {}), text: clip(String(m.text ?? ''), 300).text }));
     return { key, label: th?.label ?? threadLabel(key), kind: th?.kind ?? parsed?.kind ?? '', tickets: tickets.subscribers(key).map(ticketRow), recent };
@@ -4267,7 +4518,7 @@ export function apply(ctx, config, deps = {}) {
 
   /** For tests: which per-Session records this process still keeps for `sessionId`. */
   const tracked = (sessionId) => ({ trigger: trigger.has(sessionId), answered: answered.has(sessionId), turn: turnState.has(sessionId), delivered: deliveredIds.has(sessionId), history: historyRead.has(sessionId) });
-  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend, openTasks, codexSync, finishTask, tickets, slots, pump, botOfSession, request, ticketView, ticketUpkeep, watch, startup, recoverTickets, tracked };
+  return { store, state, deliver, install, reconcile, installed, routes, channels, memory, ledger, topics, settings, newTopic, dream, sweep, userSend: async (...a) => (await userSend(...a)).sessionId, panelSend: userSend, openTasks, codexSync, finishTask, tickets, slots, pump, botOfSession, request, ticketView, ticketUpkeep, watch, startup, recoverTickets, tracked };
 }
 
 function serveAvatar(dir, req, res) {

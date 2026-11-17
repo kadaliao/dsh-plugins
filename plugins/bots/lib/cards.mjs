@@ -274,6 +274,49 @@ export function followUpNoticeText(notice, ctx = {}) {
 }
 
 /**
+ * Bots 0.9: a worker's report went to the person as it is, in the topic or chat its task came
+ * from. Its requester is told without being woken (the note is "good to know"): it need not pass
+ * the result on, and a `question` is the person's to answer there.
+ * @param {object} ticket
+ * @param {{status?: string, text?: string}} report
+ * @param {CardContext & {where?: string}} [ctx] - `where`: how that topic or chat reads ("Panel · topic …")
+ */
+export function shownNoticeText(ticket, report, ctx = {}) {
+  const status = report?.status ?? 'done';
+  const next =
+    status === 'done'
+      ? 'The task is done. This needs no reply: do not repeat the result.'
+      : status === 'question'
+        ? 'The person answers it there, and the answer goes to the task directly. This needs no reply from you.'
+        : 'The person sees it there. It needs no reply from you, unless you can unblock the task: then add to it with bot_send_message (ticket: its id).';
+  return [
+    `[Shown] ${handleOf(ctx.bots, ticket.botId)}'s report on task ${ticketPhrase(ticket, ctx)} — status: ${status} — went to the person as it is${ctx.where ? `, in ${ctx.where}` : ''}:`,
+    quote(clip(String(report?.text ?? '').trim(), PREVIEW_CHARS).text),
+    next,
+  ].join('\n');
+}
+
+/** How many tasks a panel message header lists for the dispatcher. */
+export const HEADER_TASKS = 8;
+
+/**
+ * The line a message typed in the panel reaches a bot's home with (Bots 0.9): its topic, as
+ * `bot_reply` and `bot_send_message` name it (`[Panel] (thread p…)`); for a reply in a topic,
+ * the message it answers; and for the dispatcher the tasks a message may continue (`open`: open
+ * ones, or ones that finished lately; at most `HEADER_TASKS`).
+ * @param {{topic: string, replyTo?: {who?: string, text?: string}, open?: object[]}} what
+ * @param {CardContext} [ctx]
+ */
+export function panelHeaderText({ topic, replyTo, open = [] } = {}, ctx = {}) {
+  const lines = [`[Panel]${topic ? ` (thread ${topic})` : ''}`];
+  const quoted = String(replyTo?.text ?? '').trim();
+  if (quoted) lines.push(`In reply to ${replyTo.who || 'a message'}: ${quote(clip(quoted, 160).text)}`);
+  const listed = open.slice(0, HEADER_TASKS);
+  if (listed.length) lines.push(`Open tasks: ${listed.map((t) => ticketPhrase(t, ctx)).join('; ')}`);
+  return lines.join('\n');
+}
+
+/**
  * Prepended when a ticket that was working is restarted after Harness came
  * back: look before repeating anything that left the conversation.
  * @param {object} ticket

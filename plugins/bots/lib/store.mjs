@@ -276,12 +276,24 @@ export function createStore(dir) {
     if (messages !== null && now === logSeen) return messages;
     logSeen = now;
     messages = [];
+    const index = new Map();
     try {
       for (const line of readFileSync(log, 'utf8').split('\n')) {
         if (!line) continue;
         try {
           const m = JSON.parse(line);
-          if (m && typeof m.id === 'string') messages.push(m);
+          if (!m || typeof m.id !== 'string') continue;
+          // A later line changing an earlier message (`patchMessage`): merged into it.
+          if (m.patch === true) {
+            const at = index.get(m.id);
+            if (at !== undefined) {
+              const { id: _id, patch: _patch, ...fields } = m;
+              Object.assign(messages[at], fields);
+            }
+            continue;
+          }
+          index.set(m.id, messages.length);
+          messages.push(m);
         } catch {
           // Skip a torn line.
         }
@@ -406,11 +418,48 @@ export function createStore(dir) {
       }
       return m;
     },
-    /** Oldest first; `bot` limits to messages from or to that bot. */
-    messages({ bot = '', limit = 200 } = {}) {
+    /**
+     * Change fields of a logged message (`movedTo` when it was filed under another topic, …):
+     * an appended line, merged when the log is read. Returns the message as it is now, or null.
+     */
+    patchMessage(id, fields = {}) {
       const all = readLog();
-      const rows = bot ? all.filter((m) => m.from === bot || m.to === bot) : all;
-      return rows.slice(-Math.max(1, Math.min(2000, limit)));
+      const m = all.find((x) => x.id === id);
+      if (!m) return null;
+      const { id: _id, patch: _patch, ...rest } = fields;
+      Object.assign(m, rest);
+      try {
+        mkdirSync(dir, { recursive: true });
+        appendFileSync(log, JSON.stringify({ id, patch: true, ...rest }) + '\n', 'utf8');
+        logSeen = mtime(log);
+      } catch {
+        // The timeline is a convenience.
+      }
+      return { ...m };
+    },
+    /** One logged message by id, or undefined. */
+    message(id) {
+      const m = readLog().find((x) => x.id === id);
+      return m ? { ...m } : undefined;
+    },
+    /**
+     * Oldest first. `bot` limits to that bot's chat: messages that name it as their `chat`, and
+     * those with no `chat` sent from or to it. `topic` limits to one panel topic: its first
+     * message, the replies in it and the messages filed under it (`movedTo`). Without `topic`, a
+     * reply in the window whose topic began earlier brings that first message along, before the rest.
+     */
+    messages({ bot = '', limit = 200, topic = '' } = {}) {
+      const all = readLog();
+      const mine = (m) => !bot || (m.chat ? m.chat === bot : m.from === bot || m.to === bot);
+      const cap = Math.max(1, Math.min(2000, Number(limit) || 200));
+      if (topic) return all.filter((m) => mine(m) && (m.id === topic || m.topic === topic || m.movedTo === topic)).slice(-cap);
+      const rows = bot ? all.filter(mine) : all;
+      const window = rows.slice(-cap);
+      const have = new Set(window.map((m) => m.id));
+      const missing = new Set();
+      for (const m of window) for (const r of [m.topic, m.movedTo]) if (r && !have.has(r)) missing.add(r);
+      if (missing.size === 0) return window;
+      return [...rows.filter((m) => missing.has(m.id)), ...window];
     },
     messageCount() {
       return readLog().length;

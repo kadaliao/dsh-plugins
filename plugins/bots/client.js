@@ -789,6 +789,33 @@ button.dshb-tline:hover{background:${C.hover}}
 .dshb-seg button{height:26px;padding:0 11px;border:none;border-radius:7px;background:transparent;color:${C.muted};font:inherit;font-size:${SMALL};font-weight:550;cursor:pointer;white-space:nowrap}
 .dshb-seg button:hover{color:${C.primary}}
 .dshb-seg button[data-active=true]{background:${C.layer1};color:${C.primary};box-shadow:0 1px 2px rgba(0,0,0,.12),0 0 0 1px ${C.border1}}
+.dshb-chatwrap{display:flex;flex:1;min-height:0;min-width:0;position:relative;container-type:inline-size}
+.dshb-chatmain{display:flex;flex-direction:column;flex:1;min-width:0;min-height:0}
+.dshb-composer{display:flex;flex-direction:column;gap:6px;padding:6px;border-radius:14px;border:1px solid ${C.border};background:${C.layer1};min-width:0}
+.dshb-quote{display:flex;align-items:center;gap:6px;min-width:0;padding:5px 8px;border-radius:9px;background:${tint(C.label, 9)};border-left:3px solid ${C.label};font-size:${TINY}}
+.dshb-msg{position:relative;min-width:0}
+.dshb-msg-act{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:7px;border:1px solid ${C.border1};background:${C.base};color:${C.muted};font:inherit;font-size:${TINY};cursor:pointer;opacity:0;transition:opacity .12s;flex:none;white-space:nowrap}
+.dshb-msg:hover .dshb-msg-act,.dshb-msg:focus-within .dshb-msg-act,.dshb-msg-act:focus-visible{opacity:1}
+.dshb-msg-act:hover{color:${C.primary};background:${C.hover}}
+.dshb-msg-actbox{position:absolute;top:0;right:0;z-index:1}
+@media (hover:none){.dshb-msg-act{opacity:.65}}
+.dshb-topicbar{display:flex;flex-direction:column;gap:5px;width:min(520px,100%);min-width:0;padding:8px 11px;border:1px solid ${C.border1};border-radius:11px;background:${C.layer1};font-size:${SMALL};cursor:pointer;text-align:left;transition:border-color .12s,background .12s}
+.dshb-topicbar:hover{border-color:${C.border};background:${C.layer2}}
+.dshb-topicbar:focus-visible{outline:2px solid ${C.label};outline-offset:1px}
+.dshb-topicbar[data-unread=true]{border-color:${tint(C.label, 45)}}
+.dshb-topicbar[data-flash=true]{animation:dshb-flash 1.8s ease-out}
+.dshb-topictask{display:flex;align-items:center;gap:6px;width:100%;min-width:0;min-height:26px;padding:2px 6px;border:none;border-radius:7px;background:${C.base};color:${C.primary};font:inherit;font-size:${TINY};text-align:left;cursor:pointer}
+.dshb-topictask:hover{background:${C.hover}}
+.dshb-moved{display:inline-flex;align-items:center;gap:6px;max-width:min(520px,100%);min-width:0;font-size:${TINY};color:${C.muted}}
+.dshb-moved:hover{color:${C.label}}
+.dshb-pillrow{position:absolute;left:0;right:0;top:-42px;display:flex;justify-content:center;pointer-events:none;z-index:2}
+.dshb-pill{pointer-events:auto;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border-radius:999px;border:1px solid ${C.border};background:${C.base};color:${C.primary};font:inherit;font-size:${SMALL};font-weight:600;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:calc(100% - 32px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dshb-pill:hover{background:${C.layer2}}
+.dshb-threadpane{width:420px;flex:none;display:flex;flex-direction:column;min-height:0;min-width:0;border-left:1px solid ${C.border1};background:${C.base}}
+.dshb-threadhead{display:flex;align-items:center;gap:10px;padding:12px 12px 10px 16px;border-bottom:1px solid ${C.border1};min-width:0}
+@container (max-width: 860px){.dshb-threadpane{position:absolute;inset:0;width:auto;z-index:6;border-left:none}}
+@media (max-width: 760px){.dshb-threadpane{position:absolute;inset:0;width:auto;z-index:6;border-left:none}}
+@keyframes dshb-flash{0%{box-shadow:0 0 0 3px ${tint(C.label, 50)}}100%{box-shadow:0 0 0 0 ${tint(C.label, 0)}}}
 @keyframes dshb-breathe{0%{box-shadow:0 0 0 0 ${tint(C.ok, 45)}}70%{box-shadow:0 0 0 5px ${tint(C.ok, 0)}}100%{box-shadow:0 0 0 0 ${tint(C.ok, 0)}}}
 @keyframes dshb-pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.6)}70%{box-shadow:0 0 0 5px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
 @keyframes dshb-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
@@ -1319,14 +1346,19 @@ button.dshb-tline:hover{background:${C.hover}}
       return h('span', { style: { width: size, height: size, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: C.layer3, color: C.muted, flex: 'none' } }, glyph);
     }
 
-    /** A thread of one bot: the user's prompts right, the bot's replies left, DMs as cards. */
-    function MessageList({ t, items, botId, empty }) {
+    /**
+     * A thread of one bot: the user's prompts right, the bot's replies left, DMs as cards. With `fold`
+     * (the main timeline of a chat with topics), replies inside a topic are not listed: each root gets its
+     * topic bar instead (`topic` props: `{index, topics, onOpen, unread, flash}`).
+     */
+    function MessageList({ t, items, botId, empty, fold = null, onReply, onRetry, movedIn }) {
       const count = items.length;
       if (count === 0) return empty;
       const names = threadNamesOf(items);
       const rows = [];
       let lastDay = '';
-      items.forEach((m, i) => {
+      const shown = fold ? fold.index.main : items;
+      shown.forEach((m, i) => {
         const at = toMs(m.at);
         let day = '';
         try {
@@ -1359,10 +1391,16 @@ button.dshb-tline:hover{background:${C.hover}}
           else rows.push({ traffic: true, key: `g${m.id ?? i}`, items: [m] });
           return;
         }
-        const prev = items[i - 1];
+        const prev = shown[i - 1];
+        // A root with its topic bar under it ends a run: the next message starts with its own header.
+        const prevBar = fold && prev && fold.index.roots.has(prev.id) && topicBarShows(fold, prev.id);
         // Answers to two chats of one turn keep their own headers (where each went), and so do two tasks.
-        const grouped = prev && !isTraffic(prev) && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
-        rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped, names }));
+        const grouped = !prevBar && prev && !isTraffic(prev) && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
+        rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped, names, onReply, onRetry, moved: movedIn ? movedIn(m) : false }));
+        if (fold && fold.index.roots.has(m.id)) {
+          const bar = m.movedTo ? h(MovedBar, { key: `mv${m.id}`, t, m, fold }) : topicBarShows(fold, m.id) ? h(TopicBar, { key: `tb${m.id}`, t, m, fold }) : null;
+          if (bar) rows.push(bar);
+        }
       });
       const level = botMessagesLevel();
       return h(
@@ -1371,6 +1409,115 @@ button.dshb-tline:hover{background:${C.hover}}
         rows.map((r) => (r && r.traffic ? h(BotTraffic, { key: r.key, t, items: r.items, level }) : r)),
       );
     }
+    /** The tasks of a topic (the Host's TicketRows for it). */
+    const topicTasks = (fold, rootId) => {
+      const list = fold?.topics?.[rootId]?.tickets;
+      return Array.isArray(list) ? list.filter((r) => r && typeof r.id === 'string') : [];
+    };
+    /** Whether a root shows a bar: it was moved, or its topic has replies or tasks. */
+    function topicBarShows(fold, rootId) {
+      const r = fold?.index?.roots.get(rootId);
+      if (!r) return false;
+      if (r.root?.movedTo) return true;
+      return r.replies.length > 0 || topicTasks(fold, rootId).length > 0;
+    }
+
+    /**
+     * The bar under a topic's root in the main timeline: how many replies, who said the latest and what,
+     * the topic's tasks (alive while they work), and a dot when there is something new. It opens the topic.
+     */
+    function TopicBar({ t, m, fold }) {
+      const r = fold.index.roots.get(m.id);
+      const n = r.replies.length;
+      const last = r.last;
+      const who = last ? party(t, last.from) : null;
+      const tasks = topicTasks(fold, m.id).slice(0, 3);
+      const unread = fold.unread?.has(m.id) === true;
+      const mine = m.from === 'user';
+      return h(
+        'div',
+        { style: { display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', paddingLeft: mine ? 0 : 40, margin: '3px 0 6px' } },
+        h(
+          'div',
+          {
+            role: 'button',
+            tabIndex: 0,
+            className: 'dshb-topicbar dshb-fade',
+            'data-dsh-bots-topic-bar': m.id,
+            'data-unread': unread ? 'true' : undefined,
+            'data-flash': fold.flash === m.id ? 'true' : undefined,
+            title: t('openTopic'),
+            onClick: () => fold.onOpen(m.id),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault?.();
+                fold.onOpen(m.id);
+              }
+            },
+          },
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+            h('span', { style: { color: C.label, display: 'inline-flex', flex: 'none' } }, Icon.chat(13)),
+            h('span', { 'data-dsh-bots-topic-count': n, style: { fontWeight: 650, color: C.label, flex: 'none' } }, n === 0 ? t('topicLabel') : t(n === 1 ? 'topicReplyOne' : 'topicReplies', { n })),
+            last && who ? h('span', { style: { color: C.faint, flex: 'none' } }, '·') : null,
+            last && who ? h(PartyAvatar, { p: who, size: 16 }) : null,
+            last && who ? h('span', { style: { fontWeight: 600, color: C.primary, flex: 'none', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, who.name) : null,
+            last ? h('span', { style: { color: C.faint, flex: 'none', fontSize: TINY } }, fmtClock(toMs(last.at))) : null,
+            h('span', { style: { flex: 1 } }),
+            unread ? h('span', { 'data-dsh-bots-topic-unread': m.id, title: t('topicUnread'), style: { width: 8, height: 8, borderRadius: '50%', background: C.error, flex: 'none' } }) : null,
+            h('span', { style: { color: C.faint, display: 'inline-flex', flex: 'none' } }, Icon.arrow(11)),
+          ),
+          last ? h('div', { className: 'dshb-clamp2', 'data-dsh-bots-topic-last': last.id ?? true, style: { color: C.muted, fontSize: SMALL, lineHeight: 1.45, wordBreak: 'break-word' } }, str(last.text).trim()) : null,
+          tasks.length
+            ? h(
+                'div',
+                { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+                tasks.map((row) => {
+                  const live = row.stage === 'working' ? liveTask(row.id) ?? (row.activity && typeof row.activity === 'object' ? row.activity : null) : null;
+                  return h(
+                    'button',
+                    {
+                      key: row.id,
+                      type: 'button',
+                      className: 'dshb-topictask',
+                      'data-dsh-bots-topic-task': row.id,
+                      'data-stage': row.stage,
+                      title: t('openTask'),
+                      onClick: (e) => {
+                        e?.stopPropagation?.();
+                        openTicket(row.id);
+                      },
+                    },
+                    h('span', { style: { color: C.muted, display: 'inline-flex', flex: 'none' } }, Icon.tasks(12)),
+                    h(BotFace, { id: row.botId, size: 14 }),
+                    h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, taskTitle(t, row)),
+                    live ? h(LiveChip, { t, a: live }) : h(TaskChip, { t, row }),
+                  );
+                }),
+              )
+            : null,
+        ),
+      );
+    }
+    /** Where a top-level message went when the dispatcher placed it in another topic: a link to that topic. */
+    function MovedBar({ t, m, fold }) {
+      const target = fold.index.byId.get(m.movedTo);
+      const title = target ? excerpt(target.text, 40) : '';
+      const mine = m.from === 'user';
+      return h(
+        'div',
+        { style: { display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start', paddingLeft: mine ? 0 : 40, margin: '2px 0 6px' } },
+        h(
+          'button',
+          { type: 'button', className: 'dshb-link dshb-moved', 'data-dsh-bots-moved': m.movedTo, title: t('openTopic'), onClick: () => fold.onOpen(m.movedTo) },
+          h('span', { style: { display: 'inline-flex', flex: 'none' } }, Icon.layers(12)),
+          h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, title ? t('movedTo', { title }) : t('movedToTopic')),
+          h('span', { style: { display: 'inline-flex', flex: 'none' } }, Icon.arrow(11)),
+        ),
+      );
+    }
+
     /** A message between two bots (a delegation, a report, a DM), or a scheduled prompt: secondary traffic. */
     const isTraffic = (m) => m?.kind === 'system' || ((m?.kind === 'dm' || m?.kind === 'report') && m.from !== 'user' && m.to !== 'user');
     /** How much of what bots say to each other a chat shows (a team setting): 'line' | 'short' | 'full'. */
@@ -1496,7 +1643,41 @@ button.dshb-tline:hover{background:${C.hover}}
       );
     }
 
-    function MessageRow({ t, m, botId, grouped, names }) {
+    /** "Reply" on a message, shown while the pointer is on it (always, faintly, without a pointer). */
+    const ReplyAction = ({ t, m, onReply }) =>
+      onReply && m?.id != null && !m.local
+        ? h(
+            'button',
+            {
+              type: 'button',
+              className: 'dshb-msg-act',
+              'data-dsh-bots-reply-to': m.id,
+              title: t('replyAction'),
+              onClick: (e) => {
+                e?.stopPropagation?.();
+                onReply(m);
+              },
+            },
+            Icon.back(11),
+            t('replyAction'),
+          )
+        : null;
+    /** Under one of your messages: still waiting for the bot to take it, or not sent (with a way to send it again). */
+    function SendState({ t, m, onRetry }) {
+      if (m.failed) {
+        return h(
+          'span',
+          { 'data-dsh-bots-send-failed': m.id, style: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: TINY, color: C.error } },
+          Icon.alert(11),
+          t('msgFailed'),
+          onRetry ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-resend': m.id, onClick: () => onRetry(m), style: { fontSize: TINY, color: C.error, fontWeight: 600 } }, t('resend')) : null,
+        );
+      }
+      if (m.pending) return h('span', { 'data-dsh-bots-pending': m.id, title: t('msgPendingHint'), style: { fontSize: TINY, color: C.faint } }, t('msgPending'));
+      return null;
+    }
+
+    function MessageRow({ t, m, botId, grouped, names, onReply, onRetry, moved = false }) {
       if (m.kind === 'topic') {
         const at = toMs(m.at);
         return h(
@@ -1521,20 +1702,28 @@ button.dshb-tline:hover{background:${C.hover}}
       const notice = messageNotice(m);
       if (between || m.kind === 'system') return h(BotTraffic, { t, items: [m], level: botMessagesLevel() });
       if (mine) {
+        const state = m.pending || m.failed ? h(SendState, { t, m, onRetry }) : null;
         return h(
           'div',
-          { 'data-dsh-bots-msg': 'user', className: 'dshb-fade', style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, marginTop: grouped ? 0 : 6 } },
-          grouped
+          { 'data-dsh-bots-msg': 'user', 'data-dsh-bots-msg-id': m.id, 'data-local': m.local ? 'true' : undefined, className: 'dshb-msg dshb-fade', style: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3, marginTop: grouped ? 0 : 6 } },
+          grouped && !moved
             ? null
             : h(
                 'span',
-                { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', alignItems: 'center', gap: 6 } },
+                { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' } },
+                moved ? h(Badge, { color: C.muted, 'data-dsh-bots-moved-in': m.id }, Icon.layers(10), t('movedIn')) : null,
                 m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, t('viaChannel', { app: channelName(m.via, t), who: str(m.who) || t('you') })) : null,
                 m.to !== botId && to.kind === 'bot' ? `${t('toName', { name: to.name })} · ${time}` : time,
                 // A message from a chat that went straight to the task it follows up on.
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, title: m.via ? t('followUpHint') : undefined, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t(m.via ? 'followUpTask' : 'openTask')) : null,
               ),
-          h('div', { style: { maxWidth: '78%', padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
+          h(
+            'div',
+            { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, width: '100%', minWidth: 0 } },
+            h(ReplyAction, { t, m, onReply }),
+            h('div', { style: { maxWidth: '78%', minWidth: 0, padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: C.onLabel, fontSize: FONT, opacity: m.local && !m.failed ? 0.8 : 1, boxShadow: m.failed ? `0 0 0 2px ${C.error}` : undefined } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
+          ),
+          state,
           h('div', { style: { width: 'min(480px, 78%)', display: 'flex', justifyContent: 'flex-end' } }, h(LinkCards, { t, text: m.text, align: 'flex-end' })),
         );
       }
@@ -1542,19 +1731,23 @@ button.dshb-tline:hover{background:${C.hover}}
       const place = m.via ? (isChatThread(m.thread) ? threadName(t, m.thread, names) : channelName(m.via, t)) : '';
       // With several chats in the turn, plain text reached none of them (bot_reply says where each answer goes).
       const choices = m.notSent === true && Array.isArray(m.choices) ? m.choices.filter(isChatThread) : [];
+      // A teammate answering you itself, in this chat (the bot that did a task): its own face and name, the task.
+      const worker = m.kind === 'reply' && m.from !== botId && from.kind === 'bot' && Boolean(ticketId);
       // A bot speaking to you reads like the main conversation: no box, full-strength text.
       return h(
         'div',
-        { 'data-dsh-bots-msg': m.kind || 'reply', className: 'dshb-fade', style: { display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: grouped ? 4 : 12 } },
+        { 'data-dsh-bots-msg': m.kind || 'reply', 'data-dsh-bots-msg-id': m.id, 'data-dsh-bots-worker': worker ? m.from : undefined, className: 'dshb-msg dshb-fade', style: { display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: grouped ? 4 : 12 } },
         h('div', { style: { width: 30, flex: 'none' } }, grouped ? null : h(PartyAvatar, { p: from, size: 30 })),
         h(
           'div',
           { style: { display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, flex: 1, maxWidth: 760 } },
+          onReply ? h('div', { className: 'dshb-msg-actbox' }, h(ReplyAction, { t, m, onReply })) : null,
           grouped
             ? null
             : h(
                 'div',
-                { style: { display: 'flex', alignItems: 'baseline', gap: 6, fontSize: TINY } },
+                { style: { display: 'flex', alignItems: 'baseline', gap: 6, fontSize: TINY, flexWrap: 'wrap' } },
+                moved ? h(Badge, { color: C.muted, 'data-dsh-bots-moved-in': m.id }, Icon.layers(10), t('movedIn')) : null,
                 h('span', { style: { fontWeight: 700, fontSize: SMALL, color: C.primary } }, from.name),
                 from.kind === 'bot' ? h('span', { style: { color: C.faint } }, `@${from.bot.handle}`) : null,
                 m.to !== 'user' && to.kind === 'bot' && m.to !== botId ? h('span', { style: { color: C.faint } }, `→ ${to.name}`) : null,
@@ -1574,6 +1767,7 @@ button.dshb-tline:hover{background:${C.hover}}
               )
             : null,
           h(LinkCards, { t, text: m.text }),
+          worker && !grouped ? h('div', { 'data-dsh-bots-worker-task': ticketId }, h(TaskCard, { t, id: ticketId, botId: m.from })) : null,
         ),
       );
     }
@@ -2104,32 +2298,125 @@ button.dshb-tline:hover{background:${C.hover}}
       return v;
     }
 
-    function useMessages(botId, active = true) {
-      const [items, setItems] = useState(null);
+    /**
+     * A bot's chat (or every message, without `botId`), polled: `items` oldest first and, per panel topic,
+     * `topics[rootId] = {key, tickets}` (PLAN-0.9 §7.3). With `topic`, only that topic's messages.
+     */
+    function useMessages(botId, active = true, topic = '') {
+      const [data, setData] = useState(null);
       const [failed, setFailed] = useState(false);
       const alive = useRef(true);
       useEffect(() => {
         alive.current = true;
-        setItems(null);
+        setData(null);
         return () => {
           alive.current = false;
         };
-      }, [botId]);
+      }, [botId, topic]);
       const load = () =>
         Promise.resolve()
-          .then(() => getJson(`messages?limit=200${botId ? `&bot=${encodeURIComponent(botId)}` : ''}`))
+          .then(() => getJson(`messages?limit=${topic ? 500 : 200}${botId ? `&bot=${encodeURIComponent(botId)}` : ''}${topic ? `&topic=${encodeURIComponent(topic)}` : ''}`))
           .then((r) => {
             if (!alive.current) return;
             if (r && Array.isArray(r.items)) {
               setFailed(false);
-              setItems((prev) => (prev && prev.length === r.items.length && prev[prev.length - 1]?.id === r.items[r.items.length - 1]?.id ? prev : r.items));
+              const topics = r.topics && typeof r.topics === 'object' ? r.topics : {};
+              // Same messages in the same states and the same tasks: keep what is shown (no re-render).
+              const sig = `${r.items.map((m) => `${m?.id}${m?.pending ? '~' : ''}${m?.movedTo ? `>${m.movedTo}` : ''}`).join(',')}|${JSON.stringify(topics)}`;
+              setData((prev) => (prev && prev.sig === sig ? prev : { items: r.items, topics, sig }));
             } else setFailed(true);
           })
           .catch(() => {
             if (alive.current) setFailed(true);
           });
-      usePoll(() => (active ? load() : undefined), CHAT_POLL_MS, [botId, active]);
-      return { items, failed, reload: load };
+      usePoll(() => (active ? load() : undefined), CHAT_POLL_MS, [botId, active, topic]);
+      return { items: data ? data.items : null, topics: data ? data.topics : {}, failed, reload: load };
+    }
+
+    // --- panel topics (PLAN-0.9): every top-level message is a topic's root ---------------------
+
+    /** The topic a message's thread is: the one it was moved into, else its own (a root's is its id), else ''. */
+    const topicOfMsg = (m) => str(m?.movedTo) || str(m?.topic);
+    /** A message is a reply inside topic `root` (moved in, or written there), not the root itself. */
+    const inTopic = (m, root) => Boolean(root) && m?.id !== root && (m?.topic === root || m?.movedTo === root);
+    /** A short excerpt of a message for a quote or a label. */
+    const excerpt = (text, n = 48) => {
+      const line = (str(text).split('\n').find((l) => l.trim() !== '') ?? '').trim();
+      return [...line].length > n ? `${[...line].slice(0, n - 1).join('').trimEnd()}…` : line;
+    };
+    /**
+     * A chat's messages folded into topics: `main` (what the main timeline shows: messages outside any
+     * topic, and the roots), and per root its replies (oldest first) and its latest activity. A reply whose
+     * root is not among the messages stays in the main timeline, so nothing goes missing.
+     */
+    function topicIndex(items) {
+      const byId = new Map();
+      for (const m of items) if (m && m.id != null) byId.set(m.id, m);
+      const roots = new Map();
+      const rootOf = (id) => {
+        let r = roots.get(id);
+        if (!r) {
+          r = { root: byId.get(id), replies: [], lastAt: toMs(byId.get(id)?.at) || 0, last: null, botAt: 0 };
+          roots.set(id, r);
+        }
+        return r;
+      };
+      const main = [];
+      for (const m of items) {
+        if (!m) continue;
+        const own = str(m.topic);
+        if (own && own === m.id) {
+          rootOf(m.id);
+          main.push(m);
+        }
+        // A moved root stays where it was and is listed in the topic it went to; a reply only there.
+        const home = str(m.movedTo) || (own && own !== m.id ? own : '');
+        if (home && byId.has(home) && home !== m.id) {
+          const r = rootOf(home);
+          r.replies.push(m);
+          const at = toMs(m.at) || 0;
+          if (at >= r.lastAt) r.lastAt = at;
+          if (!r.last || at >= (toMs(r.last.at) || 0)) r.last = m;
+          // When a bot (or anyone not you) last said something here: what can be unread.
+          if (m.from !== 'user' && at > r.botAt) r.botAt = at;
+        } else if (!(own && own === m.id)) main.push(m);
+      }
+      for (const r of roots.values()) r.replies.sort((a, b) => (toMs(a.at) || 0) - (toMs(b.at) || 0));
+      return { byId, roots, main };
+    }
+    /** Where the "seen" marks of topics live: the browser's storage, or null when there is none (then nothing is unread). */
+    function seenStorage() {
+      try {
+        const s = typeof window !== 'undefined' ? window.localStorage : undefined;
+        return s && typeof s.getItem === 'function' && typeof s.setItem === 'function' ? s : null;
+      } catch {
+        return null;
+      }
+    }
+    const seenKey = (botId) => `dshb:topics-seen:${botId}`;
+    /** The seen marks of a bot's topics (`{rootId: ms}`), `{}` when none were kept yet (`fresh`), or null without storage. */
+    function readSeen(botId) {
+      const s = seenStorage();
+      if (!s) return null;
+      try {
+        const raw = s.getItem(seenKey(botId));
+        if (raw === null || raw === undefined) return { marks: {}, fresh: true };
+        const v = JSON.parse(raw);
+        return { marks: v && typeof v === 'object' && !Array.isArray(v) ? v : {}, fresh: false };
+      } catch {
+        return null;
+      }
+    }
+    function writeSeen(botId, marks) {
+      const s = seenStorage();
+      if (!s) return;
+      try {
+        // Only the newest topics are worth keeping.
+        const keep = Object.entries(marks).sort((a, b) => b[1] - a[1]).slice(0, 400);
+        s.setItem(seenKey(botId), JSON.stringify(Object.fromEntries(keep)));
+      } catch {
+        // A full or blocked storage: unread marks are a convenience.
+      }
     }
 
     /** A first chat: the bot's bio and three opening messages to start from. */
@@ -2321,15 +2608,137 @@ button.dshb-tline:hover{background:${C.hover}}
       return list.length ? h('div', { 'data-dsh-bots-asks': list.length, className: 'dshb-scroll', style: { maxHeight: '45vh' } }, list.map((a) => h(AskCard, { key: a.id, t, ask: a, env, onAnswered }))) : null;
     };
 
+    /** A chat's messages with the ones being sent from here (`local`) that the Host has not listed yet. */
+    function mergeLocal(items, local) {
+      if (!Array.isArray(items)) return items;
+      if (!local.length) return items;
+      const ids = new Set(items.map((m) => m?.id));
+      const extra = local.filter((m) => !ids.has(m.id));
+      return extra.length ? [...items, ...extra] : items;
+    }
+    /** Whether a topic's bar is on screen in the scrolling `box` (no box, no DOM: not on screen). */
+    function barOnScreen(box, id) {
+      if (!box || typeof box.querySelector !== 'function' || typeof box.getBoundingClientRect !== 'function') return false;
+      let el = null;
+      try {
+        el = box.querySelector(`[data-dsh-bots-topic-bar="${String(id).replace(/["\\]/g, '\\$&')}"]`);
+      } catch {
+        el = null;
+      }
+      if (!el || typeof el.getBoundingClientRect !== 'function') return false;
+      const a = el.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      return a.bottom > b.top + 8 && a.top < b.bottom - 8;
+    }
+    /** The line above a composer naming the message a reply answers, with a way to drop it. */
+    function QuoteBar({ t, m, onCancel, attr = 'data-dsh-bots-quote' }) {
+      const who = party(t, m.from);
+      return h(
+        'div',
+        { [attr]: m.id, className: 'dshb-quote' },
+        h('span', { style: { color: C.label, display: 'inline-flex', flex: 'none' } }, Icon.back(12)),
+        h('span', { style: { fontWeight: 600, flex: 'none' } }, t('replyingTo', { name: who.name })),
+        h('span', { style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.muted } }, excerpt(m.text, 80)),
+        h('button', { type: 'button', className: 'dshb-link', [`${attr}-cancel`]: m.id, title: t('cancelReply'), 'aria-label': t('cancelReply'), onClick: onCancel, style: { display: 'inline-flex', color: C.muted, flex: 'none' } }, Icon.close(12)),
+      );
+    }
+
     function ChatTab({ t, bot, env, toast }) {
-      const { items, failed, reload } = useMessages(bot.id);
+      const { items: listed, topics, failed, reload } = useMessages(bot.id);
       const [text, setText] = useState('');
-      const [sending, setSending] = useState(false);
+      // Messages sent from here: shown at once (queued), then the Host's own copy; a failed one stays to be sent again.
+      const [local, setLocal] = useState([]);
+      // The message the main composer replies to, the topic open beside the chat, the bar to point out.
+      const [quote, setQuote] = useState(null);
+      const [open, setOpen] = useState('');
+      const [flash, setFlash] = useState('');
+      // Which topics were read up to when (null: no storage, so nothing is unread).
+      const [seen, setSeen] = useState(() => readSeen(bot.id));
+      const [offscreen, setOffscreen] = useState('');
+      const offscreenRef = useRef('');
+      const measuring = useRef(false);
       // The quick poll may know before the state does that it started or stopped.
       const live = liveBot(bot);
       const running = live.status === 'running' || Boolean(live.activity);
-      const thread = useStickToBottom(`${items?.length ?? 0}:${items?.[items.length - 1]?.id ?? ''}:${running}`);
+      const items = mergeLocal(listed, local);
+      const index = topicIndex(items ?? []);
+      const lastMain = index.main[index.main.length - 1];
+      const thread = useStickToBottom(`${index.main.length}:${lastMain?.id ?? ''}:${running}`);
       const [topicBusy, setTopicBusy] = useState(false);
+
+      // The Host listed what was sent from here: its copies take over.
+      useEffect(() => {
+        if (!Array.isArray(listed) || !local.some((m) => !m.failed)) return;
+        const ids = new Set(listed.map((m) => m?.id));
+        if (local.some((m) => ids.has(m.id))) setLocal((list) => list.filter((m) => !ids.has(m.id)));
+      }, [listed]);
+      // First time here: what is already there counts as read; only replies from now on are new.
+      useEffect(() => {
+        if (!seen || !seen.fresh || !Array.isArray(listed)) return;
+        const marks = {};
+        for (const [id, r] of index.roots) marks[id] = r.lastAt;
+        writeSeen(bot.id, marks);
+        setSeen({ marks, fresh: false });
+      }, [listed === null, seen?.fresh]);
+      const markSeen = (id, at) => {
+        if (!id || !at) return;
+        setSeen((prev) => {
+          if (!prev || (Number(prev.marks[id]) || 0) >= at) return prev;
+          const marks = { ...prev.marks, [id]: at };
+          writeSeen(bot.id, marks);
+          return { marks, fresh: false };
+        });
+      };
+      // A topic with a reply you have not seen: the latest reply is a bot's, newer than when you last looked.
+      const unread = new Set();
+      if (seen && !seen.fresh) {
+        for (const [id, r] of index.roots) {
+          if (id === open || !r.botAt || r.root?.movedTo) continue;
+          const mark = Number(seen.marks[id]) || toMs(r.root?.at) || 0;
+          if (r.botAt > mark) unread.add(id);
+        }
+      }
+      const unreadIds = [...unread].sort((a, b) => index.roots.get(b).botAt - index.roots.get(a).botAt);
+      const unreadKey = unreadIds.join(',');
+      const measure = () => {
+        const box = thread.box.current;
+        const key = unreadIds.filter((id) => !barOnScreen(box, id)).join(',');
+        if (key !== offscreenRef.current) {
+          offscreenRef.current = key;
+          setOffscreen(key);
+        }
+      };
+      useEffect(() => {
+        measure();
+      }, [unreadKey]);
+      const measureSoon = () => {
+        if (measuring.current) return;
+        measuring.current = true;
+        const run = () => {
+          measuring.current = false;
+          measure();
+        };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+        else setTimeout(run, 60);
+      };
+      const hidden = offscreen ? offscreen.split(',').filter((id) => unread.has(id)) : [];
+      const pointAt = (id) => {
+        try {
+          const el = thread.box.current?.querySelector?.(`[data-dsh-bots-topic-bar="${String(id).replace(/["\\]/g, '\\$&')}"]`);
+          el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+        } catch {
+          // Scrolling is a nicety.
+        }
+        setFlash(id);
+        setTimeout(() => setFlash((f) => (f === id ? '' : f)), 1800);
+        measureSoon();
+      };
+      const openTopic = (id) => {
+        if (!id) return;
+        setOpen(id);
+        markSeen(id, index.roots.get(id)?.lastAt ?? Date.now());
+      };
+
       const startTopic = () => {
         setTopicBusy(true);
         postJson('topic/new', { id: bot.id })
@@ -2342,82 +2751,254 @@ button.dshb-tline:hover{background:${C.hover}}
           })
           .finally(() => setTopicBusy(false));
       };
+      /**
+       * Send `body` (a reply in a topic with `replyTo`): it shows at once as queued, the Host's copy
+       * replaces it, and a failure stays with a way to send again. Resolves `{ok, topic}`.
+       */
+      const sendText = (body, replyTo = '', again = '', topicHint = '') => {
+        const id = again || `local-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const target = replyTo ? index.byId.get(replyTo) : null;
+        // The topic it goes into (the Host says for sure): the pane's own, else the one of the message it answers.
+        const topic = replyTo ? topicHint || (target ? topicOfMsg(target) || target.id : replyTo) : id;
+        const row = { id, local: true, pending: true, from: 'user', to: bot.id, chat: bot.id, kind: 'user', text: body, at: Date.now(), topic, ...(replyTo ? { replyTo } : {}) };
+        setLocal((list) => [...list.filter((m) => m.id !== id), row]);
+        return postJson('send', { to: bot.id, text: body, ...(replyTo ? { replyTo } : {}) }).then((r) => {
+          if (r?.ok) {
+            const msg = r.message && typeof r.message === 'object' && r.message.id != null ? r.message : null;
+            setLocal((list) => list.flatMap((m) => (m.id !== id ? [m] : msg ? [{ ...msg, pending: msg.pending ?? true, chat: msg.chat ?? bot.id }] : [])));
+            void reload();
+            void refreshState();
+            return { ok: true, topic: msg ? topicOfMsg(msg) || topic : topic };
+          }
+          setLocal((list) => list.map((m) => (m.id === id ? { ...m, pending: false, failed: true } : m)));
+          toast(r?.reason || t('sendFailed'), 'error');
+          return { ok: false, topic };
+        });
+      };
+      const retry = (m) => {
+        if (!m?.local) return;
+        void sendText(str(m.text), str(m.replyTo), m.id, m.replyTo ? str(m.topic) : '');
+      };
       const send = () => {
         const body = text.trim();
-        if (!body || sending) return;
-        setSending(true);
-        thread.stick();
-        postJson('send', { to: bot.id, text: body })
-          .then((r) => {
-            if (r?.ok) {
-              setText('');
-              thread.stick();
-              void reload();
-              void refreshState();
-            } else toast(r?.reason || t('sendFailed'), 'error');
-          })
-          .finally(() => setSending(false));
+        if (!body) return;
+        const replyTo = quote?.id ?? '';
+        setText('');
+        setQuote(null);
+        if (!replyTo) thread.stick();
+        void sendText(body, replyTo).then((r) => {
+          // A reply went into its topic: open it there, where the answer will come.
+          if (r.ok && replyTo) openTopic(r.topic);
+          else if (!replyTo) thread.stick();
+        });
       };
       // A pasted link previews above the composer, as it will in the thread.
       const previewUrl = linksIn(useDebounced(text, 400))[0] ?? '';
+      const fold = { index, topics, onOpen: openTopic, unread, flash };
       return h(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
+        { className: 'dshb-chatwrap', 'data-dsh-bots-chat': bot.id, 'data-topic-open': open || undefined },
         h(
           'div',
-          { className: 'dshb-scroll', 'data-dsh-bots-thread': bot.id, ref: thread.box, onScroll: thread.onScroll, style: { flex: 1, padding: '6px 24px' } },
+          { className: 'dshb-chatmain' },
           h(
             'div',
-            { ref: thread.content },
-          items === null
-            ? h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('unavailable') : t('loading'))
-            : h(MessageList, {
-                t,
-                items,
-                botId: bot.id,
-                empty: h(ChatEmpty, { t, bot, onPick: setText }),
-              }),
-          running ? h('div', { style: { maxWidth: 880, margin: '0 auto' } }, h(WorkingRow, { t, bot, a: live.activity, attr: bot.id })) : null,
+            {
+              className: 'dshb-scroll',
+              'data-dsh-bots-thread': bot.id,
+              ref: thread.box,
+              onScroll: (e) => {
+                thread.onScroll(e);
+                if (unreadIds.length) measureSoon();
+              },
+              style: { flex: 1, padding: '6px 24px' },
+            },
+            h(
+              'div',
+              { ref: thread.content },
+              items === null
+                ? h('div', { style: { padding: 24, color: C.faint, fontSize: SMALL, textAlign: 'center' } }, failed ? t('unavailable') : t('loading'))
+                : h(MessageList, {
+                    t,
+                    items,
+                    botId: bot.id,
+                    fold,
+                    onReply: (m) => setQuote(m),
+                    onRetry: retry,
+                    empty: h(ChatEmpty, { t, bot, onPick: setText }),
+                  }),
+              running ? h('div', { style: { maxWidth: 880, margin: '0 auto' } }, h(WorkingRow, { t, bot, a: live.activity, attr: bot.id })) : null,
+            ),
+          ),
+          h(
+            'div',
+            { style: { padding: '10px 24px 16px', borderTop: `1px solid ${C.border1}`, background: C.base, position: 'relative' } },
+            hidden.length
+              ? h(
+                  'div',
+                  { className: 'dshb-pillrow' },
+                  h(
+                    'button',
+                    { type: 'button', className: 'dshb-pill', 'data-dsh-bots-new-replies': hidden.length, onClick: () => pointAt(hidden[0]) },
+                    h('span', { style: { width: 7, height: 7, borderRadius: '50%', background: C.error, flex: 'none' } }),
+                    hidden.length === 1 ? t('newReplyOne') : t('newReplies', { n: hidden.length }),
+                    h('span', { style: { display: 'inline-flex' } }, Icon.chevron(11)),
+                  ),
+                )
+              : null,
+            h(
+              'div',
+              { style: { maxWidth: 880, margin: '0 auto' } },
+              // Questions of its own conversation; a task's wait in the task.
+              h(AskCards, { t, sessionId: bot.sessionId, env, onAnswered: () => void reload() }),
+              previewUrl ? h('div', { 'data-dsh-bots-composer-preview': previewUrl, style: { marginBottom: 8, maxHeight: 260, overflow: 'auto' } }, h(LinkCard, { t, url: previewUrl })) : null,
+              h(
+                'div',
+                { className: 'dshb-composer' },
+                quote ? h(QuoteBar, { t, m: quote, onCancel: () => setQuote(null) }) : null,
+                h(
+                  'div',
+                  { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
+                  h('textarea', {
+                    'data-dsh-bots-composer': true,
+                    value: text,
+                    rows: Math.min(8, Math.max(1, text.split('\n').length)),
+                    placeholder: quote ? t('topicComposer') : t('composer', { handle: bot.handle }),
+                    onChange: (e) => setText(e.target.value),
+                    onKeyDown: (e) => {
+                      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
+                        e.preventDefault();
+                        send();
+                      } else if (e.key === 'Escape' && quote) setQuote(null);
+                    },
+                    style: { flex: 1, minWidth: 0, minHeight: 32, maxHeight: 200, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '6px 8px' },
+                  }),
+                  h(Btn, { kind: 'primary', icon: Icon.send(15), title: t('send'), disabled: !text.trim(), onClick: send, style: { borderRadius: 10, width: 34, height: 34 } }),
+                ),
+              ),
+              h(
+                'div',
+                { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 7, fontSize: TINY, color: C.faint, flexWrap: 'wrap' } },
+                h('span', null, t('composerHint')),
+                h('span', { style: { flex: 1 } }),
+                bot.topic ? h('span', { 'data-dsh-bots-topic': true, title: t('topicNow', { when: fmtAgo(t, bot.topic.startedAt), n: bot.topic.tasks, ctx: fmtNum(bot.topic.context) }) }, t('topicShort', { n: bot.topic.tasks, ctx: fmtNum(bot.topic.context) })) : null,
+                h('button', { type: 'button', className: 'dshb-link', title: t('newTopicHint'), disabled: running || topicBusy || !bot.sessionId, onClick: startTopic, 'data-dsh-bots-new-topic': 'chat', style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4, opacity: running || !bot.sessionId ? 0.5 : 1 } }, Icon.plus(11), t('newTopic')),
+                env.canOpen() ? h('span', { style: { color: C.faint } }, '·') : null,
+                env.canOpen() ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4 }, onClick: () => env.openBot(bot) }, Icon.open(11), t('fullTranscript')) : null,
+              ),
+            ),
+          ),
+        ),
+        // Last in the tree: the topic beside the chat (over it when the panel is narrow).
+        open ? h(ThreadPane, { key: open, t, bot, rootId: open, base: index, baseTopics: topics, local, onClose: () => setOpen(''), onSend: sendText, onRetry: retry, onSeen: markSeen }) : null,
+      );
+    }
+
+    /**
+     * One topic beside the chat: its root, every reply (and the messages the dispatcher moved into it),
+     * its tasks while they run, and a composer whose messages go into this topic (or answer one of its
+     * messages). It polls the topic on its own, starting from what the chat already shows.
+     */
+    function ThreadPane({ t, bot, rootId, base, baseTopics, local, onClose, onSend, onRetry, onSeen }) {
+      const { items, topics } = useMessages(bot.id, true, rootId);
+      const [text, setText] = useState('');
+      const [quote, setQuote] = useState(null);
+      const fromBase = [base.byId.get(rootId), ...(base.roots.get(rootId)?.replies ?? [])].filter(Boolean);
+      const list = mergeLocal(Array.isArray(items) && items.length ? items : fromBase, local) ?? [];
+      const root = list.find((m) => m?.id === rootId) ?? base.byId.get(rootId) ?? null;
+      const seenIds = new Set();
+      const replies = list
+        .filter((m) => inTopic(m, rootId) && !seenIds.has(m.id) && seenIds.add(m.id))
+        .sort((a, b) => (toMs(a.at) || 0) - (toMs(b.at) || 0));
+      const shown = root ? [root, ...replies] : replies;
+      const lastAt = Math.max(toMs(root?.at) || 0, ...replies.map((m) => toMs(m.at) || 0));
+      const tasks = topicTasks({ topics: Array.isArray(items) ? topics : baseTopics }, rootId);
+      const stick = useStickToBottom(`${replies.length}:${replies[replies.length - 1]?.id ?? ''}`);
+      // Open means read: what arrives while it is open is read too.
+      useEffect(() => {
+        onSeen?.(rootId, lastAt);
+      }, [rootId, lastAt]);
+      const send = () => {
+        const body = text.trim();
+        if (!body) return;
+        const replyTo = quote?.id ?? rootId;
+        setText('');
+        setQuote(null);
+        stick.stick();
+        void onSend(body, replyTo, '', rootId).then(() => stick.stick());
+      };
+      const count = replies.length;
+      return h(
+        'aside',
+        {
+          className: 'dshb-threadpane dshb-fade',
+          'data-dsh-bots-thread-pane': rootId,
+          onKeyDown: (e) => {
+            if (e.key === 'Escape' && !quote) onClose();
+          },
+        },
+        h(
+          'div',
+          { className: 'dshb-threadhead' },
+          h('span', { style: { color: C.label, display: 'inline-flex', flex: 'none' } }, Icon.chat(15)),
+          h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 } },
+            h('span', { style: { fontWeight: 700, fontSize: SMALL } }, t('topicTitle')),
+            h('span', { 'data-dsh-bots-thread-title': true, style: { fontSize: TINY, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, root ? excerpt(root.text, 80) : ''),
+          ),
+          h('button', { type: 'button', className: 'dshb-btn dshb-btn-ghost dshb-btn-sm dshb-btn-icon', 'data-dsh-bots-thread-close': rootId, title: t('closeTopic'), 'aria-label': t('closeTopic'), onClick: onClose }, Icon.close(14)),
+        ),
+        tasks.length ? h('div', { 'data-dsh-bots-thread-tasks': tasks.length, style: { padding: '6px 10px', borderBottom: `1px solid ${C.border1}`, display: 'flex', flexDirection: 'column', gap: 2, maxHeight: '32%', overflow: 'auto' } }, tasks.map((row) => h(TaskRow, { key: row.id, t, row }))) : null,
+        h(
+          'div',
+          { className: 'dshb-scroll', 'data-dsh-bots-thread-body': rootId, ref: stick.box, onScroll: stick.onScroll, style: { flex: 1, padding: '4px 16px 12px' } },
+          h(
+            'div',
+            { ref: stick.content },
+            shown.length
+              ? h(MessageList, {
+                  t,
+                  items: shown,
+                  botId: bot.id,
+                  onReply: (m) => setQuote(m.id === rootId ? null : m),
+                  onRetry,
+                  movedIn: (m) => m.movedTo === rootId && m.id !== rootId,
+                  empty: null,
+                })
+              : null,
+            h('div', { 'data-dsh-bots-thread-count': count, style: { fontSize: TINY, color: C.faint, textAlign: 'center', padding: '10px 0 0' } }, count ? t(count === 1 ? 'topicReplyOne' : 'topicReplies', { n: count }) : t('topicEmpty')),
           ),
         ),
         h(
           'div',
-          { style: { padding: '10px 24px 16px', borderTop: `1px solid ${C.border1}`, background: C.base } },
+          { style: { padding: '8px 12px 12px', borderTop: `1px solid ${C.border1}` } },
           h(
             'div',
-            { style: { maxWidth: 880, margin: '0 auto' } },
-          // Questions of its own conversation; a task's wait in the task.
-          h(AskCards, { t, sessionId: bot.sessionId, env, onAnswered: () => void reload() }),
-          previewUrl ? h('div', { 'data-dsh-bots-composer-preview': previewUrl, style: { marginBottom: 8, maxHeight: 260, overflow: 'auto' } }, h(LinkCard, { t, url: previewUrl })) : null,
-          h(
-            'div',
-            { style: { display: 'flex', alignItems: 'flex-end', gap: 8, padding: 6, borderRadius: 14, border: `1px solid ${C.border}`, background: C.layer1 } },
-            h('textarea', {
-              'data-dsh-bots-composer': true,
-              value: text,
-              rows: Math.min(8, Math.max(1, text.split('\n').length)),
-              placeholder: t('composer', { handle: bot.handle }),
-              onChange: (e) => setText(e.target.value),
-              onKeyDown: (e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
-                  e.preventDefault();
-                  send();
-                }
-              },
-              style: { flex: 1, minHeight: 32, maxHeight: 200, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '6px 8px' },
-            }),
-            h(Btn, { kind: 'primary', icon: Icon.send(15), title: t('send'), disabled: !text.trim() || sending, onClick: send, style: { borderRadius: 10, width: 34, height: 34 } }),
-          ),
-          h(
-            'div',
-            { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 7, fontSize: TINY, color: C.faint } },
-            h('span', null, t('composerHint')),
-            h('span', { style: { flex: 1 } }),
-            bot.topic ? h('span', { 'data-dsh-bots-topic': true, title: t('topicNow', { when: fmtAgo(t, bot.topic.startedAt), n: bot.topic.tasks, ctx: fmtNum(bot.topic.context) }) }, t('topicShort', { n: bot.topic.tasks, ctx: fmtNum(bot.topic.context) })) : null,
-            h('button', { type: 'button', className: 'dshb-link', title: t('newTopicHint'), disabled: running || topicBusy || !bot.sessionId, onClick: startTopic, 'data-dsh-bots-new-topic': 'chat', style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4, opacity: running || !bot.sessionId ? 0.5 : 1 } }, Icon.plus(11), t('newTopic')),
-            env.canOpen() ? h('span', { style: { color: C.faint } }, '·') : null,
-            env.canOpen() ? h('button', { type: 'button', className: 'dshb-link', style: { fontSize: TINY, display: 'inline-flex', alignItems: 'center', gap: 4 }, onClick: () => env.openBot(bot) }, Icon.open(11), t('fullTranscript')) : null,
-          ),
+            { className: 'dshb-composer' },
+            quote ? h(QuoteBar, { t, m: quote, onCancel: () => setQuote(null), attr: 'data-dsh-bots-thread-quote' }) : null,
+            h(
+              'div',
+              { style: { display: 'flex', alignItems: 'flex-end', gap: 8 } },
+              h('textarea', {
+                'data-dsh-bots-thread-composer': rootId,
+                value: text,
+                rows: Math.min(6, Math.max(1, text.split('\n').length)),
+                placeholder: t('topicComposer'),
+                onChange: (e) => setText(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !e.nativeEvent?.isComposing) {
+                    e.preventDefault();
+                    send();
+                  } else if (e.key === 'Escape' && quote) {
+                    e.stopPropagation?.();
+                    setQuote(null);
+                  }
+                },
+                style: { flex: 1, minWidth: 0, minHeight: 30, maxHeight: 160, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: C.primary, font: 'inherit', fontSize: FONT, lineHeight: 1.5, padding: '5px 8px' },
+              }),
+              h(Btn, { kind: 'primary', icon: Icon.send(14), title: t('send'), disabled: !text.trim(), onClick: send, 'data-dsh-bots-thread-send': rootId, style: { borderRadius: 9, width: 32, height: 32 } }),
+            ),
           ),
         ),
       );
@@ -7323,6 +7904,27 @@ button.dshb-tline:hover{background:${C.hover}}
         act_tool: 'Using {detail}',
         composer: 'Message @{handle}',
         composerHint: 'Enter to send · Shift+Enter for a new line',
+        replyAction: 'Reply',
+        replyingTo: 'Replying to {name}',
+        cancelReply: 'Cancel the reply',
+        topicLabel: 'Topic',
+        topicTitle: 'Topic',
+        topicReplyOne: '1 reply',
+        topicReplies: '{n} replies',
+        topicEmpty: 'No replies yet.',
+        topicComposer: 'Reply in this topic',
+        topicUnread: 'New replies',
+        openTopic: 'Open the topic',
+        closeTopic: 'Close the topic',
+        movedTo: 'Put into “{title}”',
+        movedToTopic: 'Put into another topic',
+        movedIn: 'Moved into this topic',
+        newReplyOne: 'A topic has a new reply',
+        newReplies: '{n} topics have new replies',
+        msgPending: 'Queued',
+        msgPendingHint: 'Delivered; the bot takes it as soon as it finishes its current step.',
+        msgFailed: 'Not sent',
+        resend: 'Send again',
         fullTranscript: 'Full transcript in its conversation',
         send: 'Send',
         sendFailed: 'Could not send the message.',
@@ -8200,6 +8802,27 @@ button.dshb-tline:hover{background:${C.hover}}
         act_tool: '使用 {detail}',
         composer: '给 @{handle} 发消息',
         composerHint: 'Enter 发送 · Shift+Enter 换行',
+        replyAction: '回复',
+        replyingTo: '回复 {name}',
+        cancelReply: '取消回复',
+        topicLabel: '话题',
+        topicTitle: '话题',
+        topicReplyOne: '1 条回复',
+        topicReplies: '{n} 条回复',
+        topicEmpty: '还没有回复。',
+        topicComposer: '在话题里回复',
+        topicUnread: '有新回复',
+        openTopic: '打开话题',
+        closeTopic: '关闭话题',
+        movedTo: '已归入「{title}」',
+        movedToTopic: '已归入另一个话题',
+        movedIn: '归入此话题',
+        newReplyOne: '1 个话题有新回复',
+        newReplies: '{n} 个话题有新回复',
+        msgPending: '排队中',
+        msgPendingHint: '已送达，bot 做完手头这一步就会看到。',
+        msgFailed: '发送失败',
+        resend: '重发',
         fullTranscript: '完整记录在它的会话里',
         send: '发送',
         sendFailed: '消息没有发出去。',

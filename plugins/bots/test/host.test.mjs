@@ -617,14 +617,15 @@ test('router mode: a delegation from a Telegram turn takes that chat as its orig
   await settle();
   assert.equal(c.sent.length, sent);
   assert.ok(!capi.store.messages({ bot: forge.id }).some((m) => m.text === 'Working on the fix now.'));
-  // The done report wakes Atlas; its answer goes back to the chat.
-  await hh.tools_call('bot_send_message', { status: 'done', text: 'Shipped: v2.4.1 is out.' }, t.sessionId);
-  const relay = home.inbox.at(-1);
-  assert.match(relay.content[0].text, /^Report from @forge on task/);
-  hh.emit('session/event', home.session, { type: 'user/message', data: relay });
-  says(hh, atlasNow, 'Forge shipped v2.4.1.');
+  // 0.9: the done report goes to the chat as it is, signed by Forge; Atlas is not woken for it.
+  const inboxBefore = home.inbox.length;
+  const done = await hh.tools_call('bot_send_message', { status: 'done', text: 'Shipped: v2.4.1 is out.' }, t.sessionId);
+  assert.match(done.text, /^Shown to the person as it is, in Telegram · Kada; @atlas is told\./);
   await settle();
-  assert.deepEqual(c.sent.at(-1), { chatId: '42', text: 'Forge shipped v2.4.1.' });
+  assert.deepEqual(c.sent.at(-1), { chatId: '42', text: '【Forge】\nShipped: v2.4.1 is out.' });
+  assert.ok(!home.inbox.slice(inboxBefore).some((m) => /^Report from/.test(m.content[0].text)), 'nothing wakes Atlas to pass it on');
+  const shown = capi.store.messages({ bot: atlas.id }).filter((m) => m.ticket === t.id && m.kind === 'reply');
+  assert.deepEqual(shown.map((m) => [m.from, m.chat, m.via, m.thread, m.status]), [[forge.id, atlas.id, 'telegram', key, 'done']]);
   // A ticket the user asked for (no Session to tell) needs the person once its worker reports.
   const own = capi.tickets.create({ text: 'Check the logs', botId: forge.id, requester: { kind: 'user' } });
   assert.ok(!capi.state().attention.some((x) => x.id === own.id));

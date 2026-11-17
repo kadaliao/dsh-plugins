@@ -220,8 +220,9 @@ async function withTelegram(env) {
   return { c, appId, say, key: (chat) => `telegram:${atlas.id}/${appId}:${chat}` };
 }
 
-/** A team (Atlas the router, Forge, Scout) on Telegram, and one task delegated from each of the two chats. */
-async function twoChats({ topic } = {}) {
+/** A team (Atlas the router, Forge, Scout) on Telegram, and one task delegated from each of the two chats (`relay`: asking for the reports, 0.8's way). */
+async function twoChats({ topic, relay = false } = {}) {
+  const back = relay ? { report_to: 'me' } : {};
   const env = boot();
   const { h, api } = env;
   api.store.save({ name: 'Forge', bio: 'Engineer' });
@@ -231,15 +232,35 @@ async function twoChats({ topic } = {}) {
   await settle();
   const sid = api.store.find('atlas').sessionId;
   const router = h.agentsById.get(sid);
-  const [a] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.' } }] });
+  const [a] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', ...back } }] });
   tg.say('43', 11, 'Write the release notes', topic);
   await settle();
-  const [b] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes for 2.4.' } }] });
+  const [b] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes for 2.4.', ...back } }] });
   return { ...env, tg, sid, router, ta: api.tickets.get(a.ticket.id), tb: api.tickets.get(b.ticket.id) };
 }
 
-test('two chats each delegate a task; each result returns to its own chat, in its own turn', async () => {
+test('two chats each delegate a task; each worker answers in its own chat itself, signed, and the Router takes no turn for it (0.9)', async () => {
   const s = await twoChats();
+  const { api, tg, router, ta, tb, call } = s;
+  await call('bot_send_message', { status: 'done', text: 'Fixed: SameSite=None; Secure.' }, ta.sessionId);
+  await call('bot_send_message', { status: 'done', text: 'Notes are in docs/2.4.md.' }, tb.sessionId);
+  await settle();
+  assert.deepEqual(tg.c.sent, [
+    { chatId: '42', text: '【Forge】\nFixed: SameSite=None; Secure.' },
+    { chatId: '43', text: '【Scout】\nNotes are in docs/2.4.md.' },
+  ]);
+  const notes = router.deliveries.filter((d) => /^bots:shown:/.test(d.message.id));
+  assert.deepEqual(notes.map((d) => d.mode), ['inject', 'inject']);
+  assert.match(textOfMsg(notes[0].message), /went to the person as it is, in Telegram · Kada:/);
+  assert.equal(router.inbox.nextStep.length + router.inbox.nextTurn.length, 0, 'nothing for the Router to pass on');
+  const atlas = api.store.find('atlas');
+  const replies = api.store.messages({ bot: atlas.id }).filter((m) => m.kind === 'reply');
+  assert.deepEqual(replies.map((m) => [m.from, m.via, m.thread, m.ticket]), [[ta.botId, 'telegram', tg.key('42'), ta.id], [tb.botId, 'telegram', tg.key('43'), tb.id]]);
+  s.dispose();
+});
+
+test('with report_to "me", each result returns through the Router to its own chat, in its own turn', async () => {
+  const s = await twoChats({ relay: true });
   const { api, h, tg, sid, router, ta, tb, call } = s;
   // The chat message names its Thread for the model; the Router took both by steering.
   const first = router.deliveries.find((d) => /Fix the login bug$/.test(textOfMsg(d.message)));
@@ -332,7 +353,7 @@ test('in a whole chat (a private chat) a task takes a message only while its que
 });
 
 test('reports from two chats in one turn: plain text stays in the panel (marked), bot_reply sends each answer to its chat', async () => {
-  const s = await twoChats();
+  const s = await twoChats({ relay: true });
   const { api, h, tg, sid, ta, tb, call } = s;
   await call('bot_send_message', { status: 'done', text: 'Login fixed.' }, ta.sessionId);
   await call('bot_send_message', { status: 'done', text: 'Notes written.' }, tb.sessionId);
@@ -357,25 +378,25 @@ test('reports from two chats in one turn: plain text stays in the panel (marked)
   assert.equal(plain.notSent, true);
   assert.deepEqual(plain.choices, [tg.key('42'), tg.key('43')]);
   // Unknown targets are refused with the valid ones; a task conversation cannot reply to a chat.
-  await assert.rejects(s.call('bot_reply', { thread: 'telegram:nope/app:1', text: 'x' }, sid), /no chat thread .* can be reached from here\. This turn has no chat/);
+  await assert.rejects(s.call('bot_reply', { thread: 'telegram:nope/app:1', text: 'x' }, sid), /no topic or chat thread .* can be reached from here\. This turn has no topic or chat/);
   await assert.rejects(s.call('bot_reply', { text: 'x' }, sid), /say where/);
   await assert.rejects(s.call('bot_reply', { ticket: ta.id, text: 'x' }, ta.sessionId), /task conversation talks to no chat/);
   // Outside a turn, a task's stored chat is still a target.
   const later = await s.call('bot_reply', { ticket: tb.id, text: 'Following up.' }, sid);
   assert.equal(later.thread, tg.key('43'));
-  // Two chats in one turn, and the task belongs to the one named, else to none.
+  // Two chats in one turn: the task belongs to the one named; naming none is refused with the choices (0.9).
   tg.say('42', 20, '@atlas deploy to staging');
   tg.say('43', 21, '@atlas and update the changelog');
   await settle();
-  const [named, none] = await h.step(sid, {
-    calls: [
-      { name: 'bot_send_message', args: { to: '@forge', text: 'Deploy to staging.', thread: tg.key('42') } },
-      { name: 'bot_send_message', args: { to: '@scout', text: 'Update the changelog.' } },
-    ],
-  });
+  const home = h.agentsById.get(sid);
+  for (const m of home.inbox.nextStep.splice(0)) h.emit('session/event', home.session, { type: 'user/message', data: m });
+  const named = await s.call('bot_send_message', { to: '@forge', text: 'Deploy to staging.', thread: tg.key('42') }, sid);
   assert.equal(api.tickets.get(named.ticket.id).origin.threadKey, tg.key('42'));
-  assert.equal(api.tickets.get(none.ticket.id).origin.threadKey, undefined);
-  assert.deepEqual(api.tickets.get(none.ticket.id).threads, []);
+  await assert.rejects(
+    s.call('bot_send_message', { to: '@scout', text: 'Update the changelog.' }, sid),
+    (e) => /several topics or chats: say which one this task is for with `thread`/.test(e.message) && e.message.includes(`${tg.key('42')} (Telegram · Kada); ${tg.key('43')} (Telegram · Lin)`),
+  );
+  h.emit('session/event', home.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
   await assert.rejects(s.call('bot_send_message', { to: '@forge', text: 'x', thread: tg.key('99') }, sid), /`thread` must be one of this turn's threads/);
   s.dispose();
 });
@@ -402,10 +423,9 @@ test('a group message on Slack or Discord is its own Thread: the task it starts 
   assert.equal(t.origin.threadKey, key);
   assert.equal(api.tickets.thread(key).label, 'Discord · Ops · thread');
   await env.call('bot_send_message', { status: 'done', text: 'Deployed.' }, t.sessionId);
-  await h.step(sid, { answer: 'Deployed.' });
   await settle();
-  // Into the chain, quoting the message that started it (what the Thread's latest message told the hub).
-  assert.deepEqual(c.sent.at(-1), { chatId: 'G1', text: 'Deployed.', threadId: '5001', replyTo: '5001' });
+  // Into the chain, quoting the message that started it, from Forge itself (0.9).
+  assert.deepEqual(c.sent.at(-1), { chatId: 'G1', text: '【Forge】\nDeployed.', threadId: '5001', replyTo: '5001' });
   // A reply in that chain is a follow-up of the task; a new top-level message is a new Thread for the Router.
   c.emit({ chatId: 'G1', messageId: '5002', userId: '77', userName: 'Kada', text: 'and roll back if it fails', isDirect: false, mentioned: true, chatTitle: 'Ops', threadId: '5001' });
   c.emit({ chatId: 'G1', messageId: '5003', userId: '77', userName: 'Kada', text: 'new thing', isDirect: false, mentioned: true, chatTitle: 'Ops' });
@@ -424,7 +444,8 @@ test('the watchdog: a quiet worker gets one status check, then is stalled and it
   const { h, api } = env;
   api.store.save({ name: 'Forge' });
   const sid = await api.userSend(api.store.find('atlas'), 'Fix the login bug');
-  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.' } }] });
+  // Asked back (`report_to: "me"`): its requester is the one reminded once it settles.
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', report_to: 'me' } }] });
   const t = api.tickets.get(r.ticket.id);
   await h.step(t.sessionId, { answer: 'Looking.' });
   const worker = h.agentsById.get(t.sessionId);
@@ -631,7 +652,7 @@ test('personas: a worker home in router mode expects reports; hands-on text is u
   assert.equal(personaText(forge, roster, { dispatcher: 'hands-on', tickets: false }), handsOn);
   assert.match(handsOn, /its answer comes back to you as a "Bot message from @…" message/);
   const routed = personaText(forge, roster, { dispatcher: 'router', tickets: true });
-  assert.match(routed, /its answer comes back to you as a "Report from @… on task …" message/);
+  assert.match(routed, /Pass `report_to: "me"` when you need the result back yourself; it then arrives as a "Report from @… on task …" message/);
   assert.doesNotMatch(routed, /comes back to you as a "Bot message from/);
   // The dispatcher's own texts do not change with `tickets`.
   assert.equal(personaText(atlas, roster, { dispatcher: 'router', tickets: true }), personaText(atlas, roster, { dispatcher: 'router' }));
@@ -674,7 +695,9 @@ test('bot_recall: a task conversation reads its task, parent, sub-tasks and Thre
   assert.equal((await read(`ticket/${c.id}`, p.sessionId)).card.parent, p.id);
   await assert.rejects(read(`ticket/${s.id}`, p.sessionId), /outside this task/);
   assert.deepEqual((await read('tickets', p.sessionId)).items.map((x) => x.id).sort(), [p.id, c.id].sort());
-  assert.equal((await read(`thread/panel:${sid}`, p.sessionId)).thread.kind, 'panel');
+  // Its thread is the panel topic the request came from (0.9).
+  assert.ok(p.origin.threadKey.startsWith(`panel:${sid}:p`));
+  assert.equal((await read(`thread/${p.origin.threadKey}`, p.sessionId)).thread.kind, 'panel');
   await assert.rejects(read('thread/panel:session-elsewhere', p.sessionId), /outside this task/);
   // The sub-task reads its parent but not its parent's sibling.
   assert.equal((await read(`ticket/${p.id}`, c.sessionId)).card.id, p.id);
@@ -863,9 +886,10 @@ test('the Router passes a report on while it hands out the next step: its words 
   tg.say('42', 10, 'Fix the bug, then have Scout write it up');
   await settle();
   const sid = api.store.find('atlas').sessionId;
-  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the bug.' } }] });
+  // The Router chains the steps itself: it asks for the reports back.
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the bug.', report_to: 'me' } }] });
   await call('bot_send_message', { status: 'done', text: 'Fixed in commit abc.' }, api.tickets.get(r.ticket.id).sessionId);
-  const [w] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write up the fix in abc.' } }], answer: 'Forge fixed the bug (commit abc). Scout is writing it up.' });
+  const [w] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@scout', text: 'Write up the fix in abc.', report_to: 'me' } }], answer: 'Forge fixed the bug (commit abc). Scout is writing it up.' });
   await settle();
   const replies = () => api.store.messages({ bot: api.store.find('atlas').id }).filter((m) => m.kind === 'reply').map((m) => m.text);
   assert.ok(replies().includes('Forge fixed the bug (commit abc). Scout is writing it up.'));
@@ -1083,9 +1107,8 @@ test('an answer in a group without threads quotes the message that started the t
   await settle();
   assert.deepEqual(tg.c.sent.at(-1), { chatId: '-100', text: 'Sunny.', replyTo: '51' });
   await call('bot_send_message', { status: 'done', text: 'Fixed.' }, t.sessionId);
-  await h.step(sid, { answer: 'The login bug is fixed.' });
   await settle();
-  assert.deepEqual(tg.c.sent.at(-1), { chatId: '-100', text: 'The login bug is fixed.', replyTo: '50' });
+  assert.deepEqual(tg.c.sent.at(-1), { chatId: '-100', text: '【Forge】\nFixed.', replyTo: '50' });
   env.dispose();
 });
 
@@ -1102,8 +1125,8 @@ test('plain text that reached no chat does not count as telling the person: the 
   const sid = api.store.find('atlas').sessionId;
   const [a, b] = await h.step(sid, {
     calls: [
-      { name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', thread: tg.key('42') } },
-      { name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes.', thread: tg.key('43') } },
+      { name: 'bot_send_message', args: { to: '@forge', text: 'Fix the login bug.', thread: tg.key('42'), report_to: 'me' } },
+      { name: 'bot_send_message', args: { to: '@scout', text: 'Write the release notes.', thread: tg.key('43'), report_to: 'me' } },
     ],
   });
   await call('bot_send_message', { status: 'done', text: 'Fixed.' }, api.tickets.get(a.ticket.id).sessionId);

@@ -8,7 +8,9 @@ import {
   createOrigins,
   isLiveSubscriber,
   isPanelThread,
+  isTopicThread,
   panelThreadKey,
+  panelTopicOf,
   parseThreadKey,
   routeInbound,
   sameThread,
@@ -69,7 +71,7 @@ test('awkward ids survive the round trip', () => {
 });
 
 test('malformed keys do not parse', () => {
-  for (const bad of ['', 'slack', 'slack:a', 'slack::c', 'slack:a:', 'slack:a:c:', 'slack:a:c:r:extra', 'Slack:a:c', ':a:c', 'panel:', 'panel:a:b', 'panel', 42, null, undefined, {}]) {
+  for (const bad of ['', 'slack', 'slack:a', 'slack::c', 'slack:a:', 'slack:a:c:', 'slack:a:c:r:extra', 'Slack:a:c', ':a:c', 'panel:', 'panel:a:', 'panel::b', 'panel:a:b:c', 'panel', 42, null, undefined, {}]) {
     assert.equal(parseThreadKey(bad), null, String(bad));
     assert.equal(toThreadKey(bad), null, String(bad));
   }
@@ -448,4 +450,67 @@ test('noteInput needs a session', () => {
   assert.equal(o.noteInput('', { origin: TG }), null);
   assert.equal(o.noteInput(undefined, { origin: TG }), null);
   assert.deepEqual(o.current(''), []);
+});
+
+// --- panel topics (0.9) ---------------------------------------------------------------------
+
+test('a panel topic is the panel key plus the id of its first message', () => {
+  assert.equal(panelThreadKey('s1', 'p1234abcd'), 'panel:s1:p1234abcd');
+  assert.equal(panelThreadKey('s1', ''), 'panel:s1');
+  assert.equal(threadKey('panel', '', { sessionId: 's1', rootId: 'p1' }), 'panel:s1:p1');
+  assert.deepEqual(parseThreadKey('panel:s1:p1'), { kind: 'panel', sessionId: 's1', rootId: 'p1' });
+  assert.equal(toThreadKey({ kind: 'panel', sessionId: 's:1', rootId: 'm:2' }), 'panel:s%3A1:m%3A2');
+  assert.deepEqual(parseThreadKey('panel:s%3A1:m%3A2'), { kind: 'panel', sessionId: 's:1', rootId: 'm:2' });
+  assert.equal(panelTopicOf('panel:s1:p1'), 'p1');
+  assert.equal(panelTopicOf('panel:s1'), '');
+  assert.equal(panelTopicOf('slack:b/a:C1:1.2'), '');
+  assert.ok(isPanelThread('panel:s1:p1'));
+  assert.ok(isTopicThread('panel:s1:p1'));
+  assert.ok(isTopicThread('slack:b/a:C1'));
+  assert.ok(!isTopicThread('panel:s1'));
+  assert.ok(!sameThread('panel:s1', 'panel:s1:p1'));
+  assert.equal(threadLabel('panel:s1:p1'), 'Panel · topic p1');
+  assert.equal(threadLabel({ threadKey: 'panel:s1:p1', threadTitle: '帮我查一下北京工作居住证' }), 'Panel · topic "帮我查一下北京工作居住证"');
+});
+
+test('one panel topic is a thread to answer in; two topics, or a topic and a chat, are a choice', () => {
+  const o = createOrigins();
+  o.noteInput('s1', { threadKey: 'panel:s1:p1' });
+  const plan = o.replyPlan('s1');
+  assert.equal(plan.mode, 'thread');
+  assert.deepEqual(plan.target, { threadKey: 'panel:s1:p1', kind: 'panel', sessionId: 's1', rootId: 'p1' });
+  o.noteInput('s1', { threadKey: 'panel:s1:p2' });
+  assert.equal(o.replyPlan('s1').mode, 'choose');
+  const o2 = createOrigins();
+  o2.noteInput('s1', { threadKey: 'panel:s1:p1' });
+  o2.noteInput('s1', { threadKey: 'telegram:b/a:42' });
+  assert.equal(o2.replyPlan('s1').mode, 'choose');
+  // The panel as a whole next to a topic: a choice too (the whole panel is no place to answer in).
+  const o3 = createOrigins();
+  o3.noteInput('s1', {});
+  o3.noteInput('s1', { threadKey: 'panel:s1:p1' });
+  assert.equal(o3.replyPlan('s1').mode, 'choose');
+  // A topic is found by its key, and a ticket noted with it by the ticket id.
+  const o4 = createOrigins();
+  o4.noteInput('s1', { threadKey: 'panel:s1:p1', ticket: 't1' });
+  assert.equal(o4.resolve('s1', { ticket: 't1' }).threadKey, 'panel:s1:p1');
+  assert.equal(o4.resolve('s1', 'panel:s1:p1').rootId, 'p1');
+});
+
+test('retarget: a topic filed under another one hands its place to it', () => {
+  const o = createOrigins();
+  o.noteInput('s1', { threadKey: 'telegram:b/a:42' });
+  o.noteInput('s1', { threadKey: 'panel:s1:p2', ticket: 'tA' });
+  const moved = o.retarget('s1', 'panel:s1:p2', 'panel:s1:p1', { threadTitle: 'Beijing' });
+  assert.deepEqual(moved, { threadKey: 'panel:s1:p1', kind: 'panel', sessionId: 's1', rootId: 'p1', threadTitle: 'Beijing', tickets: ['tA'] });
+  assert.deepEqual(o.current('s1').map((x) => x.threadKey), ['telegram:b/a:42', 'panel:s1:p1']);
+  // Into a thread the turn has already: one entry, in its first place.
+  const o2 = createOrigins();
+  o2.noteInput('s1', { threadKey: 'panel:s1:p1' });
+  o2.noteInput('s1', { threadKey: 'panel:s1:p2' });
+  o2.retarget('s1', 'panel:s1:p2', 'panel:s1:p1');
+  assert.deepEqual(o2.current('s1').map((x) => x.threadKey), ['panel:s1:p1']);
+  assert.equal(o2.replyPlan('s1').mode, 'thread');
+  assert.equal(o2.retarget('s1', 'panel:s1:p9', 'panel:s1:p1'), null);
+  assert.equal(o2.retarget('nobody', 'panel:s1:p1', 'panel:s1:p2'), null);
 });
