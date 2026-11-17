@@ -303,17 +303,24 @@ window.__ModuleLoader__.load({
       const v = store.state?.dispatcher ?? store.settings?.settings?.dispatcher;
       return v === 'hands-on' ? 'hands-on' : 'router';
     };
+    /**
+     * Whether the dispatcher routes now: router mode, and a teammate to hand work to (the Host's
+     * `routerActive`). The only bot of a team works hands-on whatever the setting says.
+     */
+    const routerActiveOf = (state = store.state) => dispatcherOf() === 'router' && state?.routerActive !== false;
     /** Keep the shared copies of the settings after a save, so the page shows them before the next poll. */
     function tookSettings(next) {
       if (next && typeof next === 'object') {
         store.settings = { ...(store.settings ?? {}), settings: next };
-        if (store.state && typeof next.dispatcher === 'string') store.state = { ...store.state, dispatcher: next.dispatcher };
+        // Until the next poll says, router mode is in effect when the dispatcher has a teammate.
+        if (store.state && typeof next.dispatcher === 'string') store.state = { ...store.state, dispatcher: next.dispatcher, routerActive: next.dispatcher === 'router' && (store.state.bots?.length ?? 0) > 1 };
         notify();
       }
     }
     /** The one-time notice after an upgrade moved the dispatcher to router mode; its Host names live here only. */
+    // It waits while the dispatcher is the only bot: there is nothing to hand out yet.
     const routerNotice = {
-      pending: (state) => state?.routerNoticePending === true,
+      pending: (state) => state?.routerNoticePending === true && routerActiveOf(state),
       dismiss: () => postJson('router-notice/dismiss', {}),
     };
     /** One task as the Host shows it, shared by every card on the page and refreshed when older than `maxAge`. */
@@ -1154,6 +1161,23 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
 
     // --- the panel: messages ---------------------------------------------------------------
 
+    /** A chat thread's key (`kind:app:chat[:root]`, lib/threads.mjs), not the panel's own. */
+    const isChatThread = (key) => typeof key === 'string' && /^[a-z][a-z0-9-]*:/.test(key) && !key.startsWith('panel:') && key.split(':').length >= 3;
+    /** Who wrote in each chat thread of a timeline, so a thread reads by a name rather than its chat id. */
+    function threadNamesOf(items) {
+      const names = new Map();
+      for (const m of items ?? []) if (isChatThread(m?.thread) && str(m.who).trim()) names.set(m.thread, str(m.who).trim());
+      return names;
+    }
+    /** A chat thread as people read it (the Host's `threadLabel`): `Telegram · Kada`, `Slack · C042 · thread`. */
+    function threadName(t, key, names) {
+      const [kind, , chat, root] = str(key).split(':');
+      const unescape = (s) => str(s).replace(/%(25|3A)/gi, (_, c) => (c === '25' ? '%' : ':'));
+      const parts = [channelName(kind, t), names?.get(key) || unescape(chat)];
+      if (root) parts.push(kind === 'telegram' ? t('threadTopic') : t('threadPart'));
+      return parts.join(' · ');
+    }
+
     /** Who a message end is: a bot face, the user, or the scheduler. */
     function party(t, id) {
       if (id === 'user') return { kind: 'user', name: t('you') };
@@ -1172,6 +1196,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
     function MessageList({ t, items, botId, empty }) {
       const count = items.length;
       if (count === 0) return empty;
+      const names = threadNamesOf(items);
       const rows = [];
       let lastDay = '';
       items.forEach((m, i) => {
@@ -1201,13 +1226,14 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
           );
         }
         const prev = items[i - 1];
-        const grouped = prev && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && at - toMs(prev.at) < 5 * 60_000;
-        rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped }));
+        // Answers to two chats of one turn keep their own headers (where each went), and so do two tasks.
+        const grouped = prev && prev.from === m.from && prev.to === m.to && prev.kind === m.kind && prev.via === m.via && prev.thread === m.thread && messageTicket(prev) === messageTicket(m) && at - toMs(prev.at) < 5 * 60_000;
+        rows.push(h(MessageRow, { key: m.id ?? i, t, m, botId, grouped, names }));
       });
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 0', maxWidth: 880, margin: '0 auto' } }, rows);
     }
 
-    function MessageRow({ t, m, botId, grouped }) {
+    function MessageRow({ t, m, botId, grouped, names }) {
       if (m.kind === 'topic') {
         const at = toMs(m.at);
         return h(
@@ -1225,9 +1251,11 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const mine = m.from === 'user';
       // A DM between two bots, or something addressed to another bot: an "A → B" card.
       const between = (m.kind === 'dm' || m.kind === 'report') && m.from !== 'user' && m.to !== 'user';
-      // A delegation that opened a task shows the task; a worker's report shows its status.
+      // A delegation that opened a task shows the task; a worker's report shows its status, and a
+      // notice that the task is stuck or failed its stage.
       const ticketId = messageTicket(m);
       const report = messageReport(m);
+      const notice = messageNotice(m);
       if (between || m.kind === 'system') {
         return h(
           'div',
@@ -1244,11 +1272,12 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
               h(PartyAvatar, { p: to, size: 18 }),
               h('span', { style: { fontWeight: 600, color: C.primary } }, to.name),
               report ? h(ReportChip, { t, status: report }) : null,
-              report && ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
+              notice ? h(StageChip, { t, stage: notice }) : null,
+              (report || notice) && ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
               h('span', { style: { marginLeft: 'auto', color: C.faint } }, m.kind === 'system' ? `${t('scheduled')} · ${time}` : time),
             ),
-            ticketId && !report ? h(TaskCard, { t, id: ticketId, botId: m.to, title: firstLine(m.text) }) : null,
-            h(Clamp, { t, text: m.text, lines: ticketId && !report ? 3 : 6, style: { fontSize: SMALL, color: C.primary } }),
+            ticketId && !report && !notice ? h(TaskCard, { t, id: ticketId, botId: m.to, title: firstLine(m.text) }) : null,
+            h(Clamp, { t, text: m.text, lines: ticketId && !report && !notice ? 3 : 6, style: { fontSize: SMALL, color: C.primary } }),
             h(LinkCards, { t, text: m.text }),
           ),
         );
@@ -1264,12 +1293,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 { style: { fontSize: TINY, color: C.faint, display: 'inline-flex', alignItems: 'center', gap: 6 } },
                 m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, t('viaChannel', { app: channelName(m.via, t), who: str(m.who) || t('you') })) : null,
                 m.to !== botId && to.kind === 'bot' ? `${t('toName', { name: to.name })} · ${time}` : time,
-                ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
+                // A message from a chat that went straight to the task it follows up on.
+                ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, title: m.via ? t('followUpHint') : undefined, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t(m.via ? 'followUpTask' : 'openTask')) : null,
               ),
           h('div', { style: { maxWidth: '78%', padding: '8px 12px', borderRadius: '14px 14px 4px 14px', background: C.label, color: '#fff', fontSize: FONT } }, h(Clamp, { t, text: m.text, lines: 14, light: true })),
           h('div', { style: { width: 'min(480px, 78%)', display: 'flex', justifyContent: 'flex-end' } }, h(LinkCards, { t, text: m.text, align: 'flex-end' })),
         );
       }
+      // Where a reply went: its chat by name when the Host says which (`→ Telegram · Kada`), else the app.
+      const place = m.via ? (isChatThread(m.thread) ? threadName(t, m.thread, names) : channelName(m.via, t)) : '';
+      // With several chats in the turn, plain text reached none of them (bot_reply says where each answer goes).
+      const choices = m.notSent === true && Array.isArray(m.choices) ? m.choices.filter(isChatThread) : [];
       return h(
         'div',
         { 'data-dsh-bots-msg': m.kind || 'reply', className: 'dshb-fade', style: { display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: grouped ? 0 : 8 } },
@@ -1286,11 +1320,20 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                 from.kind === 'bot' ? h('span', { style: { color: C.faint } }, `@${from.bot.handle}`) : null,
                 m.to !== 'user' && to.kind === 'bot' && m.to !== botId ? h('span', { style: { color: C.faint } }, `→ ${to.name}`) : null,
                 h('span', { style: { color: C.faint } }, time),
-                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, title: t('sentToChannel', { app: channelName(m.via, t) }), 'data-dsh-bots-via': m.via }, `→ ${channelName(m.via, t)}`) : null,
+                m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, title: t('sentToChannel', { app: place }), 'data-dsh-bots-via': m.via }, `→ ${place}`) : null,
                 report ? h(ReportChip, { t, status: report }) : null,
+                notice ? h(StageChip, { t, stage: notice }) : null,
                 ticketId ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-report-task': ticketId, onClick: () => openTicket(ticketId), style: { fontSize: TINY } }, t('openTask')) : null,
               ),
           h('div', { style: { padding: '8px 12px', borderRadius: '4px 14px 14px 14px', background: C.layer2, border: `1px solid ${C.border1}`, fontSize: FONT, minWidth: 0 } }, h(Clamp, { t, text: m.text, lines: 24 })),
+          choices.length
+            ? h(
+                'div',
+                { 'data-dsh-bots-not-sent': choices.length, style: { display: 'flex', alignItems: 'flex-start', gap: 5, fontSize: TINY, color: C.muted, lineHeight: 1.5 } },
+                h('span', { style: { color: C.warn, display: 'inline-flex', paddingTop: 2 } }, Icon.alert(11)),
+                t('notSentChats', { chats: choices.map((k) => threadName(t, k, names)).join(t('listSep')) }),
+              )
+            : null,
           h(LinkCards, { t, text: m.text }),
         ),
       );
@@ -2003,6 +2046,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const { items, failed } = useMessages(null);
       const [filter, setFilter] = useState('');
       const shown = (items ?? []).filter((m) => !filter || m.from === filter || m.to === filter).slice().reverse();
+      const names = threadNamesOf(items);
       return h(
         'div',
         { style: { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } },
@@ -2051,8 +2095,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
                         h('span', { style: { fontWeight: 600 } }, to.name),
                         h(Badge, { color: m.kind === 'dm' ? C.label : m.kind === 'system' ? C.warn : C.muted }, t(`kind_${m.kind}`) || m.kind),
                         messageReport(m) ? h(ReportChip, { t, status: messageReport(m) }) : null,
+                        messageNotice(m) ? h(StageChip, { t, stage: messageNotice(m) }) : null,
                         messageTicket(m) ? h('button', { type: 'button', className: 'dshb-link', 'data-dsh-bots-event-task': messageTicket(m), onClick: () => openTicket(messageTicket(m)), style: { fontSize: TINY } }, t('openTask')) : null,
-                        m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via, t)} · ${str(m.who)}` : channelName(m.via, t)) : null,
+                        m.via ? h(Badge, { color: CHANNEL_COLORS[m.via] ?? C.muted, 'data-dsh-bots-via': m.via }, m.from === 'user' && m.who ? `${channelName(m.via, t)} · ${str(m.who)}` : isChatThread(m.thread) ? threadName(t, m.thread, names) : channelName(m.via, t)) : null,
+                        m.notSent === true ? h(Badge, { color: C.warn, 'data-dsh-bots-not-sent': true, title: (Array.isArray(m.choices) ? m.choices.filter(isChatThread) : []).map((k) => threadName(t, k, names)).join(t('listSep')) }, t('notSent')) : null,
                         h('span', { style: { marginLeft: 'auto', color: C.faint, fontSize: TINY }, title: fmtDate(toMs(m.at)) }, fmtAgo(t, m.at)),
                       ),
                       h(Clamp, { t, text: m.kind === 'topic' ? t('topicDivider', { reason: t(`topicReason_${m.text}`) }) : m.text, lines: 3, style: { fontSize: SMALL, color: C.muted } }),
@@ -2088,6 +2134,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const v = m?.report && typeof m.report === 'object' ? m.report.status : (m?.report ?? m?.status);
       return REPORT_STATUSES.includes(v) ? v : '';
     }
+    /** The stage a watchdog notice on a timeline message tells of (a task stuck, or failed for good), or ''. */
+    const messageNotice = (m) => (m?.kind === 'dm' && messageTicket(m) && (m.status === 'stalled' || m.status === 'failed') ? m.status : '');
     function StageChip({ t, stage }) {
       if (!STAGE_COLOR[stage]) return null;
       return h(Badge, { color: STAGE_COLOR[stage], 'data-dsh-bots-stage': stage }, stage === 'working' ? h(StatusDot, { status: 'running', size: 6 }) : null, t(`stage_${stage}`));
@@ -2767,9 +2815,17 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       };
       return h(
         'div',
-        { role: 'radiogroup', 'aria-label': t('dispatcherMode'), 'data-dsh-bots-dispatcher-modes': mode, style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 } },
-        option('router', t('modeRouter'), t('modeRouterBody')),
-        option('hands-on', t('modeHandsOn'), t('modeHandsOnBody')),
+        { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+        h(
+          'div',
+          { role: 'radiogroup', 'aria-label': t('dispatcherMode'), 'data-dsh-bots-dispatcher-modes': mode, style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 } },
+          option('router', t('modeRouter'), t('modeRouterBody')),
+          option('hands-on', t('modeHandsOn'), t('modeHandsOnBody')),
+        ),
+        // Router mode asked for, but nobody to hand work to yet.
+        mode === 'router' && !routerActiveOf()
+          ? h('div', { 'data-dsh-bots-router-waiting': true, style: { display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: TINY, color: C.muted, lineHeight: 1.5 } }, h('span', { style: { color: C.warn, display: 'inline-flex', paddingTop: 1 } }, Icon.alert(12)), t('routerWaiting', { name }))
+          : null,
       );
     }
     const ABILITY_ICON = {
@@ -2863,9 +2919,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
       const knownModel = !draft.model || Boolean(chosen);
       const efforts = Array.isArray(chosen?.efforts) ? chosen.efforts : [];
       const [sources, setSources] = useState(false);
-      // A router dispatcher goes without some tools unless they are allowed back one ability at a time.
+      // A router dispatcher goes without some tools unless they are allowed back one ability at a time
+      // (only while it routes: the only bot of a team keeps them all).
       const isPrimary = bot.role === 'primary' || bot.id === store.state?.primaryId;
-      const routing = isPrimary && dispatcherOf() === 'router';
+      const routing = isPrimary && routerActiveOf();
       const routerDeny = new Set(routing ? routerDenyOf(catalog) : []);
       const routerAllow = new Set(draft.routerAllow);
       const routerBlocked = (names) => names.filter((x) => routerDeny.has(x) && !routerAllow.has(x));
@@ -7127,6 +7184,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         channelPrivate: 'Only paired people reach the team. Anyone else is ignored (at most a one-line "this bot is private" a day). In a group the bot only answers when @mentioned or replied to.',
         viaChannel: '{app} · {who}',
         sentToChannel: 'Also sent to {app}',
+        threadPart: 'thread',
+        threadTopic: 'topic',
+        notSent: 'Not sent',
+        notSentChats: 'Not sent to any chat: this turn involved several ({chats}).',
         // tasks
         tasks: 'Tasks',
         tasksHint: 'Work handed to your bots',
@@ -7145,6 +7206,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         tasksEmptyBody: 'When the dispatcher hands work to a teammate, it shows up here as a task you can follow, answer and stop.',
         untitledTask: 'Untitled task',
         openTask: 'Open task',
+        followUpTask: 'Went to its task',
+        followUpHint: 'A follow-up in the chat a task came from goes straight to that task.',
         taskOf: 'Task · {name}',
         stage_question: 'Needs your answer',
         stage_failed: 'Failed',
@@ -7212,6 +7275,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         modeSavedRouter: '{name} now only hands out the work.',
         modeSavedHandsOn: '{name} does small things itself again.',
         routerModelHint: 'In Router mode it only understands, hands out and reports, so a light, fast model is enough, and every request stays quick and cheap.',
+        routerWaiting: 'Router mode starts once the team has another bot; until then {name} does the work itself.',
         abilitiesRouterHint: 'What {name} can do with the Harness’s built-in tools. In Router mode it does not run commands, write files, use sub-agents, draw or make Office files; turn one back on below if it needs it.',
         routerOff: 'Off in Router mode',
         routerPartOff: 'Partly off in Router mode',
@@ -7923,6 +7987,10 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         channelPrivate: '只有配对过的人能找到团队，其他人一律忽略（每天最多回一句“这是私人 Bot”）。在群里，只有 @ 它或回复它时才会回答。',
         viaChannel: '{app} · {who}',
         sentToChannel: '也已发到 {app}',
+        threadPart: '话题',
+        threadTopic: '话题',
+        notSent: '未发出',
+        notSentChats: '没有发到任何聊天：这一轮涉及多个聊天（{chats}）。',
         // tasks
         tasks: '任务',
         tasksHint: '交给 Bot 们的工作',
@@ -7941,6 +8009,8 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         tasksEmptyBody: '调度者把工作交给队友时，这里会出现一个任务，你可以跟进、回答或叫停。',
         untitledTask: '未命名任务',
         openTask: '打开任务',
+        followUpTask: '已交给所属任务',
+        followUpHint: '在任务来源的聊天里跟进，消息会直接交给那个任务。',
         taskOf: '任务 · {name}',
         stage_question: '等你回答',
         stage_failed: '失败',
@@ -8008,6 +8078,7 @@ a.dshb-lc:hover{border-color:${C.border};background:${C.layer2}}
         modeSavedRouter: '{name} 现在只负责分派。',
         modeSavedHandsOn: '{name} 又会自己做小事了。',
         routerModelHint: '只调度时它只负责听懂、分派、汇报，用轻量、快速的模型就够了，每次请求都更快、更省。',
+        routerWaiting: '团队里再有一个 Bot 后才开始只调度，在此之前 {name} 自己动手。',
         abilitiesRouterHint: '{name} 能用 Harness 内置工具做哪些事。只调度时它不执行命令、不写文件、不用子代理、不作图也不做 Office 文档；确实需要时可以在下面逐项打开。',
         routerOff: '只调度时关闭',
         routerPartOff: '只调度时部分关闭',

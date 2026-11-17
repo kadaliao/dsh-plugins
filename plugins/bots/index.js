@@ -1087,7 +1087,10 @@ export function apply(ctx, config, deps = {}) {
    *   is not delivered again, so a retried request is harmless.
    * @returns {{message: object, mode: string, skipped: boolean}}
    */
-  async function sendTo(agent, { content, source, mode = 'followup', key }) {
+  async function sendTo(agent, { content: blocks, source, mode = 'followup', key }) {
+    // Providers that take a message as one string join its blocks with nothing in between:
+    // a header block ends its line itself, so the text under it starts on a new one.
+    const content = blocks.map((b, i) => (i < blocks.length - 1 && b?.type === 'text' && !b.text.endsWith('\n') ? { ...b, text: `${b.text}\n` } : b));
     const message = key ? freezeMessage({ id: `${MESSAGE_PREFIX}${key}`, role: 'user', content, source }) : createUserMessage({ content, source });
     if (key) await loadHistory(agent.session?.id);
     if (key && holds(agent, message.id)) return { message, mode, skipped: true };
@@ -1181,6 +1184,9 @@ export function apply(ctx, config, deps = {}) {
       ...(t.ended ? { ended: t.ended } : {}),
       ...(t.error ? { error: t.error } : {}),
       ...(t.archivedAt ? { archivedAt: t.archivedAt } : {}),
+      ...(t.nudgedAt ? { nudgedAt: t.nudgedAt } : {}),
+      ...(t.stalledAt ? { stalledAt: t.stalledAt } : {}),
+      ...(t.retries ? { retries: t.retries } : {}),
       reports: t.reports.map((r) => ({ at: r.at, status: r.status, text: r.text })),
       threads: t.threads.map(threadView),
       runs: use.runs,

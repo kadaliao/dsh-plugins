@@ -268,8 +268,8 @@ export function textOf(content) {
   if (typeof content === 'string') return content;
   return (Array.isArray(content) ? content : [])
     .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text)
-    .join('\n')
+    .map((b, i, all) => (i < all.length - 1 && !b.text.endsWith('\n') ? `${b.text}\n` : b.text))
+    .join('')
     .trim();
 }
 

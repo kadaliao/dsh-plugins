@@ -2006,6 +2006,109 @@ test('the conversation: bot_send_message shows the task it opened, a report its 
   hooks.runCleanups();
 });
 
+// --- what the Host emits since the Thread routing (PLAN-0.8 §13) -------------------------------
+
+test('router mode waits for a teammate: one line under How it works, and no router-only tools or notice while the dispatcher is alone', async () => {
+  await withTaskState({ state: { routerActive: false, routerNoticePending: true }, bots: [{ tools: { deny: [] } }] }, async () => {
+    const v = await openTab('profile', 'bot-a');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-dispatcher-modes'])[0].props['data-dsh-bots-dispatcher-modes'], 'router', 'the setting still reads router');
+    const [waiting] = findAll(v.tree, (n) => n.props['data-dsh-bots-router-waiting']);
+    assert.ok(waiting);
+    assert.equal(collect(waiting).join(''), 'Router mode starts once the team has another bot; until then Ada does the work itself.');
+    // Alone, it keeps every tool: nothing is marked off for a router, and no light-model hint.
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off'] || n.props['data-dsh-bots-router-allowed'] || n.props['data-dsh-bots-router-tool']).length, 0);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ability'] === 'code')[0].props['data-on'], true);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0);
+    assert.doesNotMatch(collect(v.tree).join(' '), /In Router mode it does not run commands/);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 0, 'the notice waits until it applies');
+    // Hands-on has nothing to wait for.
+    click(v.tree, 'data-dsh-bots-dispatcher-mode', 'hands-on');
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-waiting']).length, 0);
+    v.hooks.runCleanups();
+  });
+  // With a teammate it routes: no line, the router's view of its tools, and the notice.
+  await withTaskState({ state: { routerActive: true, routerNoticePending: true }, bots: [{ tools: { deny: [] } }] }, async () => {
+    const v = await openTab('profile', 'bot-a');
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-waiting']).length, 0);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 1);
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => n.props['data-dsh-bots-router-off']), ['code']);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 1);
+    v.hooks.runCleanups();
+  });
+});
+
+const TG1 = 'telegram:bot-a/tg1:42';
+const TG2 = 'telegram:bot-a/tg1:77';
+const SL = 'slack:bot-a/sl1:C042:1700000000.0001';
+const DC = 'discord:bot-a/dc1:998877';
+
+test('chat: with several chats in a turn, the plain reply says it reached none of them and each bot_reply names its chat', async () => {
+  const now = Date.now();
+  await withFixtures(() => {
+    MESSAGES.push(
+      { id: 'm10', from: 'user', to: 'bot-a', text: 'Book the flights', at: now - 9_000, kind: 'user', via: 'telegram', who: 'Kada', thread: TG1 },
+      { id: 'm11', from: 'user', to: 'bot-a', text: 'Book the hotel', at: now - 8_500, kind: 'user', via: 'telegram', who: 'Lin', thread: TG2 },
+      { id: 'm12', from: 'user', to: 'bot-a', text: 'And the car', at: now - 8_000, kind: 'user', via: 'slack', who: 'Bob', thread: SL },
+      { id: 'm13', from: 'bot-a', to: 'user', text: 'All three are on their way.', at: now - 7_000, kind: 'reply', thread: 'panel:sess-a', notSent: true, choices: [TG1, TG2, SL, DC] },
+      { id: 'm14', from: 'bot-a', to: 'user', text: 'Flights booked.', at: now - 6_000, kind: 'reply', via: 'telegram', thread: TG1 },
+      { id: 'm15', from: 'bot-a', to: 'user', text: 'Hotel booked.', at: now - 5_500, kind: 'reply', via: 'telegram', thread: TG2 },
+      { id: 'm16', from: 'bot-a', to: 'user', text: 'Car booked.', at: now - 5_000, kind: 'reply', via: 'slack', thread: SL },
+    );
+  }, async () => {
+    const v = await openTab('chat', 'bot-a');
+    // Two chats of the same app keep their own headers, so every answer shows where it went.
+    const marks = findAll(v.tree, (n) => n.props['data-dsh-bots-via']).map((n) => collect(n).join(''));
+    assert.deepEqual(marks, ['Telegram · Kada', 'Telegram · Lin', 'Slack · Bob', '→ Telegram · Kada', '→ Telegram · Lin', '→ Slack · Bob · thread']);
+    const notSent = findAll(v.tree, (n) => n.props['data-dsh-bots-not-sent']);
+    assert.equal(notSent.length, 1);
+    // A chat nobody in the timeline wrote from reads by its id.
+    assert.equal(collect(notSent[0]).join(''), 'Not sent to any chat: this turn involved several (Telegram · Kada, Telegram · Lin, Slack · Bob · thread, Discord · 998877).');
+    // The activity view marks the same.
+    click(v.tree, 'data-dsh-bots-activity');
+    await v.rerender();
+    const [badge] = findAll(v.tree, (n) => n.props['data-dsh-bots-not-sent']);
+    assert.equal(collect(badge).join(''), 'Not sent');
+    assert.equal(badge.props.title, 'Telegram · Kada, Telegram · Lin, Slack · Bob · thread, Discord · 998877');
+    const sent = findAll(v.tree, (n) => n.props['data-dsh-bots-event'] === 'reply' && findAll(n, (x) => x.props['data-dsh-bots-via']).length).map((n) => collect(findAll(n, (x) => x.props['data-dsh-bots-via'])[0]).join(''));
+    assert.deepEqual(sent, ['Slack · Bob · thread', 'Telegram · Lin', 'Telegram · Kada']);
+    v.hooks.runCleanups();
+  });
+});
+
+test('chat: a follow-up that went straight to a task links to it; a stuck or failed notice shows the task’s stage', async () => {
+  const now = Date.now();
+  await withFixtures(() => {
+    MESSAGES.push(
+      { id: 'm20', from: 'user', to: 'bot-b', text: 'Green, please', at: now - 6_000, kind: 'user', via: 'telegram', who: 'Kada', thread: TG1, ticket: 'tquestion' },
+      { id: 'm21', from: 'bot-b', to: 'bot-a', text: 'Task tworking1 stalled: no report after a status check.', at: now - 4_000, kind: 'dm', ticket: 'tworking1', status: 'stalled' },
+      { id: 'm22', from: 'bot-b', to: 'bot-a', text: 'Task tfailed01 failed: Connection refused (3 tries).', at: now - 3_000, kind: 'dm', ticket: 'tfailed01', status: 'failed' },
+      // A task you asked for yourself: the notice is to you.
+      { id: 'm23', from: 'bot-c', to: 'user', text: 'Task tstalled1 stalled: no report after a status check.', at: now - 2_000, kind: 'dm', ticket: 'tstalled1', status: 'stalled' },
+    );
+  }, async () => {
+    const v = await openTab('chat', 'bot-b');
+    await v.rerender();
+    const [link] = findAll(v.tree, (n) => n.props['data-dsh-bots-report-task'] === 'tquestion');
+    assert.equal(collect(link).join(''), 'Went to its task');
+    assert.match(link.props.title, /goes straight to that task/);
+    // Notices: the stage of a task and a link to it, not a delegation card or a report.
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-stage']).map((n) => [n.props['data-dsh-bots-stage'], collect(n).join('')]), [['stalled', 'Stuck'], ['failed', 'Failed'], ['stalled', 'Stuck']]);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-task-card']).length, 0);
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-report']).length, 0);
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-report-task']).map((n) => n.props['data-dsh-bots-report-task']), ['tquestion', 'tworking1', 'tfailed01', 'tstalled1']);
+    link.props.onClick();
+    await v.rerender();
+    assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ticket'] === 'tquestion').length, 1);
+    // The activity view shows the stages too.
+    click(v.tree, 'data-dsh-bots-activity');
+    await v.rerender();
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-stage']).map((n) => n.props['data-dsh-bots-stage']), ['stalled', 'failed', 'stalled']);
+    assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-event-task']).map((n) => n.props['data-dsh-bots-event-task']), ['tstalled1', 'tfailed01', 'tworking1', 'tquestion']);
+    v.hooks.runCleanups();
+  });
+});
+
 test('task words: every stage, report status and action has English and Chinese', async () => {
   const { exports } = await loadClient();
   const { ctx, seen } = fakeContext();
@@ -2016,6 +2119,7 @@ test('task words: every stage, report status and action has English and Chinese'
     ...['progress', 'done', 'blocked', 'question'].map((s) => `report_${s}`),
     ...['stop', 'retry', 'close'].map((a) => `taskDid_${a}`),
     'kind_report',
+    ...['notSent', 'notSentChats', 'threadPart', 'threadTopic', 'followUpTask', 'followUpHint', 'routerWaiting'],
   ];
   for (const k of keys) {
     assert.ok(en[k], `en ${k}`);

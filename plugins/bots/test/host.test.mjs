@@ -481,7 +481,7 @@ test('chat channels: a Telegram app connects, pairs, routes messages and sends r
   assert.equal(agent.inbox.length, 1, 'only the paired message reached the bot');
   assert.equal(agent.inbox[0].source.kind, 'user');
   // The header names the Thread (0.8), so the bot can answer a chat by name with bot_reply.
-  assert.equal(agent.inbox[0].content[0].text, `[Telegram · Kada] (thread telegram:${atlas.id}/${appId}:42)`);
+  assert.equal(agent.inbox[0].content[0].text, `[Telegram · Kada] (thread telegram:${atlas.id}/${appId}:42)\n`);
   assert.equal(agent.inbox[0].content[1].text, 'Organise the release');
   assert.ok(c.typed.includes('42'), 'typing while the bot works');
   seeInbox(hh, atlasNow);
@@ -671,7 +671,7 @@ test('chat channels: the real Discord module connects through the host and a rep
   await settle();
   const atlasNow = capi.store.get(atlas.id);
   const agent = seeInbox(hh, atlasNow);
-  assert.deepEqual(agent.inbox[0].content.map((b) => b.text), [`[Discord · Kada] (thread discord:${atlas.id}/${appId}:dm-1)`, 'What is on today?']);
+  assert.deepEqual(agent.inbox[0].content.map((b) => b.text), [`[Discord · Kada] (thread discord:${atlas.id}/${appId}:dm-1)\n`, 'What is on today?']);
   says(hh, atlasNow, 'Two meetings and the **launch post**.');
   await settle();
   const posts = rest.filter((x) => x.method === 'POST' && x.url.endsWith('/channels/dm-1/messages'));

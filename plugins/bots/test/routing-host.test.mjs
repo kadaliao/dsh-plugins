@@ -17,7 +17,7 @@ const TG_TOKEN = '123456789:AAHsecret-telegram-token-value_xyz';
 const settle = async (n = 12) => {
   for (let i = 0; i < n; i += 1) await new Promise((r) => setImmediate(r));
 };
-const textOfMsg = (m) => m.content.map((b) => b.text).join('\n');
+const textOfMsg = (m) => m.content.map((b, i, all) => (i < all.length - 1 && !b.text.endsWith('\n') ? `${b.text}\n` : b.text)).join('');
 
 /** The Harness: agents with `inbox.{nextTurn, nextStep}`, steer / followup / inject / cancel, scoped restrict and guard; `step` runs one turn. */
 function fakeHarness({ services: extra = {} } = {}) {
@@ -242,7 +242,7 @@ test('two chats each delegate a task; each result returns to its own chat, in it
   // The chat message names its Thread for the model; the Router took both by steering.
   const first = router.deliveries.find((d) => /Fix the login bug$/.test(textOfMsg(d.message)));
   assert.equal(first.mode, 'steer');
-  assert.equal(first.message.content[0].text, `[Telegram · Kada] (thread ${tg.key('42')})`);
+  assert.equal(first.message.content[0].text, `[Telegram · Kada] (thread ${tg.key('42')})\n`);
   assert.match(first.message.id, /^bots:chat:/);
   assert.deepEqual([ta.origin.threadKey, tb.origin.threadKey], [tg.key('42'), tg.key('43')]);
   assert.deepEqual([ta.threads, tb.threads], [[tg.key('42')], [tg.key('43')]]);
