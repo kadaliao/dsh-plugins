@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Archify",
-    "description": "Ask for an architecture, workflow, sequence, data-flow, state, ER, class, tree, timeline or waterfall diagram — or a one-page explainer — and get a checked, interactive page right in the conversation, with full screen, download and an Archify panel. Bundles the Archify skill; no Node.js install needed."
-  }
-}

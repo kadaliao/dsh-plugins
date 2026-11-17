@@ -27,12 +27,6 @@
           "en": "Agents & teams",
           "zh": "智能体与团队"
         }
-      },
-      "diagrams": {
-        "title": {
-          "en": "Diagrams & explainers",
-          "zh": "图解与讲解"
-        }
       }
     },
     "labels": {
@@ -53,71 +47,11 @@
           "en": "Multi-agent",
           "zh": "多智能体"
         }
-      },
-      "skill": {
-        "title": {
-          "en": "Bundled skill",
-          "zh": "内置技能"
-        }
       }
     },
     "sortKeys": {}
   },
   "plugins": [
-    {
-      "name": "@kadaliao/dsh-archify",
-      "title": {
-        "en": "Archify",
-        "zh": "Archify 图解"
-      },
-      "description": {
-        "en": "Ask for a diagram and get a checked, interactive page right in the conversation: Archify's architecture, workflow, sequence, data-flow, state, ER, class, tree, timeline and waterfall diagrams, from a description, Mermaid or your code, or a one-page explainer. Bundles the Archify skill by tt-a1i and renders it with the Harness's own runtime, no Node.js install needed. Pages open full screen, in the browser or as a download, and collect in an Archify panel. Fast by default: architecture diagrams are laid out by the plugin, so the model writes only boxes, arrows and groups; the first passing page is the answer, and a repair budget keeps fixes short.",
-        "zh": "说一句要什么图，对话里就出现一张检查过、能交互的页面：Archify 的架构图、流程图、时序图、数据流图、状态图、ER 图、类图、树图、时间线、瀑布图，照描述、Mermaid 或代码来画，也能把回答做成一页讲解。内置 tt-a1i 的 Archify 技能，用 Harness 自带的运行时渲染，不用装 Node.js；页面可全屏、在浏览器打开、下载，都收在 Archify 面板里。默认就快：架构图由插件排版，模型只写框、箭头和分组；第一次通过就交付，修复有预算。"
-      },
-      "icon": "./plugins/archify/icon.svg",
-      "author": "kadaliao",
-      "homepage": "https://github.com/kadaliao/dsh-plugins/tree/main/plugins/archify",
-      "repository": {
-        "url": "https://github.com/kadaliao/dsh-plugins",
-        "directory": "plugins/archify"
-      },
-      "metadata": {
-        "category": "diagrams",
-        "keywords": [
-          "archify",
-          "diagram",
-          "architecture",
-          "flowchart",
-          "sequence diagram",
-          "erd",
-          "mermaid",
-          "explainer",
-          "skill",
-          "auto layout"
-        ],
-        "labels": [
-          "tool",
-          "skill"
-        ],
-        "sortKeys": {}
-      },
-      "versions": [
-        {
-          "version": "0.2.0",
-          "publishTimestamp": 1794922231,
-          "source": {
-            "type": "npm"
-          }
-        },
-        {
-          "version": "0.1.0",
-          "publishTimestamp": 1794914091,
-          "source": {
-            "type": "npm"
-          }
-        }
-      ]
-    },
     {
       "name": "@kadaliao/dsh-bots",
       "title": {
