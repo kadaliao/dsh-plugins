@@ -152,6 +152,15 @@ Every 5 minutes Bots checks the tasks in progress by fixed rules; no model judge
   assignment with the same note, and one whose assignment never reached its conversation gets it again. Queued tasks
   start, and messages waiting for a place are handed over, as places free up; no message is handed over twice.
 
+### When a bot asks you a question
+
+A bot can stop and ask you a multiple-choice question (Harness's `ask_user_question`). The question shows as a card
+above the message box, in the bot's Chat and on the task's page, and the bot or task is marked as needing you. Pick an
+option or type your own answer; answering in the Harness conversation works too, and whichever answer comes first
+counts. If the work came from a chat app, the bot also posts there that it is waiting for your answer in DeepSeek
+Harness. The answer itself is given in Harness, not in the chat. Permission prompts and plan reviews are answered in
+the conversation; the card links to it. A waiting question does not survive a restart of Harness.
+
 ## Built on what Harness already does
 
 A bot works in ordinary Harness conversations, so everything Harness can do, a bot can do:

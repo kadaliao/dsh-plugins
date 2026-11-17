@@ -498,6 +498,24 @@ Session was mid-turn, or holds input it never took, gets the note. The note's id
 cleanly, so a second restart before it is read sends nothing new, and a recovery turn cut off again gets a note of its
 own. Then queued tasks start, and parked messages are handed over, while slots are free.
 
+### Questions (`ask_user_question`)
+
+Bots answers Harness's `user-questions/request` for a bot's home Session and for task Sessions, ahead of Harness's own
+window: the request settles with whichever answers first, the panel or the conversation. With no window connected
+(`NO_PROVIDER`) it waits for the panel. Questions with an `approval` or `plan-review` intent are recorded but only
+answered in the conversation. A timed question that ran out stays answerable (`continued`) and is answered through
+`userQuestions.answer`. Questions are kept in memory only.
+
+- `GET /__dsh_bots/state` adds `asks: [{id, botId, sessionId, ticketId?, at, native?: true, continued?: true,
+  questions: [{id, question, header?, detail?, options?: [{label, description?}], multiSelect?}]}]`, oldest first
+  (`native` questions carry only `{id, question}`), and `bots[].asking`, the number waiting in that bot's home.
+  `attention` also lists tasks whose Session waits on a question; task rows and views carry `asking: true` meanwhile.
+- `POST /__dsh_bots/asks/:id/answer` with `{answers: [{id, selected: string[], custom?}]}` → `{ok: true}` or
+  `{ok: false, reason}` (unknown or already answered, a `native` question, or an invalid answer: every question needs
+  exactly one item, labels must be offered ones, a single choice takes one option or `custom`, and none may be empty).
+- A panel answer is logged in the timeline as a user message, `"<question>\n→ <answer>"`, with `ticket` for a task.
+- The watchdog skips a task that waits on a question. A chat the turn came from gets one notice per question.
+
 ### Timeline
 ```ts
 Message += { thread?: string, ticket?: string, status?: 'done' | 'blocked' | 'question' | 'stalled' | 'failed',
