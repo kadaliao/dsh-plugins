@@ -208,7 +208,7 @@ test('MESSAGE_CREATE is normalised; bots, itself and empty messages are dropped'
     { chatId: 'dm1', messageId: 'm1', userId: '42', userName: 'Ada L', text: 'hello there', isDirect: true, mentioned: true },
     { chatId: 'c1', messageId: 'm2', userId: '42', userName: 'Ada (lab)', text: 'summarise this', isDirect: false, mentioned: true, chatTitle: 'Lab #general' },
     { chatId: 'c1', messageId: 'm3', userId: '42', userName: 'Ada L', text: "hey what's new", isDirect: false, mentioned: true, chatTitle: 'Lab #general' },
-    { chatId: 't1', messageId: 'm4', userId: '42', userName: 'Ada L', text: 'thanks!', isDirect: false, mentioned: true, chatTitle: 'Lab #ideas' },
+    { chatId: 't1', messageId: 'm4', userId: '42', userName: 'Ada L', text: 'thanks!', isDirect: false, mentioned: true, threadId: 't1', chatTitle: 'Lab #ideas' },
     { chatId: 'c1', messageId: 'm5', userId: '43', userName: 'bob', text: 'just chatting <@99>', isDirect: false, mentioned: false, chatTitle: 'Lab #general' },
     { chatId: 'c1', messageId: 'm6', userId: '42', userName: 'Ada L', text: 'via the role', isDirect: false, mentioned: true, chatTitle: 'Lab #general' },
     { chatId: 'c9', messageId: 'm7', userId: '42', userName: 'Ada L', text: 'unknown channel', isDirect: false, mentioned: false },
@@ -226,6 +226,103 @@ test('normalizeMessage works on its own and a throwing onMessage does not break 
   assert.ok(h.logs.some((l) => /caller bug/.test(l)));
   ws.push({ op: 1 });
   assert.equal(ws.sent.at(-1).op, 1, 'still handling frames');
+  await h.c.stop();
+});
+
+test('normalizeMessage: threadId is the thread channel, else the root of the reply chain, else absent', () => {
+  const u = { id: '2', username: 'u' };
+  const base = { id: '9', channel_id: 'c', guild_id: 'g', author: u, content: 'hi' };
+  const t = (d, ctx) => normalizeMessage({ ...base, ...d }, BOT, [], ctx)?.threadId;
+  assert.equal(t({}), undefined, 'a message answering nothing');
+  assert.equal('threadId' in normalizeMessage(base, BOT), false);
+  assert.equal(t({}, { inThread: true }), 'c', 'in a thread channel: the channel');
+  assert.equal(t({ type: 19, message_reference: { message_id: '5' } }, { inThread: true }), 'c', 'a reply inside a thread is still the thread');
+  assert.equal(t({ type: 19, message_reference: { message_id: '5', channel_id: 'c' } }), '5', 'one hop: the referenced message');
+  assert.equal(t({ type: 19, message_reference: { message_id: '5' }, referenced_message: { id: '5', message_reference: { message_id: '3' } } }), '3', 'two hops when the event carries them');
+  assert.equal(t({ type: 19, message_reference: { message_id: '5' }, referenced_message: { id: '5', message_reference: { message_id: '3' } } }, { rootOf: (id) => (id === '5' ? '1' : undefined) }), '1', 'a root already known wins');
+  assert.equal(t({ type: 19, referenced_message: { id: '5' } }), '5', 'a reply event without message_reference');
+  assert.equal(t({ message_reference: { type: 1, message_id: '5', channel_id: 'elsewhere' } }), undefined, 'a forward is not a reply');
+  assert.equal(normalizeMessage({ ...base, guild_id: undefined, type: 19, message_reference: { message_id: '5' } }, BOT).threadId, '5', 'a reply chain in a DM too');
+});
+
+test('reply chains keep their first message as the root, through the bot\'s own replies and parts', async () => {
+  // Snowflakes rise with time, the bot's and people's alike.
+  let next = 5000;
+  const snow = () => String((next += 1));
+  const sent = [];
+  const h = harness({ fetch: async (url) => {
+    if (url.endsWith('/gateway/bot')) return reply(200, { url: 'wss://gateway.test' });
+    sent.push(snow());
+    return reply(200, { id: sent.at(-1) });
+  } });
+  const { ws } = await online(h);
+  let s = 1;
+  const push = (d) => {
+    const id = d.id ?? snow();
+    ws.push({ op: 0, t: 'MESSAGE_CREATE', s: (s += 1), d: { channel_id: '100', guild_id: 'g1', author: { id: '42', username: 'ada' }, mentions: [], ...d, id } });
+    return id;
+  };
+  const posts = () => h.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/messages'));
+  const refOf = (p) => p.body.message_reference?.message_id ?? null;
+  const replyTo = (id) => ({ type: 19, message_reference: { message_id: id }, referenced_message: { id, author: { id: BOT } } });
+  const u1 = push({ content: `<@${BOT}> plan the launch`, mentions: [{ id: BOT }] });
+  await h.c.send('100', 'On it.', { replyTo: u1 });
+  const u2 = push({ content: 'and the docs', ...replyTo(sent[0]) });
+  const long = Array.from({ length: 60 }, (_, i) => `line ${i} ${'z'.repeat(40)}`).join('\n');
+  await h.c.send('100', long, { threadId: u1, replyTo: u2 });
+  assert.equal(sent.length, 3, 'two parts');
+  const u3 = push({ content: 'about part two', ...replyTo(sent[2]) });
+  assert.deepEqual(h.messages.map((m) => [m.messageId, m.threadId]), [[u1, undefined], [u2, u1], [u3, u1]], 'the root is the first message, not the bot reply in between');
+  assert.deepEqual(posts().map(refOf), [u1, u2, null], 'replyTo quotes the first part; the next part follows without a quote');
+
+  // A report later: quotes the root once, not again while the bot's last message there is in the chain.
+  await h.c.send('100', 'Done: shipped.', { threadId: u1 });
+  await h.c.send('100', 'Second part.', { threadId: u1 });
+  ws.push({ op: 0, t: 'MESSAGE_CREATE', s: (s += 1), d: { id: sent.at(-1), channel_id: '100', guild_id: 'g1', author: { id: BOT, bot: true }, content: 'Second part.' } });
+  push({ id: u3, author: { id: '43', username: 'bob' }, content: 'an older message, late' });
+  await h.c.send('100', 'Third part.', { threadId: u1 });
+  push({ content: 'chatter in between' });
+  await h.c.send('100', 'Another report.', { threadId: u1 });
+  await h.c.send('100', 'Elsewhere.', { threadId: '4999' });
+  assert.deepEqual(posts().slice(3).map(refOf), [u1, null, null, u1, '4999']);
+  assert.ok(posts().every((p) => p.url.endsWith('/channels/100/messages')));
+  push({ content: 'on the third part', type: 19, message_reference: { message_id: sent[5] } });
+  assert.equal(h.messages.at(-1).threadId, u1);
+  await h.c.stop();
+});
+
+test('thread channels: known from the guild, thread events and list syncs; sends and typing go into them', async () => {
+  const h = harness();
+  const { ws } = await online(h);
+  let s = 1;
+  const push = (t, d) => ws.push({ op: 0, t, s: (s += 1), d });
+  const ada = { id: '42', username: 'ada' };
+  const at = { guild_id: 'g1', author: ada, content: `<@${BOT}> go`, mentions: [{ id: BOT }] };
+  push('GUILD_CREATE', { id: 'g1', name: 'Lab', channels: [{ id: '100', name: 'general', type: 0 }], threads: [{ id: '200', name: 'ideas', type: 11, parent_id: '100' }] });
+  push('THREAD_CREATE', { id: '300', guild_id: 'g1', name: 'bugs', type: 12, parent_id: '100' });
+  push('THREAD_LIST_SYNC', { guild_id: 'g1', threads: [{ id: '400', guild_id: 'g1', name: 'synced', type: 10, parent_id: '100' }] });
+  push('MESSAGE_CREATE', { id: '4001', channel_id: '200', ...at });
+  push('MESSAGE_CREATE', { id: '4002', channel_id: '300', ...at, type: 19, message_reference: { message_id: '4000' } });
+  push('MESSAGE_CREATE', { id: '4003', channel_id: '400', ...at });
+  push('MESSAGE_CREATE', { id: '4004', channel_id: '100', ...at });
+  push('THREAD_DELETE', { id: '300', guild_id: 'g1', type: 12 });
+  push('MESSAGE_CREATE', { id: '4005', channel_id: '300', ...at });
+  assert.deepEqual(h.messages.map((m) => [m.chatId, m.threadId, m.chatTitle]), [
+    ['200', '200', 'Lab #ideas'],
+    ['300', '300', 'Lab #bugs'],
+    ['400', '400', 'Lab #synced'],
+    ['100', undefined, 'Lab #general'],
+    ['300', undefined, undefined],
+  ]);
+  const posts = () => h.calls.filter((c) => c.method === 'POST' && c.url.endsWith('/messages'));
+  await h.c.send('200', 'in the thread', { threadId: '200', replyTo: '4001' });
+  await h.c.send('100', 'to the thread from its parent', { threadId: '200' });
+  await h.c.send('200', 'just the thread', { threadId: '200' });
+  assert.deepEqual(posts().map((p) => [p.url.split('/').slice(-2)[0], p.body.message_reference?.message_id ?? null]), [['200', '4001'], ['200', null], ['200', null]]);
+  await h.c.typing('100', { threadId: '200' });
+  await h.c.typing('100', { threadId: '4004' });
+  await h.c.typing('200');
+  assert.deepEqual(h.calls.filter((c) => c.url.endsWith('/typing')).map((c) => c.url.split('/').slice(-2)[0]), ['200', '100', '200']);
   await h.c.stop();
 });
 

@@ -10,6 +10,15 @@
  * `apiBase` defaults to `BOTS_TELEGRAM_API` or https://api.telegram.org, so a
  * local stand-in of the Bot API can be used for testing.
  *
+ * Threads: `threadId` on a message is its forum topic (`message_thread_id`),
+ * reported only for topic messages (`is_topic_message`: a topic of a forum
+ * supergroup, or of a private chat with topics turned on). The General topic,
+ * plain groups and private chats have none, and a reply chain is not a thread
+ * in Telegram. `send(…, {threadId})` and `typing(…, {threadId})` post into
+ * that topic (`message_thread_id`); with `replyTo` as well, the first part
+ * quotes that message inside the topic. A topic that is gone gets the reply
+ * in the chat instead.
+ *
  * @module @kadaliao/dsh-bots/lib/channels/telegram
  */
 
@@ -27,7 +36,12 @@ const MAX_BACKOFF_MS = 60_000;
 const TOKEN_REJECTED = 'Telegram rejected the bot token (401 Unauthorized). Copy it again from @BotFather.';
 const CONFLICT = 'Another program is using this bot token (Telegram answered 409 Conflict). Stop it, or create a separate bot with @BotFather for the team.';
 
+/** What Telegram says when a message goes to a topic that no longer exists. */
+const THREAD_GONE = /thread not found/i;
+
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** A topic id for `message_thread_id`, or null. */
+const topicOf = (id) => (id != null && /^\d{1,15}$/.test(String(id)) && Number(id) > 0 ? Number(id) : null);
 
 /**
  * @param {{
@@ -157,6 +171,8 @@ export function createConnector(opts) {
       .replace(/^[ \t,，:：]+/, '')
       .trim();
     const name = [from.first_name, from.last_name].filter(Boolean).join(' ').trim() || (from.username ? `@${from.username}` : String(from.id));
+    // Outside a topic, message_thread_id names a reply chain: not a thread here.
+    const topic = m.is_topic_message === true && Number.isInteger(m.message_thread_id) ? String(m.message_thread_id) : '';
     return {
       chatId: String(chat.id),
       messageId: String(m.message_id),
@@ -166,6 +182,7 @@ export function createConnector(opts) {
       isDirect,
       mentioned,
       ...(isDirect ? {} : { chatTitle: String(chat.title ?? '') }),
+      ...(topic ? { threadId: topic } : {}),
     };
   }
 
@@ -278,23 +295,37 @@ export function createConnector(opts) {
       return stopping;
     },
 
-    /** Send plain text, in parts of at most TEXT_LIMIT; the first part answers `replyTo`. */
+    /**
+     * Send plain text, in parts of at most TEXT_LIMIT; the first part answers
+     * `replyTo`. With `threadId` (a forum topic) every part goes to that topic.
+     */
     async send(chatId, text, sendOpts = {}) {
       let first = true;
+      let topic = topicOf(sendOpts?.threadId);
       for (const part of splitText(text, TEXT_LIMIT)) {
         const replyTo = first && sendOpts?.replyTo && /^\d+$/.test(String(sendOpts.replyTo)) ? Number(sendOpts.replyTo) : null;
-        await polite('sendMessage', {
+        const body = {
           chat_id: chatIdOf(chatId),
           text: part,
           ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
-        });
+        };
+        try {
+          await polite('sendMessage', topic ? { ...body, message_thread_id: topic } : body);
+        } catch (error) {
+          // The topic was deleted: the reply still reaches the chat.
+          if (!topic || error.code !== 400 || !THREAD_GONE.test(error.description ?? '')) throw error;
+          log(`telegram: topic ${topic} is gone; sending to the chat`);
+          topic = null;
+          await polite('sendMessage', body);
+        }
         first = false;
       }
     },
 
-    /** "typing…" in the chat for about five seconds. */
-    async typing(chatId) {
-      await call('sendChatAction', { chat_id: chatIdOf(chatId), action: 'typing' }, 10_000);
+    /** "typing…" in the chat (or its topic `threadId`) for about five seconds. */
+    async typing(chatId, typingOpts = {}) {
+      const topic = topicOf(typingOpts?.threadId);
+      await call('sendChatAction', { chat_id: chatIdOf(chatId), ...(topic ? { message_thread_id: topic } : {}), action: 'typing' }, 10_000);
     },
   };
 }

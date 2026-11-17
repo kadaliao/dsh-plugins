@@ -165,6 +165,70 @@ test('send splits at 4096, threads the first part, and waits out 429', async () 
   await c.stop();
 });
 
+test('threadId: forum topics only; a reply chain or the General topic is the whole chat', async () => {
+  const api = fakeApi();
+  const { c, seen } = connector(api);
+  await c.start();
+  const forum = { id: -1005555, type: 'supergroup', title: 'Acme forum', is_forum: true };
+  const at = (text) => ({ text: `@acme_team_bot ${text}`, entities: [{ type: 'mention', offset: 0, length: 14 }] });
+  api.push([
+    msg(1, { from: kada, chat: forum, ...at('in a topic'), message_thread_id: 77, is_topic_message: true, reply_to_message: { message_id: 77, from: kada, forum_topic_created: { name: 'Launch' } } }),
+    msg(2, { from: kada, chat: forum, ...at('in General') }),
+    msg(3, { from: kada, chat: group, text: 'and the docs', message_thread_id: 30, reply_to_message: { message_id: 30, from: ME } }),
+    msg(4, { from: kada, chat: priv, text: 'private topic', message_thread_id: 5, is_topic_message: true }),
+    msg(5, { from: kada, chat: priv, text: 'plain dm' }),
+  ]);
+  await flush();
+  assert.deepEqual(
+    seen.messages.map((m) => [m.text, m.threadId]),
+    [
+      ['in a topic', '77'],
+      ['in General', undefined],
+      ['and the docs', undefined],
+      ['private topic', '5'],
+      ['plain dm', undefined],
+    ],
+  );
+  assert.equal('threadId' in seen.messages[1], false, 'no threadId key at all without a topic');
+  await c.stop();
+});
+
+test('send and typing with threadId go to the topic; replyTo still quotes the first part; a deleted topic falls back to the chat', async () => {
+  let gone = false;
+  const api = fakeApi({
+    send: (call) => (gone && call.body.message_thread_id ? json({ ok: false, error_code: 400, description: 'Bad Request: message thread not found' }, 400) : json({ ok: true, result: { message_id: 1 } })),
+  });
+  const { c, seen } = connector(api);
+  await c.start();
+  await c.send('-1005555', `${'a'.repeat(4000)}\n\n${'b'.repeat(100)}`, { threadId: '77', replyTo: '120' });
+  const [p1, p2] = api.of('sendMessage');
+  assert.equal(p1.body.message_thread_id, 77);
+  assert.deepEqual(p1.body.reply_parameters, { message_id: 120, allow_sending_without_reply: true });
+  assert.equal(p2.body.message_thread_id, 77, 'every part stays in the topic');
+  assert.equal(p2.body.reply_parameters, undefined);
+  await c.send('-1005555', 'topic only', { threadId: '77' });
+  assert.deepEqual(api.of('sendMessage').at(-1).body, { chat_id: -1005555, text: 'topic only', message_thread_id: 77 });
+  await c.send('-1005555', 'no thread');
+  assert.equal('message_thread_id' in api.of('sendMessage').at(-1).body, false);
+  await c.send('-1005555', 'junk id', { threadId: 'abc' });
+  assert.equal('message_thread_id' in api.of('sendMessage').at(-1).body, false, 'a non-numeric threadId is ignored');
+  await c.typing('-1005555', { threadId: '77' });
+  await c.typing('-1005555');
+  assert.deepEqual(api.of('sendChatAction').map((x) => x.body), [
+    { chat_id: -1005555, message_thread_id: 77, action: 'typing' },
+    { chat_id: -1005555, action: 'typing' },
+  ]);
+  gone = true;
+  const before = api.of('sendMessage').length;
+  await c.send('-1005555', 'after the topic was deleted', { threadId: '77', replyTo: '120' });
+  const tries = api.of('sendMessage').slice(before);
+  assert.equal(tries.length, 2);
+  assert.equal(tries[1].body.message_thread_id, undefined);
+  assert.deepEqual(tries[1].body.reply_parameters, { message_id: 120, allow_sending_without_reply: true });
+  assert.ok(seen.logs.some((l) => /topic 77 is gone/.test(l)));
+  await c.stop();
+});
+
 test('a rejected token is fatal at start, and the token never shows in errors or statuses', async () => {
   const api = fakeApi({ getMe: () => json({ ok: false, error_code: 401, description: 'Unauthorized' }, 401) });
   const { c, seen } = connector(api);

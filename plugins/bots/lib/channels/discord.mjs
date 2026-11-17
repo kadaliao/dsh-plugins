@@ -15,6 +15,22 @@
  *   and the other unrecoverable close codes (4010–4013) are fatal: no reconnects.
  * - The token never appears in log lines, thrown errors or status details.
  *
+ * Threads: `threadId` on a message is the thread channel it was posted in
+ * (then equal to `chatId`, which is always the channel the message is in), or
+ * else the root of the reply chain it answers: the root this connector has
+ * seen for the referenced message, else the message that one answered (both
+ * in the event; no extra API calls), else the referenced message itself. A
+ * message that answers nothing outside a thread has none. Thread channels are
+ * known from the guild's thread list and thread events.
+ * `send(chatId, …, {threadId})` posts to that thread channel when it is one
+ * (or is `chatId`); otherwise it answers the reply chain's root, so the
+ * message joins the chain. The root is quoted once: not again while the bot's
+ * own last message in the channel is already in that chain, as the later parts
+ * of one reply are. With `replyTo` as well, the first part quotes `replyTo`
+ * instead (inside the thread channel, or in the chain). Every part the bot
+ * sends is remembered as part of its chain, so a reply to any of them reports
+ * the same root.
+ *
  * @module @kadaliao/dsh-bots/lib/channels/discord
  */
 
@@ -47,8 +63,25 @@ const FATAL_CLOSE = {
 };
 /** The session is gone: start a new one instead of resuming. */
 const REIDENTIFY_CLOSE = new Set([4007, 4009]);
+/** Channel types of threads: announcement, public, private. */
+const THREAD_TYPES = new Set([10, 11, 12]);
 
 const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Snowflake `a` is later than `b` (any other ids compare as strings). */
+const later = (a, b) => (/^\d{1,25}$/.test(a) && /^\d{1,25}$/.test(b) ? BigInt(a) > BigInt(b) : a > b);
+/** Keep `key` → `value` in an insertion-ordered map of at most `max` entries. */
+function remember(map, key, value, max) {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > max) map.delete(map.keys().next().value);
+}
+
+/** The id of the message `m` replies to (not a forward or a crosspost), or ''. */
+function repliedTo(m) {
+  const ref = m?.message_reference;
+  if (ref && (ref.type ?? 0) === 0 && ref.message_id) return String(ref.message_id);
+  return !ref && m?.type === 19 && m.referenced_message?.id ? String(m.referenced_message.id) : '';
+}
 
 /**
  * Reconnect delay for the n-th consecutive failure (0-based): doubles from 1 s,
@@ -67,8 +100,10 @@ export function backoffDelay(attempt, random = Math.random) {
  * @param {object} d the event payload
  * @param {string} botId the bot's own user id
  * @param {string[]} [botRoleIds] the bot's managed role in this guild (people often @ the role by mistake)
+ * @param {{inThread?: boolean, rootOf?: (messageId: string) => string | undefined}} [thread]
+ *   whether `d.channel_id` is a thread channel, and the known reply-chain root of a message
  */
-export function normalizeMessage(d, botId, botRoleIds = []) {
+export function normalizeMessage(d, botId, botRoleIds = [], { inThread = false, rootOf } = {}) {
   const author = d?.author;
   if (!author?.id || !botId) return null;
   if (author.bot || author.system || d.webhook_id || author.id === botId) return null;
@@ -86,6 +121,9 @@ export function normalizeMessage(d, botId, botRoleIds = []) {
   if (roles.length) text = text.replace(new RegExp(`<@&(?:${roles.map(escapeRe).join('|')})>\\s*`, 'g'), '');
   text = text.trim();
   if (!text) return null;
+  let threadId = inThread ? String(d.channel_id) : '';
+  const ref = threadId ? '' : repliedTo(d);
+  if (ref) threadId = rootOf?.(ref) || repliedTo(d.referenced_message) || ref;
   return {
     chatId: String(d.channel_id),
     messageId: String(d.id),
@@ -94,6 +132,7 @@ export function normalizeMessage(d, botId, botRoleIds = []) {
     text,
     isDirect,
     mentioned,
+    ...(threadId ? { threadId } : {}),
   };
 }
 
@@ -191,6 +230,7 @@ async function readJson(res) {
  * @property {boolean} isDirect a 1:1 DM with the bot
  * @property {boolean} mentioned @mentioned or replied to; always true in a DM
  * @property {string} [chatTitle] `Server #channel`, when the channel is known
+ * @property {string} [threadId] the thread channel (= `chatId`), or the root message of the reply chain
  */
 
 /**
@@ -306,8 +346,10 @@ export function createConnector(opts = {}) {
   let acked = true;
   let reconnectTimer = null;
   const guildNames = new Map();
-  const channels = new Map(); // id → { guildId, name }
+  const channels = new Map(); // id → { guildId, name, type }
   const botRoles = new Map(); // guild id → the bot's managed role ids
+  const roots = new Map(); // message id → the root of the reply chain it is in (people's replies and the bot's own messages)
+  const latest = new Map(); // channel id → { id, root }: the newest message seen there; `root` when it is the bot's, in a chain
 
   const halted = () => stopped || dead;
   const cancel = (h) => { if (h != null) clearTimeoutImpl(h); };
@@ -471,7 +513,17 @@ export function createConnector(opts = {}) {
   }
 
   function rememberChannel(c, guildId = c?.guild_id) {
-    if (c?.id && c.name && guildId) channels.set(c.id, { guildId, name: c.name });
+    if (c?.id && c.name && guildId) channels.set(c.id, { guildId, name: c.name, type: c.type });
+  }
+  const isThread = (id) => Boolean(id) && THREAD_TYPES.has(channels.get(String(id))?.type);
+
+  /** A message appeared in `channelId`: the newest there unless an older one arrives late. `mine` sent it, in chain `root`. */
+  function noteLatest(channelId, id, { mine = false, root = '' } = {}) {
+    if (!channelId || !id) return;
+    const cur = latest.get(channelId);
+    // The bot's own message, from the API's answer or its gateway echo, overwrites an equal entry.
+    if (cur && (mine ? later(cur.id, id) : !later(id, cur.id))) return;
+    remember(latest, channelId, { id, root: mine ? root : '' }, 500);
   }
   function rememberGuild(g) {
     if (!g?.id || g.unavailable) return;
@@ -494,8 +546,15 @@ export function createConnector(opts = {}) {
 
   function deliver(d) {
     if (!me) return;
-    const msg = normalizeMessage(d, me.id, botRoles.get(d?.guild_id));
+    if (d?.id && d.channel_id) {
+      const id = String(d.id);
+      const mine = String(d.author?.id ?? '') === me.id;
+      noteLatest(String(d.channel_id), id, mine ? { mine, root: roots.get(id) ?? '' } : {});
+    }
+    const inThread = isThread(d?.channel_id);
+    const msg = normalizeMessage(d, me.id, botRoles.get(d?.guild_id), { inThread, rootOf: (id) => roots.get(id) });
     if (!msg) return;
+    if (msg.threadId && !inThread) remember(roots, msg.messageId, msg.threadId, 2000);
     const title = msg.isDirect ? undefined : titleOf(msg.chatId);
     if (title) msg.chatTitle = title;
     try {
@@ -524,6 +583,9 @@ export function createConnector(opts = {}) {
       case 'CHANNEL_UPDATE':
       case 'THREAD_CREATE':
       case 'THREAD_UPDATE': return rememberChannel(d);
+      case 'THREAD_LIST_SYNC':
+        for (const t of d?.threads ?? []) rememberChannel(t, t?.guild_id ?? d?.guild_id);
+        return undefined;
       case 'CHANNEL_DELETE':
       case 'THREAD_DELETE': return void channels.delete(d?.id);
       default: return undefined;
@@ -564,23 +626,41 @@ export function createConnector(opts = {}) {
     status('stopped');
   }
 
-  /** Post `text` to a channel, split at the 2000-character limit; `replyTo` threads the first chunk under that message. */
+  /**
+   * Post `text` to a channel, split at the 2000-character limit; `replyTo`
+   * threads the first chunk under that message. `threadId` is a thread
+   * channel to post in, or the root of a reply chain in `chatId` to answer
+   * (quoted once; see the module notes).
+   */
   async function send(chatId, text, sendOpts = {}) {
     if (stopped) throw new Error('Discord connector is stopped');
-    const path = `/channels/${encodeURIComponent(String(chatId))}/messages`;
+    const chat = String(chatId);
+    const replyTo = sendOpts?.replyTo ? String(sendOpts.replyTo) : '';
+    const threadId = sendOpts?.threadId ? String(sendOpts.threadId) : '';
+    const channel = threadId && threadId !== chat && isThread(threadId) ? threadId : chat;
+    const root = threadId && threadId !== channel ? threadId : '';
+    // The chain these messages join: the thread's root, else the one replyTo is in.
+    const chain = root || (replyTo && channel === chat ? roots.get(replyTo) || replyTo : '');
+    const path = `/channels/${encodeURIComponent(channel)}/messages`;
     const chunks = splitMessage(text);
     for (let i = 0; i < chunks.length; i += 1) {
       const body = { content: chunks[i], allowed_mentions: { parse: [] } };
-      if (i === 0 && sendOpts?.replyTo) body.message_reference = { message_id: String(sendOpts.replyTo), fail_if_not_exists: false };
-      await api('POST', path, body);
+      const quote = i === 0 && replyTo ? replyTo : root && latest.get(channel)?.root !== root ? root : '';
+      if (quote) body.message_reference = { message_id: quote, fail_if_not_exists: false };
+      const sent = await api('POST', path, body);
+      const id = sent?.id ? String(sent.id) : '';
+      if (id && chain) remember(roots, id, chain, 2000);
+      if (id) noteLatest(channel, id, { mine: true, root: chain });
     }
   }
 
-  /** Show "bot is typing…" for about ten seconds. Failures are logged and ignored. */
-  async function typing(chatId) {
+  /** Show "bot is typing…" for about ten seconds (in the thread channel `threadId`, if it is one). Failures are logged and ignored. */
+  async function typing(chatId, typingOpts = {}) {
     if (stopped) return;
+    const threadId = typingOpts?.threadId ? String(typingOpts.threadId) : '';
+    const channel = isThread(threadId) ? threadId : String(chatId);
     try {
-      await api('POST', `/channels/${encodeURIComponent(String(chatId))}/typing`, undefined, 0);
+      await api('POST', `/channels/${encodeURIComponent(channel)}/typing`, undefined, 0);
     } catch (e) {
       log(`discord: typing indicator failed: ${e?.message ?? e}`);
     }

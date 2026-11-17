@@ -20,6 +20,18 @@
  *   is only ever sent to Lark. Messages from Lark carry `source: 'Lark'`.
  * - Replies are `post` messages holding one `md` element (CommonMark + GFM),
  *   hence `MARKDOWN`; in a group the first part answers the person's message.
+ * - Threads: `threadId` on a message is the `message_id` of the root of the
+ *   conversation it is in: `root_id` for a reply (a reply chain, or a reply in
+ *   a topic: Feishu points both at the root), or the message itself when it
+ *   opens a topic (`thread_id` and no `root_id`, as in a topic group). The
+ *   root's id, not the topic's `omt_` id, because only a message can be
+ *   answered, and a chain the bot's reply turns into a topic keeps its root.
+ *   A message that answers nothing and opens no topic has none.
+ *   `send(…, {threadId})` answers that root with every part, so the parts land
+ *   in its topic, or join its reply chain; `reply_in_thread` is not forced, so
+ *   a chain is not turned into a topic. With `replyTo` as well, the first part
+ *   answers `replyTo` (which stays in the same topic or chain). A recalled
+ *   `replyTo` falls back to the root, a recalled root to the chat.
  * - Feishu delivers a message twice now and then; duplicates are dropped by
  *   message_id, and `order` (the message's create_time in ms, rising within a
  *   chat) feeds the hub's replay guard across restarts.
@@ -299,7 +311,8 @@ function postText(c, at) {
  * In a group, `mentioned` means the bot's own open_id is among the mentions
  * (with no open_id known yet: any bot mention), or the message replies to one
  * the bot sent. The bot's `@_user_N` placeholder is removed, other people's
- * become `@Name`.
+ * become `@Name`. `threadId` is the root message of the reply chain or topic
+ * the message is in (its own id when it opens a topic), absent otherwise.
  * @param {object} event the event body (`sender`, `message`)
  * @param {{botOpenId?: string, sentIds?: {has(id: string): boolean}}} [me]
  */
@@ -337,6 +350,8 @@ export function normalizeEvent(event, { botOpenId = '', sentIds } = {}) {
   const isDirect = m.chat_type === 'p2p';
   if (!isDirect && m.parent_id && sentIds?.has(String(m.parent_id))) mentioned = true;
   const created = String(m.create_time ?? '');
+  // A reply (in a chain or a topic) names its root; a topic's first message is its own root.
+  const threadId = String(m.root_id || m.parent_id || (m.thread_id ? m.message_id : ''));
   return {
     chatId: String(m.chat_id),
     messageId: String(m.message_id),
@@ -345,6 +360,7 @@ export function normalizeEvent(event, { botOpenId = '', sentIds } = {}) {
     text,
     isDirect,
     mentioned: isDirect || mentioned,
+    ...(threadId ? { threadId } : {}),
   };
 }
 
@@ -1117,13 +1133,17 @@ export function createConnector(opts = {}) {
 
   let sendTrouble = false;
 
-  async function deliverBody(chatId, body, replyTo) {
+  /** Post `body` as an answer to the first of `replyTo` (message ids) still there, else to the chat. Ids found gone are added to `gone`. */
+  async function deliverBody(chatId, body, replyTo, gone = new Set()) {
     let r = null;
-    if (replyTo) {
+    for (const id of new Set(replyTo)) {
+      if (!id || gone.has(id)) continue;
       try {
-        r = await api('POST', `/open-apis/im/v1/messages/${encodeURIComponent(replyTo)}/reply`, { ...body, uuid: randomUUID() }, { what: 'reply' });
+        r = await api('POST', `/open-apis/im/v1/messages/${encodeURIComponent(id)}/reply`, { ...body, uuid: randomUUID() }, { what: 'reply' });
+        break;
       } catch (e) {
         if (!REPLY_GONE.has(e.code)) throw e;
+        gone.add(id);
         r = null;
       }
     }
@@ -1133,13 +1153,13 @@ export function createConnector(opts = {}) {
     return r;
   }
 
-  async function sendPart(chatId, md, replyTo) {
+  async function sendPart(chatId, md, replyTo, gone) {
     try {
-      return await deliverBody(chatId, postBody(md), replyTo);
+      return await deliverBody(chatId, postBody(md), replyTo, gone);
     } catch (e) {
       if (!POST_REJECTED.has(e.code)) throw e;
       log(`feishu: ${label()} did not take a reply as Markdown (${e.message}); sending it as plain text`);
-      return deliverBody(chatId, { msg_type: 'text', content: JSON.stringify({ text: toPlainText(md) }) }, replyTo);
+      return deliverBody(chatId, { msg_type: 'text', content: JSON.stringify({ text: toPlainText(md) }) }, replyTo, gone);
     }
   }
 
@@ -1220,15 +1240,23 @@ export function createConnector(opts = {}) {
       return stopping;
     },
 
-    /** Send Markdown as `post` messages of at most TEXT_LIMIT; the first part answers `replyTo`. */
+    /**
+     * Send Markdown as `post` messages of at most TEXT_LIMIT; the first part
+     * answers `replyTo`. With `threadId` (a root message) every part answers
+     * that root (the first one `replyTo` when given), so all of it lands in
+     * the root's topic or reply chain.
+     */
     async send(chatId, text, sendOpts = {}) {
       if (halted()) throw new Error(`the ${label()} connector is stopped`);
       if (!domain) throw new Error(`the ${label()} connector is not signed in yet`);
       chatId = String(chatId);
+      const replyTo = sendOpts?.replyTo ? String(sendOpts.replyTo) : '';
+      const root = sendOpts?.threadId ? String(sendOpts.threadId) : '';
+      const gone = new Set();
       let first = true;
       try {
         for (const part of partsOf(text)) {
-          await sendPart(chatId, part, first && sendOpts?.replyTo ? String(sendOpts.replyTo) : '');
+          await sendPart(chatId, part, first ? [replyTo, root] : [root], gone);
           first = false;
         }
         if (sendTrouble) {

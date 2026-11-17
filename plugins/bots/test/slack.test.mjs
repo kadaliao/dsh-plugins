@@ -287,6 +287,10 @@ test('normalizeEvent keeps people writing to the bot and drops the rest', () => 
   assert.equal(inThread.isDirect, false);
   assert.equal(inThread.mentioned, true);
   assert.equal(inThread.thread, '1700000000.000001', 'a reply belongs in the thread the mention is in');
+  assert.equal(inThread.threadId, '1700000000.000001', 'threadId: the thread the mention is in');
+  assert.equal(normalizeEvent(mention('<@U0BOT> top level'), me).threadId, '1700000002.000200', 'a top-level channel message starts its own thread');
+  assert.equal(normalizeEvent(dm('in a DM thread', { thread_ts: '1700000000.000009' }), me).threadId, '1700000000.000009');
+  assert.equal('threadId' in normalizeEvent(dm('plain DM'), me), false, 'a DM outside a thread has no threadId');
   // a channel message (only when the app also subscribes to channel messages)
   assert.equal(normalizeEvent({ ...mention('just chatting'), type: 'message', channel_type: 'channel' }, me).mentioned, false);
   assert.equal(normalizeEvent({ ...mention('<@U0BOT> hi'), type: 'message', channel_type: 'channel' }, me).mentioned, true);
@@ -442,7 +446,7 @@ test('every envelope is acknowledged at once; DMs and mentions become channel me
   assert.equal(ws.acks.length, 3);
   assert.deepEqual(h.messages, [
     { chatId: 'D0KADA', messageId: '1700000001.000100', order: '1700000001000100', userId: 'U0KADA', userName: 'Kada', text: 'hello there', isDirect: true, mentioned: true },
-    { chatId: 'C0LAUNCH', messageId: '1700000002.000200', order: '1700000002000200', userId: 'U0KADA', userName: 'Kada', text: 'what is @Bob Stone doing?', isDirect: false, mentioned: true, chatTitle: 'Acme #launch' },
+    { chatId: 'C0LAUNCH', messageId: '1700000002.000200', order: '1700000002000200', userId: 'U0KADA', userName: 'Kada', text: 'what is @Bob Stone doing?', isDirect: false, mentioned: true, chatTitle: 'Acme #launch', threadId: '1700000002.000200' },
   ]);
   assert.equal(h.of('users.info').filter((c) => c.params.user === 'U0KADA').length, 1, 'names are cached');
   await h.c.stop();
@@ -668,6 +672,33 @@ test('send posts a markdown block with a plain fallback; channel replies stay in
   await h.c.stop();
 });
 
+test('send with threadId posts into that thread; replyTo\'s known thread wins, an unknown replyTo defers to threadId', async () => {
+  const h = harness();
+  const { ws } = await online(h);
+  ws.push(env(mention('<@U0BOT> in a thread', { ts: '1700000035.000002', thread_ts: '1700000035.000001' })));
+  ws.push(env(dm('in a DM thread', { ts: '1700000036.000002', thread_ts: '1700000036.000001' })));
+  await flush();
+  assert.deepEqual(h.messages.map((m) => m.threadId), ['1700000035.000001', '1700000036.000001']);
+  const threadOf = () => h.of('chat.postMessage').at(-1).params.thread_ts;
+  await h.c.send('C0LAUNCH', 'a report, hours later', { threadId: '1700000035.000001' });
+  assert.equal(threadOf(), '1700000035.000001');
+  await h.c.send('C0LAUNCH', 'reply and thread', { threadId: '1700000099.000001', replyTo: '1700000035.000002' });
+  assert.equal(threadOf(), '1700000035.000001', 'the thread replyTo is known to be in');
+  await h.c.send('C0LAUNCH', 'unknown reply', { threadId: '1700000035.000001', replyTo: '1700000035.000777' });
+  assert.equal(threadOf(), '1700000035.000001', 'a reply\'s ts is not a parent: threadId names it');
+  await h.c.send('D0KADA', 'in the DM thread', { threadId: '1700000036.000001' });
+  assert.equal(threadOf(), '1700000036.000001');
+  await h.c.send('D0KADA', 'plain DM', {});
+  assert.equal(threadOf(), undefined);
+  const long = `${'a'.repeat(10_000)}\n\n${'b'.repeat(10_000)}`;
+  const before = h.of('chat.postMessage').length;
+  await h.c.send('C0LAUNCH', long, { threadId: '1700000035.000001' });
+  const parts = h.of('chat.postMessage').slice(before);
+  assert.equal(parts.length, 2);
+  assert.ok(parts.every((p) => p.params.thread_ts === '1700000035.000001'), 'every part in the thread');
+  await h.c.stop();
+});
+
 test('long replies split at about 11,000 characters, fences balanced, every part in the thread', async () => {
   const h = harness();
   const code = Array.from({ length: 700 }, (_, i) => `const v${i} = ${i}; // ${'x'.repeat(20)}`).join('\n');
@@ -739,6 +770,10 @@ test('typing: "is thinking…" in the channel thread, refreshed at most every 45
   await h.clock.tick(45_000);
   await h.c.typing('C0LAUNCH');
   assert.equal(h.of('assistant.threads.setStatus').length, 2);
+  await h.c.typing('C0LAUNCH', { threadId: '1700000040.000001' });
+  assert.deepEqual(h.of('assistant.threads.setStatus').at(-1).params, { channel_id: 'C0LAUNCH', thread_ts: '1700000040.000001', status: 'is thinking…' }, 'threadId picks the thread');
+  await h.c.typing('D0KADA', { threadId: '1700000001.000100' });
+  assert.equal(h.of('assistant.threads.setStatus').length, 3, 'still nothing in a DM');
   await h.c.stop();
 
   const old = harness({ fetch: ({ method }) => (method === 'assistant.threads.setStatus' ? err('method_not_supported_for_channel_type') : undefined) });

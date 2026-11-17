@@ -23,6 +23,13 @@
  *   write, tables and code included) with a plain `text` fallback for
  *   notifications and screen readers. In a channel they go to the thread of
  *   the message they answer.
+ * - Threads: `threadId` on a message is the `ts` of its thread's parent
+ *   (`thread_ts`); a top-level channel message reports its own `ts`, since
+ *   the bot answers it in a thread under it. A DM message outside a thread
+ *   has none. `send(…, {threadId})` posts every part into that thread
+ *   (`thread_ts`); with `replyTo` as well, the thread `replyTo` is known to be
+ *   in wins (Slack threads cannot quote one message). `typing(…, {threadId})`
+ *   shows "is thinking…" under that thread.
  * - No secret appears in a log line, an error or a status.
  *
  * `apiBase` defaults to `BOTS_SLACK_API` or https://slack.com/api, so a local
@@ -168,7 +175,8 @@ export function fallbackText(md) {
 /**
  * An Events API `message` / `app_mention` event as the start of a channel
  * message, or null when it is not a person writing to the bot. `raw` is still
- * Slack-formatted; `thread` is the thread a reply belongs in.
+ * Slack-formatted; `thread` is the thread a reply belongs in; `threadId` (only
+ * when there is one) is the thread the message is in or starts in a channel.
  * @param {object} ev
  * @param {{userId: string, botId?: string}} me
  */
@@ -191,6 +199,8 @@ export function normalizeEvent(ev, me) {
     new RegExp(`<@${escapeRe(me.userId)}(?:\\|[^>]*)?>`).test(raw) ||
     (Boolean(ev.parent_user_id) && String(ev.parent_user_id) === me.userId);
   const profile = ev.user_profile ?? {};
+  // A DM is one conversation until someone replies in a thread there.
+  const threadId = ev.thread_ts ? String(ev.thread_ts) : isDirect ? '' : ts;
   return {
     chatId,
     messageId: ts,
@@ -200,6 +210,7 @@ export function normalizeEvent(ev, me) {
     isDirect,
     mentioned,
     thread: String(ev.thread_ts || ts),
+    ...(threadId ? { threadId } : {}),
     profileName: cleanName(profile.display_name || profile.real_name || profile.name || ''),
   };
 }
@@ -262,6 +273,7 @@ function retryAfterMs(headers) {
  * @property {boolean} isDirect a DM with the app
  * @property {boolean} mentioned @mentioned; always true in a DM
  * @property {string} [chatTitle] `Workspace #channel`, when Slack names it
+ * @property {string} [threadId] the `ts` of the thread's parent: `thread_ts`, or the message's own `ts` at the top of a channel
  */
 
 /**
@@ -476,6 +488,7 @@ export function createConnector(opts = {}) {
       isDirect: n.isDirect,
       mentioned: n.mentioned,
       ...(title ? { chatTitle: title } : {}),
+      ...(n.threadId ? { threadId: n.threadId } : {}),
     };
   }
 
@@ -865,28 +878,33 @@ export function createConnector(opts = {}) {
   /**
    * Post Markdown `text` to a conversation, in parts of at most 11,000
    * characters (code fences closed and reopened at a cut). With `replyTo` (a
-   * message `ts`) every part goes to that message's thread.
+   * message `ts`) every part goes to that message's thread; with `threadId`
+   * (a thread parent's `ts`) to that thread. Given both, the thread `replyTo`
+   * is known to be in wins; when it is not known, `threadId` names the parent
+   * (Slack wants the parent's `ts`, not a reply's).
    */
   async function send(chatId, text, sendOpts = {}) {
     if (stopped) throw new Error('Slack connector is stopped');
     const channel = String(chatId);
     const replyTo = sendOpts?.replyTo ? String(sendOpts.replyTo) : '';
-    const thread = replyTo ? roots.get(`${channel}|${replyTo}`) ?? replyTo : '';
+    const threadId = sendOpts?.threadId ? String(sendOpts.threadId) : '';
+    const thread = (replyTo && roots.get(`${channel}|${replyTo}`)) || threadId || replyTo;
     for (const part of splitMessage(text, PART_LIMIT)) await post(channel, part, thread);
   }
 
   const statusAt = new Map();
   let statusOff = false;
   /**
-   * Show "<app> is thinking…" under the thread a channel reply will go to;
-   * Slack clears it when the reply arrives, or after two minutes. Nothing in a
-   * DM: a status there would turn the person's message into a thread.
+   * Show "<app> is thinking…" under the thread a channel reply will go to
+   * (`threadId`, else the thread of the channel's latest mention); Slack
+   * clears it when the reply arrives, or after two minutes. Nothing in a DM:
+   * a status there would turn the person's message into a thread.
    */
-  async function typing(chatId) {
+  async function typing(chatId, typingOpts = {}) {
     if (halted() || statusOff) return;
     const channel = String(chatId);
     if (channel.startsWith('D')) return;
-    const thread = lastThread.get(channel);
+    const thread = (typingOpts?.threadId ? String(typingOpts.threadId) : '') || lastThread.get(channel);
     if (!thread) return;
     const k = `${channel}|${thread}`;
     const at = statusAt.get(k);

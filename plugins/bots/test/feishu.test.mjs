@@ -209,7 +209,7 @@ function eventFrame(data, { sum, seqNo, msgId } = {}) {
   };
 }
 let msgN = 0;
-function receive({ chatId = 'oc_dm_kada', chatType = 'p2p', text = 'hello', type = 'text', content, mentions, from = KADA, senderType = 'user', id, time, parent } = {}) {
+function receive({ chatId = 'oc_dm_kada', chatType = 'p2p', text = 'hello', type = 'text', content, mentions, from = KADA, senderType = 'user', id, time, parent, root, thread } = {}) {
   msgN += 1;
   const created = String(time ?? 1_700_000_000_000 + msgN);
   return {
@@ -217,7 +217,18 @@ function receive({ chatId = 'oc_dm_kada', chatType = 'p2p', text = 'hello', type
     header: { event_id: `ev-${msgN}`, event_type: 'im.message.receive_v1', create_time: created, token: '', app_id: APP_ID, tenant_key: 'tenant1' },
     event: {
       sender: { sender_id: { open_id: from, union_id: 'on_1', user_id: 'u1' }, sender_type: senderType, tenant_key: 'tenant1' },
-      message: { message_id: id ?? `om_in${msgN}`, create_time: created, chat_id: chatId, chat_type: chatType, message_type: type, content: content ?? JSON.stringify({ text }), ...(mentions ? { mentions } : {}), ...(parent ? { parent_id: parent } : {}) },
+      message: {
+        message_id: id ?? `om_in${msgN}`,
+        ...(root ? { root_id: root } : {}),
+        ...(parent ? { parent_id: parent } : {}),
+        create_time: created,
+        chat_id: chatId,
+        ...(thread ? { thread_id: thread } : {}),
+        chat_type: chatType,
+        message_type: type,
+        content: content ?? JSON.stringify({ text }),
+        ...(mentions ? { mentions } : {}),
+      },
     },
   };
 }
@@ -300,11 +311,24 @@ test('normalizeEvent: direct and group text, mentions resolved, other types and 
   const localized = normalizeEvent(receive({ type: 'post', content: JSON.stringify({ zh_cn: { title: '', content: [[{ tag: 'text', text: '你好' }]] } }) }).event, { botOpenId: BOT });
   assert.equal(localized.text, '你好');
 
+  assert.equal('threadId' in dm, false, 'a message that answers nothing has no threadId');
   assert.equal(normalizeEvent(receive({ type: 'image', content: JSON.stringify({ image_key: 'img_x' }) }).event, { botOpenId: BOT }), null);
   assert.equal(normalizeEvent(receive({ senderType: 'app' }).event, { botOpenId: BOT }), null);
   assert.equal(normalizeEvent(receive({ from: BOT }).event, { botOpenId: BOT }), null);
   assert.equal(normalizeEvent(receive({ text: '@_user_1', mentions: [mention(1, BOT, 'Acme', 'bot')] }).event, { botOpenId: BOT }), null, 'nothing left to read');
   assert.equal(normalizeEvent(receive({ content: '{broken' }).event, { botOpenId: BOT }), null);
+});
+
+test('normalizeEvent: threadId is the root message of a reply chain or topic, never the topic id', () => {
+  const at = [mention(1, BOT, 'Acme Team', 'bot')];
+  const t = (extra) => normalizeEvent(receive({ chatId: 'oc_grp', chatType: 'group', text: '@_user_1 go', mentions: at, ...extra }).event, { botOpenId: BOT })?.threadId;
+  assert.equal(t({ id: 'om_top' }), undefined, 'a top-level message');
+  assert.equal(t({ id: 'om_r2', root: 'om_top', parent: 'om_bot1' }), 'om_top', 'a reply chain: its root, not the message it answers');
+  assert.equal(t({ id: 'om_t2', root: 'om_top', parent: 'om_top', thread: 'omt_1' }), 'om_top', 'a reply in a topic: the same root');
+  assert.equal(t({ id: 'om_topic', thread: 'omt_2', chatType: 'topic_group' }), 'om_topic', 'the first message of a topic is its own root');
+  assert.equal(t({ id: 'om_p', parent: 'om_q' }), 'om_q', 'a parent without a root names the root');
+  const dmReply = normalizeEvent(receive({ text: 'about that', root: 'om_dm_first', parent: 'om_dm_first' }).event, { botOpenId: BOT });
+  assert.equal(dmReply.threadId, 'om_dm_first', 'a reply chain in a DM too');
 });
 
 // --- connecting -----------------------------------------------------------------------
@@ -603,6 +627,43 @@ test('send: a recalled message is answered in the chat; a post Feishu refuses go
   const rated = sends(platform).filter((c) => c.body.receive_id === 'oc_rate');
   assert.equal(rated.length, 2);
   assert.equal(rated[0].body.uuid, rated[1].body.uuid, 'a retry keeps its uuid, so Feishu sends it once');
+  await h.c.stop();
+});
+
+test('threads: messages carry the root; send with threadId answers the root with every part, replyTo first', async () => {
+  const platform = fakePlatform({
+    routes: {
+      'POST /open-apis/im/v1/messages/om_recalled/reply': () => reply(400, { code: 230011, msg: 'The message is recalled.' }),
+      'POST /open-apis/im/v1/messages/om_root_gone/reply': () => reply(400, { code: 231003, msg: 'The message is not found.' }),
+    },
+  });
+  const h = harness({ platform });
+  await online(h);
+  const at = [mention(1, BOT, 'Acme Team', 'bot')];
+  h.last().push(eventFrame(receive({ chatId: 'oc_grp', chatType: 'group', text: '@_user_1 in the topic', mentions: at, id: 'om_t3', root: 'om_root', parent: 'om_root', thread: 'omt_9' })));
+  h.last().push(eventFrame(receive({ chatId: 'oc_grp', chatType: 'group', text: '@_user_1 top level', mentions: at, id: 'om_top' })));
+  await flush(30);
+  assert.deepEqual(h.messages.map((m) => [m.messageId, m.threadId]), [['om_t3', 'om_root'], ['om_top', undefined]]);
+
+  const long = `${'a'.repeat(3990)}\n\n${'b'.repeat(3990)}\n\n${'c'.repeat(100)}`;
+  const paths = (from) => sends(platform).slice(from).map((c) => c.path);
+  let n = sends(platform).length;
+  await h.c.send('oc_grp', long, { threadId: 'om_root' });
+  assert.deepEqual(paths(n), Array(3).fill('/open-apis/im/v1/messages/om_root/reply'), 'every part in the topic');
+  assert.ok(sends(platform).slice(n).every((c) => c.body.reply_in_thread === undefined), 'the root decides: a topic stays a topic, a chain a chain');
+
+  n = sends(platform).length;
+  await h.c.send('oc_grp', long, { threadId: 'om_root', replyTo: 'om_t3' });
+  assert.deepEqual(paths(n), ['/open-apis/im/v1/messages/om_t3/reply', '/open-apis/im/v1/messages/om_root/reply', '/open-apis/im/v1/messages/om_root/reply']);
+
+  n = sends(platform).length;
+  await h.c.send('oc_grp', 'answer', { threadId: 'om_root', replyTo: 'om_recalled' });
+  assert.deepEqual(paths(n), ['/open-apis/im/v1/messages/om_recalled/reply', '/open-apis/im/v1/messages/om_root/reply'], 'a recalled replyTo: the root');
+
+  n = sends(platform).length;
+  await h.c.send('oc_grp', long, { threadId: 'om_root_gone' });
+  assert.deepEqual(paths(n), ['/open-apis/im/v1/messages/om_root_gone/reply', '/open-apis/im/v1/messages', '/open-apis/im/v1/messages', '/open-apis/im/v1/messages'], 'a root that is gone: the chat, asked once');
+  assert.equal(sends(platform).at(-1).body.receive_id, 'oc_grp');
   await h.c.stop();
 });
 
