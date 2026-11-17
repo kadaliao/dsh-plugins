@@ -394,3 +394,80 @@ test('the chat view: replies whose topic began earlier bring its first message; 
   assert.ok(!(await chatOf(api, forge)).items.some((m) => m.topic === first.id));
   env.dispose();
 });
+
+// --- from the review ---------------------------------------------------------------------------
+
+test('a new message in a topic that bot_reply answered earlier in the turn gets its plain answer shown', async () => {
+  const env = await team();
+  const { api, h, atlas, router, sid, first, call } = env;
+  for (const m of router.inbox.nextStep.splice(0)) h.emit('session/event', router.session, { type: 'user/message', data: m });
+  await call('bot_reply', { thread: first.id, text: 'working on it' }, sid);
+  await sendPanel(api, atlas, 'also Haidian?', first.id);
+  for (const m of router.inbox.nextStep.splice(0)) h.emit('session/event', router.session, { type: 'user/message', data: m });
+  h.emit('session/event', router.session, { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Haidian: yes it differs.' }] } } });
+  h.emit('session/event', router.session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } });
+  const chat = await chatOf(api, atlas);
+  const answer = chat.items.find((m) => m.text === 'Haidian: yes it differs.');
+  assert.equal(answer?.topic, first.id);
+  env.dispose();
+});
+
+test('a message that could not be handed over leaves no copy in the chat', async () => {
+  const env = await team();
+  const { api, atlas, router } = env;
+  router.steer = () => {
+    throw new Error('boom');
+  };
+  await assert.rejects(sendPanel(api, atlas, 'second'), /boom/);
+  const chat = await chatOf(api, atlas);
+  assert.deepEqual(chat.items.filter((m) => m.from === 'user').map((m) => m.text), ['帮我查一下北京工作居住证办理条件']);
+  env.dispose();
+});
+
+test('replying in the panel to a chat app message keeps its chat Thread; the topic key goes beside it', async () => {
+  const env = await team();
+  const { api, atlas, sid, router } = env;
+  const tg = api.store.log({ from: 'user', to: atlas.id, kind: 'user', via: 'telegram', who: 'Kada', text: 'hi from tg', thread: 'telegram:acme%2Fapp:555' });
+  const r = await sendPanel(api, atlas, 'reply in panel', tg.id);
+  const kept = api.store.message(tg.id);
+  assert.equal(kept.thread, 'telegram:acme%2Fapp:555');
+  assert.equal(kept.topic, tg.id);
+  assert.equal(kept.panelThread, `panel:${sid}:${tg.id}`);
+  assert.equal(r.message.thread, kept.panelThread);
+  assert.match(textOfMsg(router.deliveries.at(-1).message), new RegExp(`^\\[Panel\\] \\(thread ${tg.id}\\)\\nIn reply to the user: "hi from tg"`));
+  const view = await chatOf(api, atlas);
+  assert.equal(view.topics[tg.id].key, kept.panelThread);
+  // A second reply joins the same topic.
+  assert.equal((await sendPanel(api, atlas, 'and again', r.message.id)).message.thread, kept.panelThread);
+  env.dispose();
+});
+
+test('bot_reply reaches only topics of its own chat, and tasks it asked for or does', async () => {
+  const env = await team();
+  const { api, h, atlas, sid, first, call } = env;
+  const forge = api.store.find('forge');
+  const forgeHome = await api.userSend(forge, 'hi');
+  await h.step(forgeHome, { answer: '' });
+  await assert.rejects(call('bot_reply', { thread: first.id, text: 'not mine' }, forgeHome), /no topic .* in this bot's chat/);
+  await assert.rejects(call('bot_reply', { thread: `panel:${sid}:pnope0000`, text: 'made up' }, sid), /no topic .* in this bot's chat/);
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Look it up.' } }] });
+  const scoutHome = await api.userSend(api.store.save({ name: 'Scout' }), 'hi');
+  await h.step(scoutHome, { answer: '' });
+  await assert.rejects(call('bot_reply', { ticket: r.ticket.id, text: 'x' }, scoutHome), /came from no topic in this bot's chat/);
+  assert.equal((await call('bot_reply', { ticket: r.ticket.id, text: 'From Atlas.' }, sid)).thread, first.thread);
+  env.dispose();
+});
+
+test('a topic whose first message left the log is still found by the message replied to, after a new home session', async () => {
+  const env = await team();
+  const { api, h, atlas, sid, first } = env;
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Look it up.' } }] });
+  const reply = (await sendPanel(api, atlas, 'more', first.id)).message;
+  // The home moves on to a new session, and the first message is gone (the log was compacted past it).
+  await api.newTopic(api.store.get(atlas.id), 'manual');
+  api.store.patchMessage(first.id, { hidden: true, thread: undefined, topic: undefined });
+  const again = await sendPanel(api, atlas, 'and more', reply.id);
+  assert.equal(again.message.thread, first.thread);
+  assert.equal(again.message.ticket, r.ticket.id, 'it reaches the live task, not the new home');
+  env.dispose();
+});

@@ -1177,6 +1177,15 @@ export function apply(ctx, config, deps = {}) {
   };
   /** Whether a timeline message belongs to `botId`'s panel chat (lib/store.mjs `messages`). */
   const inChat = (m, botId) => Boolean(m) && (m.chat ? m.chat === botId : m.from === botId || m.to === botId);
+  /**
+   * The key of the panel topic `root` from its first message: its `thread` when that is the topic's
+   * key, else `panelThread` (a chat app's message, whose `thread` stays its chat Thread), else ''.
+   */
+  const topicKeyOf = (first, root) => {
+    if (first?.thread && panelTopicOf(first.thread) === root) return first.thread;
+    if (first?.panelThread && panelTopicOf(first.panelThread) === root) return first.panelThread;
+    return '';
+  };
   /** Who wrote a timeline message, as a header names them. */
   const writerOf = (m) => (m.from === 'user' ? 'the user' : store.get(m.from) ? `@${store.get(m.from).handle}` : 'a bot');
   /** The tasks a dispatcher's panel message may continue: open, or ended within a day; the latest change first. */
@@ -1198,8 +1207,13 @@ export function apply(ctx, config, deps = {}) {
     if (!quoted || !inChat(quoted, bot.id)) throw new Error('that message is not in this chat');
     const root = quoted.movedTo || quoted.topic || quoted.id;
     const first = root === quoted.id ? quoted : store.message(root);
-    const key = first?.thread && panelTopicOf(first.thread) === root ? first.thread : panelThreadKey(sessionId, root);
-    if (first && first.topic !== root) store.patchMessage(first.id, { topic: root, thread: key });
+    // Its first message names the key; one gone from the log leaves it on the message replied to (an older topic of the bot's).
+    const key = topicKeyOf(first, root) || (panelTopicOf(quoted.thread) === root ? quoted.thread : '') || panelThreadKey(sessionId, root);
+    if (first && first.topic !== root) {
+      // A chat app's message keeps its chat Thread: the topic's key goes beside it.
+      const chatThread = first.thread && !isPanelThread(first.thread);
+      store.patchMessage(first.id, chatThread ? { topic: root, panelThread: key } : { topic: root, thread: key });
+    }
     return { root, key, quoted };
   }
   /** A timeline message as the panel reads it: `pending` while no model has taken it yet; internal fields left out. */
@@ -1258,7 +1272,8 @@ export function apply(ctx, config, deps = {}) {
     try {
       await sendTo(agent, { content: header ? [{ type: 'text', text: header }, { type: 'text', text: body }] : [{ type: 'text', text: body }], source: { kind: 'user' }, mode: homeMode(bot), key: `panel:${id}` });
     } catch (error) {
-      store.patchMessage(id, { failed: true });
+      // Not handed over: it leaves the chat (the panel keeps its own copy to send again).
+      store.patchMessage(id, { hidden: true });
       throw error;
     }
     return { sessionId: sid, message: messageView(store.message(id)) };
@@ -1311,7 +1326,7 @@ export function apply(ctx, config, deps = {}) {
     if (!m) return r;
     const root = m.movedTo || m.topic || '';
     const first = root ? store.message(root) : undefined;
-    return first?.thread && panelTopicOf(first.thread) === root ? first.thread : r;
+    return topicKeyOf(first, root) || r;
   }
   /** The panel topics of a turn, and its chat Threads, as a tool error lists them. */
   const turnChoices = (sessionId) =>
@@ -2332,6 +2347,8 @@ export function apply(ctx, config, deps = {}) {
           // A drawing's note: the answer goes to the chats the person asked for it in.
           for (const o of drawingOrigins.get(id) ?? []) channels.noteInput(session.id, { threadKey: o.threadKey, origin: o });
           drawingOrigins.delete(id);
+          // What arrives in a topic or chat since bot_reply answered it needs an answer again.
+          if (st.replied) for (const k of [typed?.thread, via?.threadKey, ...about.map((t) => t.origin?.threadKey)]) if (k) st.replied.delete(k);
           // A report's ticket came from a Thread: the answer to the person goes there (PLAN-0.8 §4.3).
           for (const t of about) {
             const key = t.origin?.threadKey;
@@ -3297,18 +3314,29 @@ export function apply(ctx, config, deps = {}) {
         };
         if (!thread && !ticketId) throw new Error(`say where: \`ticket\` (a task id) or \`thread\` (a topic or thread). ${options()}`);
         // A topic in the panel (Bots 0.9): this turn's, one a task came from, or any the bot's chat has.
-        const panelKey = thread ? (panelTopicOf(thread) ? thread : '') : panelTopicOf(tickets.get(ticketId)?.origin?.threadKey) ? tickets.get(ticketId).origin.threadKey : '';
+        const asked = ticketId ? tickets.get(ticketId) : undefined;
+        const panelKey = thread ? (panelTopicOf(thread) ? thread : '') : panelTopicOf(asked?.origin?.threadKey) ? asked.origin.threadKey : '';
+        // A panel topic of this bot's own chat only: one whose first message is there, or a task it asked for or does.
+        if (panelKey) {
+          const root = store.message(panelTopicOf(panelKey));
+          const mine = thread ? Boolean(root) && inChat(root, bot.id) : Boolean(asked) && (asked.requester?.botId === bot.id || asked.botId === bot.id);
+          if (!mine) throw new Error(`${thread ? `no topic "${args.thread}"` : `task ${ticketId} came from no topic`} in this bot's chat. ${options()}`);
+        }
         const target = panelKey ? { kind: 'panel', threadKey: panelKey } : channels.resolveReply(sessionId, thread ? { thread } : { ticket: ticketId });
         if (!target) throw new Error(`${thread ? `no topic or chat thread "${thread}"` : `no topic or chat for task ${ticketId}`} can be reached from here. ${options()}`);
-        const st = turnState.get(sessionId);
-        if (st) (st.replied ??= new Set()).add(target.threadKey);
+        const answeredHere = () => {
+          const st = turnState.get(sessionId);
+          if (st) (st.replied ??= new Set()).add(target.threadKey);
+        };
         if (target.kind === 'panel') {
           const topic = panelTopicOf(target.threadKey);
           const chat = (topic && store.message(topic)?.chat) || bot.id;
           store.log({ from: bot.id, to: 'user', chat, text: body, kind: 'reply', thread: topic ? target.threadKey : panelThreadKey(sessionId), ...(topic ? { topic } : {}) });
+          answeredHere();
           return { ok: true, text: topic ? `Shown in the panel, in topic ${topic}.` : 'That thread is the panel: the reply is shown there.', thread: target.threadKey };
         }
         channels.replyTo(sessionId, target, body);
+        answeredHere();
         store.log({ from: bot.id, to: 'user', chat: bot.id, text: body, kind: 'reply', via: target.kind, thread: target.threadKey });
         return { ok: true, text: `Sent to ${threadLabel(target)}.`, thread: target.threadKey, via: target.kind };
       },
@@ -4398,7 +4426,7 @@ export function apply(ctx, config, deps = {}) {
     const topics = {};
     for (const root of roots) {
       const first = items.find((m) => m.id === root) ?? store.message(root);
-      const key = first?.thread && panelTopicOf(first.thread) === root ? first.thread : items.find((m) => m.topic === root && m.thread)?.thread;
+      const key = topicKeyOf(first, root) || items.find((m) => m.topic === root && m.id !== root && panelTopicOf(m.thread) === root)?.thread;
       if (!key) continue;
       topics[root] = { key, tickets: tickets.subscribers(key).filter((t) => !t.archivedAt).map(ticketRow) };
     }

@@ -450,10 +450,11 @@ export function createStore(dir) {
      */
     messages({ bot = '', limit = 200, topic = '' } = {}) {
       const all = readLog();
-      const mine = (m) => !bot || (m.chat ? m.chat === bot : m.from === bot || m.to === bot);
+      // A message that was never handed over (`hidden`) is in no chat.
+      const mine = (m) => !m.hidden && (!bot || (m.chat ? m.chat === bot : m.from === bot || m.to === bot));
       const cap = Math.max(1, Math.min(2000, Number(limit) || 200));
       if (topic) return all.filter((m) => mine(m) && (m.id === topic || m.topic === topic || m.movedTo === topic)).slice(-cap);
-      const rows = bot ? all.filter(mine) : all;
+      const rows = all.filter(mine);
       const window = rows.slice(-cap);
       const have = new Set(window.map((m) => m.id));
       const missing = new Set();
