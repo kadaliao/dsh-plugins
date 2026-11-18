@@ -386,6 +386,54 @@
           }
         }
       ]
+    },
+    {
+      "name": "@kadaliao/dsh-atlas",
+      "title": {
+        "en": "Atlas",
+        "zh": "足迹"
+      },
+      "description": {
+        "en": "Your Photos library on a night globe that zooms to street level: every place you took a photo glows, thumbnails pop up where you were, and zoomed in you get 3D terrain and buildings, the venues and landmarks from your own photos, and Wikipedia nearby. Trips are found for you and drawn as flight arcs you can replay as a story; a timeline replays your years; each day brings back this date in your photos and in world history near places you have been. Open any place and the best photos come first. Ask the model about your photos and the map moves as it answers. Basemaps: night OpenStreetMap, Amap for China in full detail, satellite, offline. macOS Photos, read-only. Bilingual.",
+        "zh": "把“照片”图库放到一颗能一路放大到街道的夜色地球上：拍过照的地方都会发光，缩略图从你去过的地方冒出来；放大后有 3D 地形和建筑、你照片里认出的店铺和景点，还有附近的维基百科条目。旅行自动整理成航线，可以用故事模式回放；时间轴回放这些年；每天翻出往年今天的照片，以及发生在你去过的地方附近的历史上的今天。打开任何地点都先看精选的好照片。在对话里问模型你的照片，地图会跟着动。底图可选夜景 OpenStreetMap、国内最详细的高德、卫星或离线。只读 macOS“照片”图库，中英双语。"
+      },
+      "icon": "https://raw.githubusercontent.com/kadaliao/dsh-atlas/main/icon.svg",
+      "author": "kadaliao",
+      "homepage": "https://github.com/kadaliao/dsh-atlas",
+      "repository": {
+        "url": "https://github.com/kadaliao/dsh-atlas"
+      },
+      "metadata": {
+        "category": "media",
+        "keywords": [
+          "photos",
+          "map",
+          "globe",
+          "travel",
+          "trips",
+          "footprint",
+          "on this day",
+          "memories",
+          "maplibre",
+          "amap",
+          "wikipedia",
+          "tool"
+        ],
+        "labels": [
+          "tool",
+          "bilingual"
+        ],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1795017387,
+          "source": {
+            "type": "npm"
+          }
+        }
+      ]
     }
   ]
 }
