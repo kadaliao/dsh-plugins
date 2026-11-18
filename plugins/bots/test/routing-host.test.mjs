@@ -653,6 +653,97 @@ test('a lone dispatcher works hands-on; with a teammate it routes, and alone aga
   env.dispose();
 });
 
+test('0.10.1: the Router puts no question cards to the person; the profile still lists every tool Router mode turns off', async () => {
+  const ALL = ['bash', 'write', 'edit', 'read', 'web_search', 'web_fetch', 'job_output', 'skill', 'ask_user_question', 'subagent'];
+  const env = boot({
+    pre: (h) => {
+      // As in Harness: what a limit denies is gone from the view, and `restrictableNames` keeps every name.
+      const denied = () => new Set([...h.agentsById.values()].flatMap((a) => a.restricts.flatMap((f) => f.deny ?? [])));
+      h.ctx.tools.definitions = () => ALL.filter((n) => !denied().has(n)).map((name) => ({ name, description: `${name} does it. More.` }));
+      h.ctx.tools.view = () => ({ restrictableNames: new Set(ALL) });
+    },
+  });
+  const { h, api } = env;
+  api.store.save({ name: 'Forge' });
+  const sid = await api.userSend(api.store.find('atlas'), 'Write the invite; ask me which tone first');
+  const home = h.agentsById.get(sid);
+  for (const name of ['ask_user_question', 'bash', 'web_search', 'subagent']) assert.ok(home.restricts.at(-1).deny.includes(name), name);
+  assert.ok(!home.restricts.at(-1).deny.includes('read'));
+  assert.match(home.sections.get('bots:persona').text(), /You put no question cards to the person/);
+  // The catalog reads through the Router's home (the only live one), yet lists every tool with its description.
+  const cat = await api.request('GET', '/__dsh_bots/catalog');
+  assert.deepEqual(cat.tools.map((t) => t.name), [...ALL].sort());
+  assert.equal(cat.tools.find((t) => t.name === 'bash').description, 'bash does it.');
+  assert.deepEqual(cat.abilities.find((a) => a.id === 'ask').available, ['ask_user_question']);
+  assert.deepEqual(cat.abilities.find((a) => a.id === 'web').available, ['web_search', 'web_fetch']);
+  assert.ok(cat.routerDeny.includes('ask_user_question'));
+  env.dispose();
+});
+
+test('0.10.1: a teammate\'s message to the Router opens no task: it goes into the Router\'s conversation, and an answer goes to the task it came from', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  api.store.save({ name: 'Harbor' });
+  const atlas = api.store.find('atlas');
+  const sid = await api.userSend(atlas, 'Hello');
+  const home = h.agentsById.get(sid);
+  // In a task Atlas asked for, naming @atlas is a report, as before.
+  const [mine] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@harbor', text: 'Check the calendar.' } }] });
+  await assert.rejects(call('bot_send_message', { to: '@atlas', text: 'Done.' }, api.tickets.get(mine.ticket.id).sessionId), /needs a status/);
+  // Forge asks Harbor for a sweep: Harbor's task, not Atlas's.
+  const fsid = await api.userSend(api.store.find('forge'), 'Get the inbox swept');
+  const r = await call('bot_send_message', { to: '@harbor', text: 'Sweep the inbox.' }, fsid);
+  const t = api.tickets.get(r.ticket.id);
+  const before = api.tickets.list().length;
+  // From Harbor's task: delivered to Atlas's home, naming the task.
+  const sent = await call('bot_send_message', { to: '@atlas', text: 'Three urgent emails from Acme.' }, t.sessionId);
+  assert.equal(sent.ok, true);
+  assert.match(sent.text, /opens no task/);
+  assert.equal(api.tickets.list().length, before, 'no task for the dispatcher');
+  const dm = home.deliveries.at(-1);
+  assert.equal(dm.mode, 'steer');
+  assert.match(dm.message.id, /^bots:dm:/);
+  assert.match(textOfMsg(dm.message), new RegExp(`^Bot message from @harbor \\(Harbor\\), from its task ${t.id} \\("Sweep the inbox\\."\\):`));
+  assert.match(textOfMsg(dm.message), new RegExp(`give it with bot_send_message, ticket: ${t.id}\\.\\)$`));
+  // Atlas answers on Harbor's task; that reaches Harbor's task conversation.
+  await h.step(sid, { claim: home.inbox.nextStep.splice(0), calls: [{ name: 'bot_send_message', args: { ticket: t.id, text: 'Flag them for the person.' } }] });
+  assert.match(textOfMsg(h.agentsById.get(t.sessionId).deliveries.at(-1).message), /Flag them for the person\./);
+  // From Harbor's own conversation too (a scheduled sweep, say): no task either.
+  const harbor = api.store.find('harbor');
+  const hsid = await api.userSend(harbor, 'Morning sweep');
+  const fromHome = await call('bot_send_message', { to: '@atlas', text: 'Inbox is clear.', thread: 'whatever' }, hsid);
+  assert.equal(fromHome.ok, true);
+  assert.equal(api.tickets.list().length, before);
+  assert.match(textOfMsg(home.deliveries.at(-1).message), /^Bot message from @harbor \(Harbor\):\nInbox is clear\.\n\n\(Reply with bot_send_message to @harbor/);
+  env.dispose();
+});
+
+test('0.10.1: a note for a conversation in the middle of a turn waits for its end, so it is never the newest input of a step', async () => {
+  const env = boot();
+  const { h, api, call } = env;
+  api.store.save({ name: 'Forge' });
+  const sid = await api.userSend(api.store.find('atlas'), 'Fix the cookie bug');
+  const router = h.agentsById.get(sid);
+  const [r] = await h.step(sid, { calls: [{ name: 'bot_send_message', args: { to: '@forge', text: 'Fix the cookie bug.' } }] });
+  const t = api.tickets.get(r.ticket.id);
+  const shown = () => router.injected.filter((m) => /^bots:shown:/.test(m.id));
+  // Atlas is working (another message, say) when Forge's answer goes to the person.
+  router.status = 'running';
+  await call('bot_send_message', { status: 'done', text: 'Fixed: SameSite=None; Secure.' }, t.sessionId);
+  await settle();
+  assert.equal(shown().length, 0, 'held while the turn runs');
+  router.status = 'idle';
+  h.emit('agent/status', { agent: router, status: 'idle' });
+  assert.equal(shown().length, 1, 'in at the turn\'s end');
+  assert.equal(router.inbox.nextStep.length + router.inbox.nextTurn.length, 0, 'and it wakes nothing');
+  assert.match(textOfMsg(shown()[0]), /^\[Shown\] @forge's report on task/);
+  h.emit('agent/status', { agent: router, status: 'idle' });
+  assert.equal(shown().length, 1, 'once');
+  assert.match(personaText(api.store.find('atlas'), api.store.list(), { dispatcher: 'router' }), /are for you, not the person: never answer them/);
+  env.dispose();
+});
+
 test('personas: a worker home in router mode expects reports; hands-on text is unchanged; every tool they name exists', async () => {
   const atlas = { id: 'a', name: 'Atlas', handle: 'atlas', role: 'primary', persona: '', skills: [] };
   const forge = { id: 'f', name: 'Forge', handle: 'forge', role: 'bot', persona: '', skills: [] };

@@ -359,6 +359,38 @@ export function apply(ctx, config, deps = {}) {
   // --- applying a bot to its Agent ----------------------------------------------------
   /** sessionId → {agent, signature, disposers[]} */
   const installed = new Map();
+  /**
+   * The first sentence of each Harness tool's description, by name, as a bot's conversation has it
+   * before Bots limits it: noted when a conversation is set up (before its limits apply) and when the
+   * catalog is read. A router home's own view lacks `bash` or `web_search`; the profile still lists
+   * them, marked off in Router mode (0.10.1).
+   */
+  const toolInfo = new Map();
+  const toolLine = (d) => String(d?.description ?? '').split(/(?<=\.)\s/)[0].slice(0, 200);
+  /** Note the definitions `scope` sees; returns their names. */
+  function noteTools(scope) {
+    const names = [];
+    try {
+      for (const d of ctx.tools?.definitions?.(scope) ?? []) {
+        toolInfo.set(d.name, toolLine(d));
+        names.push(d.name);
+      }
+    } catch {
+      // No registry view.
+    }
+    return names;
+  }
+  /** The tools `scope` would have with no limits: what it sees, and the names a limit hides (Harness `restrictableNames`). */
+  function unlimitedTools(scope) {
+    const names = new Set(noteTools(scope));
+    try {
+      const hidden = ctx.tools?.view?.(scope)?.restrictableNames;
+      if (hidden instanceof Set) for (const n of hidden) names.add(n);
+    } catch {
+      // A Harness without the view lists what the scope sees.
+    }
+    return [...names];
+  }
 
   const isChannel = (app) => Boolean(channelEntry(app, templates()));
   // Chat channels run outside the Agent; changing one does not restart the bot's MCP clients.
@@ -480,6 +512,8 @@ export function apply(ctx, config, deps = {}) {
         ctx.logger?.warn?.(`bots: memory for @${bot.handle}: ${error?.message ?? error}`);
       }
     }
+    // What this conversation has before any limit below: the profile lists the denied tools too.
+    noteTools(scopeOf(actx));
     // A router home is also denied the tools that do the work, except those the user gave back; a team's dispatcher starts no sub-agents.
     const allowed = new Set(bot.tools.routerAllow ?? []);
     const wanted = [...new Set([...bot.tools.deny, ...(router ? ROUTER_DENY.filter((n) => !allowed.has(n)) : []), ...(noSubagents(bot) ? SUBAGENT_TOOLS : [])])];
@@ -1145,7 +1179,9 @@ export function apply(ctx, config, deps = {}) {
    *   without `inject` gets nothing for an 'inject' (`dropped`): such a note never wakes a turn.
    * - `key`: makes the message id `bots:<key>`; a message with that id already pending or delivered
    *   is not delivered again, so a retried request is harmless.
-   * @returns {{message: object, mode: string, skipped: boolean, dropped?: true}}
+   * An 'inject' for a conversation in the middle of a turn is held until it is idle (`held`, see
+   * `holdNote`).
+   * @returns {{message: object, mode: string, skipped: boolean, dropped?: true, held?: true}}
    */
   async function sendTo(agent, { content: blocks, source, mode = 'followup', key }) {
     // Providers that take a message as one string join its blocks with nothing in between:
@@ -1157,15 +1193,55 @@ export function apply(ctx, config, deps = {}) {
     if (key) await loadHistory(agent.session?.id);
     if (key && holds(agent, message.id)) return { message, mode, skipped: true };
     const how = mode === 'inject' ? 'inject' : mode !== 'followup' && typeof agent.steer === 'function' ? 'steer' : 'followup';
+    if (how === 'inject' && agent.status === 'running') {
+      holdNote(agent, message);
+      if (key) noteDelivered(agent.session?.id, message.id);
+      return { message, mode: how, skipped: false, held: true };
+    }
     agent[how](message);
     if (key) noteDelivered(agent.session?.id, message.id);
     await flush(agent);
     return { message, mode: how, skipped: false };
   }
+  /**
+   * Notes ("[Shown]", "[follow_up]", "[Closed]") for conversations that were working when they came,
+   * by Session: `{agent, messages}`. Injected into a running turn, a note is the newest input of its
+   * next step, and the model answers it, to the person ("[已展示]: nothing for me to do…", 0.10.1).
+   * They need no answer, so they wait for the turn's end and go in then, waking nothing. In memory
+   * only: a note lost with the process was only good to know.
+   */
+  const heldNotes = new Map();
+  function holdNote(agent, message) {
+    const sid = agent.session?.id;
+    if (!sid) return;
+    const held = heldNotes.get(sid) ?? { agent, messages: [] };
+    held.agent = agent;
+    held.messages.push(message);
+    heldNotes.set(sid, held);
+  }
+  /** The conversation `sessionId` went idle: its held notes go in now, in the order they came. */
+  function releaseNotes(sessionId, agent) {
+    const held = heldNotes.get(sessionId);
+    if (!held) return;
+    heldNotes.delete(sessionId);
+    const to = agent ?? held.agent;
+    for (const m of held.messages) {
+      try {
+        to.inject(m);
+      } catch (error) {
+        ctx.logger?.info?.(`bots: a held note did not reach ${sessionId}: ${error?.message ?? error}`);
+      }
+    }
+    void flush(to);
+  }
   /** How a bot's home takes new input: a router steers (backlog is handled together), every other home as in 0.7. */
   const homeMode = (bot) => (isRouter(store.get(bot.id) ?? bot) ? 'steer' : 'followup');
 
-  /** A DM from `sender` (a bot, or null for the user) to `target`'s home: 0.7's bot-to-bot message. */
+  /**
+   * A DM from `sender` (a bot, or null for the user) to `target`'s home: 0.7's bot-to-bot message,
+   * and (0.10.1) a teammate's message to the router dispatcher. One sent from a task names it, so the
+   * answer goes to that task. Its id (`bots:dm:…`) keeps it a message, not a report on the sender's task.
+   */
   async function deliver(sender, target, text, senderSessionId) {
     const body = String(text ?? '').trim();
     if (body === '') throw new Error('text must not be empty');
@@ -1174,13 +1250,15 @@ export function apply(ctx, config, deps = {}) {
     // A teammate's message may answer this bot's own question: only a long quiet starts a new topic here.
     await autoTopic(store.get(target.id) ?? target, sender ? 'dm' : 'user');
     const agent = await agentOf(store.get(target.id) ?? target);
+    const fromTask = sender ? ticketOf(senderSessionId) : undefined;
     await sendTo(agent, {
       content: [
-        { type: 'text', text: dmHeader(sender) },
-        { type: 'text', text: dmBody(body, sender) },
+        { type: 'text', text: dmHeader(sender, fromTask) },
+        { type: 'text', text: dmBody(body, sender, fromTask) },
       ],
       source: senderSessionId ? { kind: 'agent-message', form: 'relay', senderSessionId } : { kind: 'user' },
       mode: homeMode(target),
+      key: `dm:${randomUUID()}`,
     });
     store.log({ from: sender ? sender.id : 'user', to: target.id, text: body, kind: 'dm' });
     return agent.session.id;
@@ -1979,6 +2057,8 @@ export function apply(ctx, config, deps = {}) {
           : 'a bot cannot message itself',
       );
     }
+    // Nor does it take tasks from its teammates (0.10.1): their messages go into its conversation (bot_send_message).
+    if (isRouter(target)) throw new Error(`@${target.handle} is the dispatcher and takes no tasks; message it without a task, or give the work to the teammate who does it`);
     if (!service(ctx, 'sessionController')) throw new Error('tasks need the Web profile (no session controller here)');
     const parent = ticketOf(senderSessionId);
     const { origin, thread } = originOfTurn(senderSessionId, chosen);
@@ -2559,6 +2639,7 @@ export function apply(ctx, config, deps = {}) {
     answered.delete(sessionId);
     turnState.delete(sessionId);
     activity.clear(sessionId);
+    heldNotes.delete(sessionId);
   }
   /** Kinds of user message that start (or join) a task. */
   const TASK_KINDS = new Set(['user', 'schedule', 'agent-message']);
@@ -2775,6 +2856,7 @@ export function apply(ctx, config, deps = {}) {
   ctx.on('agent/status', (payload) => {
     try {
       const sid = payload?.agent?.session?.id;
+      if (sid && payload.status === 'idle') releaseNotes(sid, payload.agent);
       if (sid && payload.status === 'idle') activity.clear(sid);
       if (sid && payload.status === 'idle' && openTasks.has(sid)) settleSoon(sid, 300);
       else if (sid && payload.status === 'idle' && memoStale.delete(sid)) memoText.delete(sid);
@@ -3537,7 +3619,7 @@ export function apply(ctx, config, deps = {}) {
         'Message another bot, or report on the task this conversation works on. Make the text self-contained: the other bot cannot see this conversation. Do not reply to acknowledgements.',
         "- To delegate: `to` (the bot's @handle) and `text`. Depending on how the team works, this opens a task (ticket) that the bot works on in a conversation of its own, or drops the text into that bot's own conversation; the result says which. Either way the call returns at once and the answer (a report, or a bot message) arrives here by itself: never wait or poll for it.",
         '- When this turn involves several topics or chats, name the one a new task is for with `thread` (as its message header shows it), so its answer goes there.',
-        '- The dispatcher may name itself in `to`: it then does the work in a task conversation of its own, with all its tools.',
+        '- When the dispatcher only routes, a message to it opens no task: it goes into its own conversation, and it passes on to the person what they should know. Work goes to the teammate who does it.',
         '- A task from a topic or chat answers the person there itself; pass `report_to: "me"` to get its reports back instead (to combine several results).',
         '- To add to an open task you asked for (an answer to its question, a change, a message of the person\'s that continues it): `ticket` (its id) and `text`.',
         '- In a task conversation, to report to whoever asked: leave out `to`, give `text` and a `status` (progress, done, blocked, question).',
@@ -3602,6 +3684,18 @@ export function apply(ctx, config, deps = {}) {
           return { ok: true, text: `Added to task ${next.id} (${stageOf(next)}${waits}). ${after}; do not wait for it.`, ticket: row(next), to: face(target), from: face(sender) };
         }
         if (!named) throw new Error(mine ? 'say which bot with `to`, or leave it out and give a `status` to report on your task' : 'say which bot with `to`');
+
+        // A teammate's message to the router dispatcher (0.10.1): no task for it (it does no work itself),
+        // the text goes into its own conversation, where its router limits hold and it routes it.
+        if (sender && named.id !== sender.id && isRouter(named)) {
+          await deliver(sender, named, args.text, sessionId);
+          return {
+            ok: true,
+            text: `Delivered to @${named.handle}, the dispatcher, in its own conversation: it does no work itself, so this opens no task. It tells the person what they should know; if it answers you, the answer ${mine ? 'arrives here' : 'reaches you'} by itself (do not wait for it). Work you need done goes to the teammate who does it.`,
+            to: face(named),
+            from: face(sender),
+          };
+        }
 
         // A new ticket: from a task conversation (a sub-task), or from a bot's home when tasks are on.
         if (sender && sessionId && (mine || (ticketsOn() && isHomeOf(sender, sessionId)))) {
@@ -3934,9 +4028,10 @@ export function apply(ctx, config, deps = {}) {
       const live = agents();
       const sample = store.list().map((b) => (b.sessionId ? live?.get?.(b.sessionId) : undefined)).find(Boolean) ?? live?.list?.()?.[0];
       const scope = sample ? scopeOf(sample.ctx) : undefined;
-      for (const d of ctx.tools.definitions(scope)) {
-        if (TOOL_NAMES.includes(d.name) || d.name.startsWith('mcp__') || d.name === 'run_code') continue;
-        toolRows.push({ name: d.name, description: String(d.description ?? '').split(/(?<=\.)\s/)[0].slice(0, 200) });
+      // Before the sample's limits (a router home's would hide what Router mode turns off, 0.10.1).
+      for (const name of unlimitedTools(scope)) {
+        if (TOOL_NAMES.includes(name) || name.startsWith('mcp__') || name === 'run_code') continue;
+        toolRows.push({ name, description: toolInfo.get(name) ?? '' });
       }
     } catch {
       // No registry view.

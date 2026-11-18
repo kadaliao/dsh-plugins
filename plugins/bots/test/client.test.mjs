@@ -1837,7 +1837,7 @@ test('router mode: abilities a router goes without are marked, and each comes ba
       const rows = () => findAll(v.tree, (n) => n.props['data-dsh-bots-ability']).map((n) => [n.props['data-dsh-bots-ability'], n.props['data-on']]);
       assert.deepEqual(rows(), [['web', true], ['code', false], ['plugins', true], ['files', true]]);
       assert.deepEqual(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off']).map((n) => [n.props['data-dsh-bots-router-off'], collect(n).join('')]), [['code', 'Off in Router mode'], ['files', 'Partly off in Router mode']]);
-      assert.match(collect(v.tree).join(' '), /In Router mode it does not run commands/);
+      assert.match(collect(v.tree).join(' '), /In Router mode it does not search the web, run commands/);
       assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-tool'] === 'bash').length, 1, 'the per-tool list marks it too');
       // Commands back on: through routerAllow; writing files back on: its own link.
       click(v.tree, 'data-dsh-bots-ability-switch', 'code');
@@ -2049,7 +2049,7 @@ test('router mode waits for a teammate: one line under How it works, and no rout
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-off'] || n.props['data-dsh-bots-router-allowed'] || n.props['data-dsh-bots-router-tool']).length, 0);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-ability'] === 'code')[0].props['data-on'], true);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-model-hint']).length, 0);
-    assert.doesNotMatch(collect(v.tree).join(' '), /In Router mode it does not run commands/);
+    assert.doesNotMatch(collect(v.tree).join(' '), /In Router mode it does not search the web, run commands/);
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-router-notice']).length, 0, 'the notice waits until it applies');
     // Hands-on has nothing to wait for.
     click(v.tree, 'data-dsh-bots-dispatcher-mode', 'hands-on');
@@ -2743,9 +2743,9 @@ test('threads: a Host that runs another Bots than this page says to restart Harn
   const stale = await threadsChat({ state: { botsVersion: '0.9.0' } });
   const [banner] = findAll(stale.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined);
   assert.equal(banner?.props['data-dsh-bots-version-stale'], '0.9.0');
-  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.10\.0\. Quit and reopen Harness/);
+  assert.match(collect(banner).join(' '), /Harness still runs Bots 0\.9\.0; this page is 0\.10\.1\. Quit and reopen Harness/);
   stale.hooks.runCleanups();
-  for (const state of [{ botsVersion: '0.10.0' }, { version: 7 }, {}]) {
+  for (const state of [{ botsVersion: '0.10.1' }, { version: 7 }, {}]) {
     const v = await threadsChat({ state });
     assert.equal(findAll(v.tree, (n) => n.props['data-dsh-bots-version-stale'] !== undefined).length, 0, JSON.stringify(state));
     v.hooks.runCleanups();

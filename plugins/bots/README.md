@@ -157,15 +157,21 @@ for you. You don't open tasks yourself: you ask the dispatcher (or any bot), and
 The dispatcher works in one of two ways, chosen under **How it works** on its **Profile** tab, for the whole team:
 
 - **Router** (the default): it understands the request, hands the work out and keeps track of it. It does not run
-  commands, write or edit files, search the web, use sub-agents and workflows, draw images or make Office files; it can
-  still read files and use its skills. Work that needs any of those goes to a teammate, never to itself (0.9 handed
-  it to itself when no teammate fit; 0.10 doesn't), while its own conversation stays free for you. Its **Abilities** section marks what Router mode turns off, and **Turn
-  back on** gives an ability back (even then it may not `sleep`, and a command must finish within 30 seconds or run in
-  the background). It never waits for a teammate: it ends its turn and is woken when something needs it, so a new
+  commands, write or edit files, search the web, use sub-agents and workflows, draw images, make Office files or put
+  question cards to you (a card holds every message after it until you answer); it can still read files and use its
+  skills. Work that needs any of those goes to a teammate, never to itself (0.9 handed it to itself when no teammate
+  fit; 0.10 doesn't), while its own conversation stays free for you. When you say "ask me which tone before you
+  write", it hands the work out with that request and the teammate asks you in its task; when it must know something
+  itself before it can hand a request out, it asks in one line of its reply, and your next message is the answer. Its
+  **Abilities** section lists what Router mode turns off and marks it: switch a whole ability back on, or use **Turn
+  back on** for the part of one that is off (writing and editing under Files). Even then it may not `sleep`, a
+  command must finish within 30 seconds or run in the background, and with question cards back on it takes no new
+  message until a card is answered. It never waits for a teammate: it ends its turn and is woken when something needs it, so a new
   request is not stuck behind work in progress, and messages that arrive while it is busy are taken together at its
   next step, and each one gets its answer. Since it only routes, a light, fast model is enough for it; its **Model** section says so, and Bots does
   not change the model for you. In Router mode every bot that hands work to a teammate opens a task, not only the
-  dispatcher.
+  dispatcher; but nobody opens one for the dispatcher: a teammate's message to it goes into its own conversation,
+  and it tells you what you should know and hands out what is work.
 - **Hands-on**: how 0.7 worked. The dispatcher also does small jobs itself, and a message from one bot's own
   conversation to another bot goes into that bot's own conversation instead of opening a task. Tasks already open keep
   going and report as before.
@@ -269,7 +275,9 @@ A bot works in ordinary Harness conversations, so everything Harness can do, a b
 | Maps & local | Amap 🔑, Baidu Maps 🔑 |
 | Custom | Any local (stdio) or remote (Streamable HTTP) MCP server |
 
-- **Schedules** are ordinary Harness scheduled tasks, also on the Automation page.
+- **Schedules** are ordinary Harness scheduled tasks, also on the Automation page. A scheduled task missed while
+  Harness was closed runs when it starts again, once (its latest occurrence): that is Harness's rule, and Bots adds
+  no runs of its own. A team with many schedules can open several tasks at once after a start, and use many tokens.
 - **AI avatars**: with the [Images plugin](../images), draw a bot's avatar from its persona. A bot can do it too:
   ask the dispatcher to give the team new avatars and describe the look, or point it at an image file. A bot's
   drawing runs in the background, so it goes on answering you: a ring turns around the avatar while the picture is
@@ -494,7 +502,9 @@ one connection. If you change scopes later, reinstall the app to the workspace a
   task it is, who asked, and how to report. Edits apply at once; a new or changed app connects the next
   time the conversation starts.
 - In Router mode, `bot_send_message` from a bot's own conversation opens a task and returns at once; from
-  a task's conversation it reports to whoever asked (with a status) or opens a sub-task. In Hands-on mode,
+  a task's conversation it reports to whoever asked (with a status) or opens a sub-task. A message to the
+  dispatcher opens no task: it goes into the dispatcher's own conversation (one sent from a task names it, and the
+  dispatcher's answer is added to that task). In Hands-on mode,
   from a bot's own conversation, it puts the text into the other bot's inbox and wakes it, as in 0.7. Two
   bots may exchange at most 16 messages in 10 minutes (new tasks and messages added to tasks count), so
   conversations end.

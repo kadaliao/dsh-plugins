@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ABILITIES } from '../lib/abilities.mjs';
-import { DEFAULT_COMMAND_MS, ROUTER_DENY, noWaitReason, personaText, reportsGoDirect, runsSleep } from '../lib/prompt.mjs';
+import { DEFAULT_COMMAND_MS, ROUTER_DENY, dmBody, dmHeader, noWaitReason, personaText, reportsGoDirect, runsSleep } from '../lib/prompt.mjs';
 
 const atlas = { id: 'b-atlas', name: 'Atlas', handle: 'atlas', role: 'primary', persona: 'Chief of staff.', bio: 'Runs the team', skills: [] };
 const coder = { id: 'b-coder', name: 'Coder', handle: 'coder', role: 'bot', persona: '', bio: 'Writes code', skills: [] };
@@ -59,9 +59,28 @@ test('a router dispatcher understands, hands out and reports', () => {
   assert.equal(text.match(/## You are the dispatcher/g).length, 1);
 });
 
-test('router mode only applies to the dispatcher', () => {
-  assert.equal(personaText(coder, roster, { dispatcher: 'router' }), personaText(coder, roster));
-  assert.match(personaText(coder, roster), /@atlas is the dispatcher/);
+test('router mode only applies to the dispatcher; a teammate learns that a message to it opens no task (0.10.1)', () => {
+  const routed = personaText(coder, roster, { dispatcher: 'router' });
+  assert.doesNotMatch(routed, /## You are the dispatcher/);
+  assert.match(routed, /@atlas is the dispatcher, and it does no work itself: a message to it opens no task/);
+  assert.match(routed, /goes to them the usual way \(your reply\), not through @atlas\./);
+  assert.match(personaText(coder, roster, { dispatcher: 'router', ticket }), /goes to them the usual way \(a report on your task\), not through @atlas\./);
+  assert.equal(routed.replace(/\n\n@atlas is the dispatcher[^\n]*$/, ''), personaText(coder, roster).replace(/\n\n@atlas is the dispatcher[^\n]*$/, ''));
+  assert.match(personaText(coder, roster), /@atlas is the dispatcher\. When work you receive needs a skill another bot has, you may message that bot directly\./);
+});
+
+test('0.10.1: the router puts no question cards and handles teammates\' messages; a DM from a task names it', () => {
+  const text = personaText(atlas, roster, { dispatcher: 'router' });
+  assert.match(text, /You put no question cards to the person/);
+  assert.match(text, /hand the work out with that in the task/);
+  assert.match(text, /teammates open no tasks for you, their messages come here/);
+  const sender = { handle: 'harbor', name: 'Harbor' };
+  const t = { id: 't1a2b3c4d', title: 'Inbox sweep' };
+  assert.equal(dmHeader(sender), 'Bot message from @harbor (Harbor):');
+  assert.equal(dmHeader(sender, t), 'Bot message from @harbor (Harbor), from its task t1a2b3c4d ("Inbox sweep"):');
+  assert.equal(dmBody('Hi', sender), 'Hi\n\n(Reply with bot_send_message to @harbor if an answer is needed.)');
+  assert.equal(dmBody('Hi', sender, t), 'Hi\n\n(If an answer is needed, give it with bot_send_message, ticket: t1a2b3c4d.)');
+  assert.equal(dmBody('Hi', null), 'Hi');
 });
 
 test('a ticket session frames the conversation as one task', () => {
@@ -113,7 +132,8 @@ test('0.9: a non-dispatcher home that opens tasks learns that the worker answers
 
 test('the router is denied commands, writes, sub-agents, images and Office, and keeps reading tools', () => {
   // 0.9: the web too — a search keeps the person waiting, so it is a task.
-  for (const name of ['bash', 'write', 'edit', 'subagent', 'workflow', 'wait_agent', 'generate_image', 'office_render', 'office_convert', 'office_recalculate', 'job_output', 'web_search', 'web_fetch']) {
+  // 0.10.1: and question cards — one holds every message after it until it is answered.
+  for (const name of ['bash', 'write', 'edit', 'subagent', 'workflow', 'wait_agent', 'generate_image', 'office_render', 'office_convert', 'office_recalculate', 'job_output', 'web_search', 'web_fetch', 'ask_user_question']) {
     assert.ok(ROUTER_DENY.includes(name), name);
   }
   for (const name of ['read', 'read_image', 'skill', 'glob', 'grep', 'bot_send_message', 'bot_reply', 'bot_recall']) {

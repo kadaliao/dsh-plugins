@@ -38,7 +38,8 @@ const HANDS_ON_TEAM = [
 /** "Working with other bots" as a router dispatcher reads it (`self`: its own @handle). */
 const routerTeam = (self) => [
   `- Hand work to a teammate with \`bot_send_message\` (to: its @handle; never your own, @${self}: you do no work yourself, not even in a task). When no role fits exactly, pick the closest teammate: any of them can look things up, read and write. Each message opens a task (ticket) that works in a conversation of its own; the call returns at once with the ticket id and stage. To add to a task that is still open (or finished in the last day), pass \`ticket\` (its id) instead of \`to\`.`,
-  '- Keep messages self-contained: the bot (you too, in a task) cannot see this conversation.',
+  '- Keep messages self-contained: the bot cannot see this conversation.',
+  '- A message that starts with "Bot message from @…" was sent by that teammate, not by the person: teammates open no tasks for you, their messages come here. Tell the person in a sentence or two what they should know from it, hand out what is work, and answer the teammate only when it asks you something: with `bot_send_message` (ticket: the task its header names) when it wrote from a task, else to its @handle. Never answer acknowledgements or thanks.',
   SCHEDULE_NOTICE_LINE,
   LANGUAGE_LINE,
   MANAGE_LINE,
@@ -144,11 +145,13 @@ export function personaText(bot, roster, extra = {}) {
       '## You are the dispatcher',
       'The user treats you as the main bot, and you run the team as its front desk. You do three things: understand what the person wants, hand the work out, and keep track of it. Every message gets your answer within a step or two, and the work is your teammates\': you never do it, not even a quick lookup. Searching the web, reading or changing files and running anything is a teammate\'s task. When no bot fits a recurring kind of work, propose creating one.',
       '- Every message is its own request, unless it clearly continues one of the open tasks listed with it ("[Panel]" messages list them). When several messages arrive together, handle every one of them: never drop a request because another came after it.',
+      '- You put no question cards to the person: a card would hold every message after it until it is answered. When the person wants to be asked something first ("ask me which tone before you write"), hand the work out with that in the task ("before you start, ask the person which tone they want"): the teammate asks them in its task. When you yourself must know something before you can hand a request out, ask it in one short line of your reply and end your turn; their next message brings the answer.',
       '- For each request do one of these, then end your turn: answer it yourself only from what you already know (a greeting, what the person means, the team, its tasks and what they already reported); hand it out with `bot_send_message` and tell the person in a sentence what happens next, as a colleague would in a chat ("@ledger is looking into it, back in a few minutes"); or, when it continues an open task, add it to that task with `bot_send_message` (ticket: its id).',
       '- Talk to the person like a person in a chat, in their language. Tasks, ticket ids, topics and threads are how Bots works inside: leave them out of what you say unless the person asks about them (the panel shows the tasks by itself).',
       '- A conversation that starts with "[Thread]" is a thread: the person replies to one earlier message, and you see the conversation up to it, not what came after. Stay on that message; tasks you open there answer in the thread.',
       '- Every delegation with `bot_send_message` opens a task (ticket) for that bot and returns at once. Hand independent parts to several bots in parallel: research splits by angle (money and funding to the one closest to finance, market and product to the one closest to growth, and so on), and the bot that builds something from the results gets it once they are in.',
       '- The bot doing a task answers the person itself, where the request came from (the panel chat, a thread, or a chat app), and the person\'s replies to its answer go straight to it. You get a "[Shown]" note: it needs no reply, so do not repeat the result. Only when you must put several results together, pass `report_to: "me"`; their reports ("Report from @…") then come to you, and you answer the person.',
+      '- Notes ("[Shown]", "[follow_up]", "[Threads]", "[Closed]", "[Stopped]") are for you, not the person: never answer them, and never mention them or their tags in what you say.',
       '- Reports, notes ("[Shown]", "[follow_up]") and new messages arrive by themselves. Never wait, sleep or poll for them: end your turn, and you are woken when something needs you. A `question` or `blocked` report that comes to you needs an answer: give it with `bot_send_message` (ticket: its id), or ask the person. A follow-up note needs no reply: the message already went to the task; stop the task only if the person asks.',
       '- When a turn involves more than one chat (the panel and a chat app, or two chat threads), answer each with `bot_reply` (thread: the key its header shows, or ticket: a task id) so every answer stays where it belongs; plain text then reaches none of them.',
       '- Use `bot_recall` to look up tasks and threads (`tickets`, `ticket/<id>`, `thread/<key>`, `bot/<handle>`) instead of guessing.',
@@ -166,7 +169,12 @@ export function personaText(bot, roster, extra = {}) {
   }
   if (bot.role !== 'primary' && others.some((b) => b.role === 'primary')) {
     const p = others.find((b) => b.role === 'primary');
-    lines.push('', `@${p.handle} is the dispatcher. When work you receive needs a skill another bot has, you may message that bot directly.`);
+    lines.push(
+      '',
+      extra.dispatcher === 'router'
+        ? `@${p.handle} is the dispatcher, and it does no work itself: a message to it opens no task, it goes into its own conversation, and it tells the person what they should know. When work you receive needs a skill another bot has, message that bot directly; what the person must hear or answer goes to them the usual way (${ticket ? 'a report on your task' : 'your reply'}), not through @${p.handle}.`
+        : `@${p.handle} is the dispatcher. When work you receive needs a skill another bot has, you may message that bot directly.`,
+    );
   }
   const skills = bot.skills.filter((s) => s.enabled);
   if (skills.length > 0) {
@@ -196,15 +204,16 @@ export function personaText(bot, roster, extra = {}) {
   return lines.join('\n');
 }
 
-/** The first content block a DM arrives with. */
-export function dmHeader(sender) {
+/** The first content block a DM arrives with; `ticket`: the task the sender wrote it from. */
+export function dmHeader(sender, ticket = null) {
   if (!sender) return 'Bot message from the user (sent from another conversation):';
-  return `Bot message from @${sender.handle} (${sender.name}):`;
+  const from = ticket ? `, from its task ${ticket.id} ("${String(ticket.title ?? '').trim()}")` : '';
+  return `Bot message from @${sender.handle} (${sender.name})${from}:`;
 }
 
-/** The text of a DM as the receiving model reads it. */
-export function dmBody(text, sender) {
-  const reply = sender ? `\n\n(Reply with bot_send_message to @${sender.handle} if an answer is needed.)` : '';
+/** The text of a DM as the receiving model reads it; one sent from a task (`ticket`) is answered on that task. */
+export function dmBody(text, sender, ticket = null) {
+  const reply = !sender ? '' : ticket ? `\n\n(If an answer is needed, give it with bot_send_message, ticket: ${ticket.id}.)` : `\n\n(Reply with bot_send_message to @${sender.handle} if an answer is needed.)`;
   return `${String(text).trim()}${reply}`;
 }
 
@@ -317,12 +326,14 @@ const OTHER_WORK_TOOLS = ['pwsh', 'terminal_open', 'terminal_send', 'terminal_re
  * Tools a router dispatcher is denied by default: running commands (and the
  * job tools that go with them; `pwsh` and the terminals too), writing and
  * editing files (`apply_patch` and `str_replace_editor` too), sub-agents and
- * workflows, image generation and Office tools, and (0.9) the web: a search
- * takes long enough to keep the person waiting, so it is a task too. It keeps
- * `read`, `read_image`, `glob`, `grep` and `skill`.
+ * workflows, image generation and Office tools, (0.9) the web: a search
+ * takes long enough to keep the person waiting, so it is a task too; and
+ * (0.10.1) question cards: `ask_user_question` holds the turn until it is
+ * answered, and every message after it waits behind it. It keeps `read`,
+ * `read_image`, `glob`, `grep` and `skill`.
  */
 export const ROUTER_DENY = Object.freeze([
-  ...new Set([...abilityTools('code'), 'write', 'edit', ...abilityTools('delegate'), ...abilityTools('images'), ...abilityTools('office'), ...abilityTools('web'), ...OTHER_WORK_TOOLS]),
+  ...new Set([...abilityTools('code'), 'write', 'edit', ...abilityTools('delegate'), ...abilityTools('images'), ...abilityTools('office'), ...abilityTools('web'), ...abilityTools('ask'), ...OTHER_WORK_TOOLS]),
 ]);
 
 /** Longest `bash` / `pwsh` timeout a router may ask for, in ms. */

@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
     const NS = 'bots';
     const PANEL_ID = 'bots';
     /** The Bots this page is (package.json): the Host says which one it runs, and a stale Host is pointed out. */
-    const BOTS_VERSION = '0.10.0';
+    const BOTS_VERSION = '0.10.1';
     /** How close to a new topic Harness closing the panel counts as caused by it (it archived the conversation behind). */
     const ROTATE_WINDOW_MS = 3000;
     const R = '/__dsh_bots/';
@@ -8501,7 +8501,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         modeSavedHandsOn: '{name} does small things itself again.',
         routerModelHint: 'In Router mode it only understands, hands out and reports, so a light, fast model is enough, and every request stays quick and cheap.',
         routerWaiting: 'Router mode starts once the team has another bot; until then {name} does the work itself.',
-        abilitiesRouterHint: 'What {name} can do with the Harness’s built-in tools. In Router mode it does not run commands, write files, use sub-agents, draw or make Office files; turn one back on below if it needs it.',
+        abilitiesRouterHint: 'What {name} can do with the Harness’s built-in tools. In Router mode it does not search the web, run commands, write files, use sub-agents, draw, make Office files or put question cards to you (a card holds every message after it until you answer); turn one back on below if it needs it.',
         routerOff: 'Off in Router mode',
         teamOff: 'Off for the dispatcher',
         teamOffHint: 'The dispatcher hands work in parallel to its teammates, so the panel shows it as their tasks. The other bots keep sub-agents.',
@@ -9388,7 +9388,7 @@ button.dshb-qline-light:hover{color:inherit;opacity:1}
         modeSavedHandsOn: '{name} 又会自己做小事了。',
         routerModelHint: '只调度时它只负责听懂、分派、汇报，用轻量、快速的模型就够了，每次请求都更快、更省。',
         routerWaiting: '团队里再有一个 Bot 后才开始只调度，在此之前 {name} 自己动手。',
-        abilitiesRouterHint: '{name} 能用 Harness 内置工具做哪些事。只调度时它不执行命令、不写文件、不用子代理、不作图也不做 Office 文档；确实需要时可以在下面逐项打开。',
+        abilitiesRouterHint: '{name} 能用 Harness 内置工具做哪些事。只调度时它不联网、不执行命令、不写文件、不用子代理、不作图、不做 Office 文档，也不弹提问卡片（卡片没答之前，后面的消息都得排队）；确实需要时可以在下面逐项打开。',
         routerOff: '只调度时关闭',
         teamOff: '调度员不用',
         teamOffHint: '调度员把要并行的活交给队友，面板里能看到他们各自的任务；其他 bot 照常可以用子代理。',
