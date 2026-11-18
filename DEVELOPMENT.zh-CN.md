@@ -2,47 +2,64 @@
 
 [English](DEVELOPMENT.md) | 简体中文
 
-这个仓库的维护者笔记。只想用插件的话，看 [README](README.zh-CN.md) 就够了。
+这个合集的维护者笔记。只想用插件的话，看 [README](README.zh-CN.md) 就够了。
 
-## 仓库结构
+## 东西都在哪
 
-`plugins/` 下的每个目录都是一个完整、独立的 DeepSeek Harness bundle：
+本仓库是合集的索引，每个插件有自己的仓库：
+
+| 插件 | 仓库 | npm 包 |
+| --- | --- | --- |
+| Bots | [kadaliao/dsh-bots](https://github.com/kadaliao/dsh-bots) | `@kadaliao/dsh-bots` |
+| 图片 | [kadaliao/dsh-images](https://github.com/kadaliao/dsh-images) | `@kadaliao/dsh-images` |
+| Prompt EN | [kadaliao/dsh-prompt-en](https://github.com/kadaliao/dsh-prompt-en) | `@kadaliao/dsh-prompt-en` |
+
+留在本仓库的：
+
+- `marketplace.json`：用户在 Discover 里添加的市场索引，地址永远不变。
+- `plugins/<name>/README.md`：指向插件新仓库的说明，让已发布的包和以前的帖子里的链接还能找到地方。
+- 历史。拆分之前（commit `71d4c76`，2026-11-18）所有插件的源码都在本仓库 `plugins/<name>/` 下，
+  索引里较早的版本钉的就是那段历史里的 commit。**永远不要改写或强推 `main`**，否则钉在这些 commit 上的
+  安装就解析不到了。
+
+插件仓库是带着历史拆出来的（`git filter-repo --subdirectory-filter`），在那边 `git log`、`git blame`
+都能追到第一个 commit。
+
+## 插件仓库
+
+每个插件仓库的根目录就是一个完整、独立的 DeepSeek Harness bundle：
 
 ```
-plugins/<name>/
-  package.json         # 包名、exports、dsh.bundle.patch、dsh.client
-  cordis.patch.yml     # bundle 插入的 Loader 行
-  index.js             # Host 半（跑在 Harness 进程里）
-  client.js            # Web Client 半（window.__ModuleLoader__）
-  lib/                 # Host 侧模块
-  locale/*.json        # 展示元数据与 UI 词典
-  icon.svg
-  README.md            # 面向用户：行为、安装、设置、限制
-  README.zh-CN.md
-  test/                # 纯逻辑与客户端渲染测试
+package.json         # 包名、exports、dsh.bundle.patch、dsh.client
+cordis.patch.yml     # bundle 插入的 Loader 行
+index.js             # Host 半（跑在 Harness 进程里）
+client.js            # Web Client 半（window.__ModuleLoader__）
+lib/                 # Host 侧模块
+locale/*.json        # 展示元数据与 UI 词典
+icon.svg
+README.md            # 面向用户：行为、安装、设置、限制
+README.zh-CN.md
+test/                # 纯逻辑与客户端渲染测试
 ```
 
 Host 半在自己的插件 fiber 上注册路由和监听；Client 半注册 Conversation 行或插槽。两者都不写 Session
 日志；派生文本缓存在日志之外。
 
-## 环境
+环境：Node.js 22+，只用于跑测试（无构建步骤、无依赖）；加载工作副本需要装有 Web profile 的
+DeepSeek Harness 0.2.x。
 
-- Node.js 22+，只用于跑测试（无构建步骤、无依赖）。
-- 一份 DeepSeek Harness 0.2.x 的安装，用来加载工作副本。
-- 带 Client 半的插件需要 Web profile；headless profile 没有对话界面。
-
-## 跑测试
+### 跑测试
 
 ```bash
-cd plugins/prompt-en
 node --test test/*.test.mjs
 ```
 
 客户端测试用很小的模块加载器和 React 替身加载 `client.js`，不依赖浏览器也能抓到注册错误和渲染回归。
+每个仓库每次推送都会在 GitHub Actions 里跑一遍。
 
-## 加载工作副本
+### 加载工作副本
 
-用 Harness 插件管理器安装插件目录（Plugins → 从文件夹安装，或 `plugin_manager` 工具）。以 link 方式
+用 Harness 插件管理器安装仓库目录（Plugins → 从文件夹安装，或 `plugin_manager` 工具）。以 link 方式
 安装的目录在下次插件重载时生效；Client 半的改动还需要刷新页面，除非 Web 开发 watcher 正在运行。
 
 想试改动又不碰自己的 profile，可以用桌面应用自带的 CLI 把插件 link 进一个临时的 Harness home，再启动它：
@@ -50,28 +67,37 @@ node --test test/*.test.mjs
 ```bash
 DSH=/Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/cli/bin/dsh
 export DSH_HOME=$(mktemp -d)
-"$DSH" plugin --profile web add "$PWD/plugins/prompt-en"
+"$DSH" plugin --profile web add "$PWD"
 "$DSH" web --no-open --port 3917   # 打开它打印出的 URL
 ```
 
-它没有模型凭据，所以只能检查不需要模型的界面（比如生词本标签页，卡片可以预先写进
-`$DSH_HOME/cache/prompt-en/vocab.json`）。
-
-发布前要按市场索引给出的、钉死 commit 的 Git spec 安装一遍——这也是用户唯一的安装路径。
+它没有模型凭据，只能检查不需要模型的界面。
 
 ## 新增插件
 
-1. 复制一个现有插件目录作为起点。
+1. 在 GitHub 上建 `kadaliao/dsh-<name>`，复制一个现有插件仓库作为起点。
 2. 改包名（`@kadaliao/dsh-<name>`）、`cordis.patch.yml` 里的 bundle 行，以及 `client.js` 里的
-   `window.__ModuleLoader__.load({ id })`。Client 模块 id 必须等于包名。
+   `window.__ModuleLoader__.load({ id })`。Client 模块 id 必须等于包名。`package.json` 里的
+   `repository`、`homepage`、`bugs` 指向新仓库。
 3. 补上面向用户的 `README.md` 与 `README.zh-CN.md`、locale 的 `meta.title`/`meta.description`，以及
    原创或有授权可再分发的图标。
 4. 不要把模型能看到的内容写进 Session 日志；在 README 里写清楚插件读什么、调用哪个模型。
 5. 跑测试，装目录，在真实 UI 里验证后再发布。
+6. 发布到 npm，在本仓库的 `marketplace.json` 加条目，两份 README 的表格各加一行。
 
 ## 市场索引
 
-`marketplace.json` 是 Discover 读取的 format-1 索引。每个版本钉死一个 commit：
+`marketplace.json` 是 Discover 读取的 format-1 索引。每个插件条目列出所有版本，每个版本有自己的来源，
+所以发新版本不会改变旧版本的安装方式。新版本都发到 npm：
+
+```json
+{ "version": "0.2.0", "publishTimestamp": 1794700000, "source": { "type": "npm" } }
+```
+
+Discover 会按 `<name>@<version>` 安装，所以条目的 `name` 必须是 npm 上的包名。`publishTimestamp` 是
+Unix **秒**。
+
+较早的版本保留发布时的 Git 来源——本仓库里的一个 commit，加上插件当时所在的路径：
 
 ```json
 {
@@ -80,24 +106,33 @@ export DSH_HOME=$(mktemp -d)
   "source": {
     "type": "git",
     "url": "https://github.com/kadaliao/dsh-plugins",
-    "commit": "<包含该插件的 40 位 commit>",
+    "commit": "e4f18e7f79204d02602ac9be8e988195e1f1d32f",
     "path": "plugins/prompt-en"
   }
 }
 ```
 
-`publishTimestamp` 是 Unix **秒**。推送前用 Harness 自带的解析器
-（`@deepseek-ai/dsh-plugin-market-index`）校验：它会拒绝非规范 URL、缺 `en` 标题、错误 commit 以及带
-不支持字符的路径段。
+这些条目保持原样。推送前用 Harness 自带的解析器（`@deepseek-ai/dsh-plugin-market-index`）校验：它会拒绝
+非规范 URL、缺 `en` 标题、错误 commit 以及带不支持字符的路径段。本仓库的 CI 会检查基本结构
+（`node scripts/check-index.mjs`）。
 
 ## 发布清单
 
-1. 升插件 `version`；行为有变就更新 README。
+在插件仓库里：
+
+1. 升 `package.json` 的 `version`（Bots 还要同步 `client.js` 里的 `BOTS_VERSION` 和它的测试）；行为有变
+   就更新 README。
 2. 跑测试。
-3. 提交并推送代码。
-4. 把索引条目的 `source.commit` 指向该 commit，提交并推送索引。
-5. 在干净 profile 里按索引的 Git spec 安装，确认插件出现且可用。
-6. 不要改写已发布的 commit；发新版本。
+3. 提交并推送。
+4. `npm publish --access public`。registry 可能要几分钟才能拿到新版本。
+
+然后在本仓库：
+
+5. 在 `marketplace.json` 对应插件的 `versions` 里加上这个版本，`"source": { "type": "npm" }`；更新
+   `README.md` / `README.zh-CN.md` 里的版本号和介绍。
+6. 提交并推送。
+7. 在干净 profile 里从索引安装，确认插件出现且可用。
+8. 不要改写已发布的 commit（本仓库和插件仓库都一样）；发新版本。
 
 ## 许可
 

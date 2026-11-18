@@ -1,7 +1,0 @@
-- insert:
-    - id: bots
-      name: '@kadaliao/dsh-bots'
-      config:
-        enabled: true
-        # Directory bot conversations run in; empty means ~/.dsh/bots/workspace.
-        workdir: ''

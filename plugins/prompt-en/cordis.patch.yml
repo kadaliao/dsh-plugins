@@ -1,7 +1,0 @@
-- insert:
-    - id: prompt-en
-      name: '@kadaliao/dsh-prompt-en'
-      config:
-        enabled: true
-        reviewEnglish: true
-        collectVocab: true

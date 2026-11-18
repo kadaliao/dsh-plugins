@@ -5,48 +5,66 @@ English | [简体中文](DEVELOPMENT.zh-CN.md)
 Maintainer notes for this collection. If you only want to use a plugin, the
 [README](README.md) is the page you want.
 
-## Repository layout
+## Where things live
 
-Every directory under `plugins/` is a complete, independent DeepSeek Harness bundle:
+This repository is the index of the collection. Each plugin has a repository of its own:
+
+| Plugin | Repository | npm package |
+| --- | --- | --- |
+| Bots | [kadaliao/dsh-bots](https://github.com/kadaliao/dsh-bots) | `@kadaliao/dsh-bots` |
+| Images | [kadaliao/dsh-images](https://github.com/kadaliao/dsh-images) | `@kadaliao/dsh-images` |
+| Prompt EN | [kadaliao/dsh-prompt-en](https://github.com/kadaliao/dsh-prompt-en) | `@kadaliao/dsh-prompt-en` |
+
+What stays here:
+
+- `marketplace.json`, the market index users add in Discover. Its URL never changes.
+- `plugins/<name>/README.md`, a pointer to the plugin's repository, so links in packages already
+  published and in older posts still lead somewhere.
+- The history. Until the move (commit `71d4c76`, 2026-11-18) every plugin's source lived under
+  `plugins/<name>/` here, and older index versions pin commits from that time. **Never rewrite or
+  force-push `main`**: an install pinned to one of those commits would stop resolving.
+
+The plugin repositories were split out with their history (`git filter-repo --subdirectory-filter`),
+so `git log` and `git blame` there go back to the first commit.
+
+## A plugin repository
+
+Every plugin repository is one complete, independent DeepSeek Harness bundle at its root:
 
 ```
-plugins/<name>/
-  package.json         # name, exports, dsh.bundle.patch, dsh.client
-  cordis.patch.yml     # Loader rows the bundle inserts
-  index.js             # Host half (runs in the Harness process)
-  client.js            # Web Client half (window.__ModuleLoader__)
-  lib/                 # Host-side modules
-  locale/*.json        # display metadata and UI dictionaries
-  icon.svg
-  README.md            # user-facing: behavior, install, settings, limits
-  README.zh-CN.md
-  test/                # pure-logic and client-render tests
+package.json         # name, exports, dsh.bundle.patch, dsh.client
+cordis.patch.yml     # Loader rows the bundle inserts
+index.js             # Host half (runs in the Harness process)
+client.js            # Web Client half (window.__ModuleLoader__)
+lib/                 # Host-side modules
+locale/*.json        # display metadata and UI dictionaries
+icon.svg
+README.md            # user-facing: behavior, install, settings, limits
+README.zh-CN.md
+test/                # pure-logic and client-render tests
 ```
 
 The Host half registers routes and listeners on its plugin fiber. The Client half registers
 Conversation rows or slots. Neither writes to the Session log; derived text is cached outside it.
 
-## Requirements
+Requirements: Node.js 22+ for the tests (no build step, no dependencies), and a DeepSeek Harness 0.2.x
+installation with the Web profile to load a working copy.
 
-- Node.js 22+ for the tests (no build step, no dependencies).
-- A DeepSeek Harness 0.2.x checkout or installation to load a working copy.
-- The Web profile for anything with a Client half; the headless profile has no transcript.
-
-## Run the tests
+### Run the tests
 
 ```bash
-cd plugins/prompt-en
 node --test test/*.test.mjs
 ```
 
 The client tests load `client.js` with a small module-loader and React stand-in, so they catch
-registration mistakes and rendering regressions without a browser.
+registration mistakes and rendering regressions without a browser. Each repository runs them in
+GitHub Actions on every push.
 
-## Load a working copy
+### Load a working copy
 
-Install the plugin directory with the Harness plugin manager (Plugins → install from a folder, or
-the `plugin_manager` tool). A linked directory is picked up on the next plugin reload; a Client-half
-change also needs a page refresh unless the Web dev watcher is running.
+Install the repository directory with the Harness plugin manager (Plugins → install from a folder,
+or the `plugin_manager` tool). A linked directory is picked up on the next plugin reload; a
+Client-half change also needs a page refresh unless the Web dev watcher is running.
 
 To try a change without touching your own profile, link the plugin into a throwaway Harness home
 with the desktop app's CLI, then boot it:
@@ -54,31 +72,40 @@ with the desktop app's CLI, then boot it:
 ```bash
 DSH=/Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/cli/bin/dsh
 export DSH_HOME=$(mktemp -d)
-"$DSH" plugin --profile web add "$PWD/plugins/prompt-en"
+"$DSH" plugin --profile web add "$PWD"
 "$DSH" web --no-open --port 3917   # open the printed URL
 ```
 
-It has no model credentials, so UI that needs no model (the vocabulary tab, with cards seeded into
-`$DSH_HOME/cache/prompt-en/vocab.json`) is what it can check.
-
-For a release, install the commit-pinned Git spec exactly as the market index lists it — that is
-also the only path users take, so test it before publishing a version.
+It has no model credentials, so only UI that needs no model can be checked there.
 
 ## Add a plugin
 
-1. Copy an existing plugin directory as a starting point.
+1. Create `kadaliao/dsh-<name>` on GitHub, starting from a copy of an existing plugin repository.
 2. Rename the package (`@kadaliao/dsh-<name>`), the bundle row in `cordis.patch.yml`, and the
    `window.__ModuleLoader__.load({ id })` in `client.js`. The client module id must equal the
-   package name.
+   package name. Point `repository`, `homepage` and `bugs` in `package.json` at the new repository.
 3. Add user-facing `README.md` and `README.zh-CN.md`, locale `meta.title`/`meta.description`, and an
    original or licensed icon.
 4. Keep everything the model could see out of the Session log, and say in the README exactly what
    the plugin reads and which model it calls.
 5. Run the tests, then install the directory and exercise the real UI before publishing.
+6. Publish it to npm and add an entry to `marketplace.json` and a row to both READMEs here.
 
 ## Market index
 
-`marketplace.json` is the format-1 index the Discover tab reads. Each version pins an exact commit:
+`marketplace.json` is the format-1 index the Discover tab reads. Each plugin entry lists every
+version with its own source, so a release never changes how an earlier one installs. Releases go
+to npm:
+
+```json
+{ "version": "0.2.0", "publishTimestamp": 1794700000, "source": { "type": "npm" } }
+```
+
+Discover installs that as `<name>@<version>`, so the entry's `name` must be the package name on the
+registry. `publishTimestamp` is Unix **seconds**.
+
+Older versions keep the Git source they were released with — a commit in this repository and the
+plugin's path at that time:
 
 ```json
 {
@@ -87,32 +114,34 @@ also the only path users take, so test it before publishing a version.
   "source": {
     "type": "git",
     "url": "https://github.com/kadaliao/dsh-plugins",
-    "commit": "<40-hex commit that contains the plugin>",
+    "commit": "e4f18e7f79204d02602ac9be8e988195e1f1d32f",
     "path": "plugins/prompt-en"
   }
 }
 ```
 
-`publishTimestamp` is Unix **seconds**. Validate the document with Harness's own parser
+Leave those entries as they are. Validate the document with Harness's own parser
 (`@deepseek-ai/dsh-plugin-market-index`) before pushing — it rejects a non-canonical URL, a missing
-`en` title, a bad commit, or a path segment with unsupported characters.
-
-Releases published to npm use `"source": { "type": "npm" }` instead of the Git object, which makes
-Discover install them as `<name>@<version>`: run `npm publish --access public` from the plugin
-directory first, then point the index at that version. The index entry's `name` must be the package
-name on the registry. Older versions keep their Git source — the index lists each version's own
-source, so a release never changes how an earlier one installs.
+`en` title, a bad commit, or a path segment with unsupported characters. CI here checks the basics
+(`node scripts/check-index.mjs`).
 
 ## Release checklist
 
-1. Bump the plugin's `version` and update its README if behavior changed.
+In the plugin's repository:
+
+1. Bump `version` in `package.json` (Bots also keeps `BOTS_VERSION` in `client.js` and its test in
+   step) and update the README if behavior changed.
 2. Run the tests.
-3. Commit and push the code.
-4. `npm publish --access public` from the plugin directory.
-5. Set the index entry's source — `{ "type": "npm" }`, or `source.commit` for a Git-only release —
-   then commit and push the index.
-6. Install from the index in a clean profile and confirm the plugin appears and works.
-7. Never rewrite a published commit; publish a new version instead.
+3. Commit and push.
+4. `npm publish --access public`. The registry can take a few minutes to serve the new version.
+
+Then in this repository:
+
+5. Add the version to the plugin's `versions` in `marketplace.json` with `"source": { "type": "npm" }`,
+   and update the version and description in `README.md` / `README.zh-CN.md`.
+6. Commit and push.
+7. Install from the index in a clean profile and confirm the plugin appears and works.
+8. Never rewrite a published commit, here or in a plugin repository; publish a new version instead.
 
 ## License
 

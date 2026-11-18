@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Bots",
-    "description": "Grok-style bots: each with its own avatar, persona, model, skills, apps, scheduled tasks and memory. Bots message each other, a dispatcher hands out the work, and a usage view counts tokens by bot, task and day."
-  }
-}
