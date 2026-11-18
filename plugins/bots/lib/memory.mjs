@@ -223,8 +223,39 @@ const opsSpec = [
   '- {"op":"update","id":"<id>","text":"…"} — a note that changed or was wrong',
   '- {"op":"remove","id":"<id>"} — a note that is no longer true',
   '- {"op":"merge","ids":["<id>","<id>"],"text":"…"} — notes that say the same thing',
-  'Each note is one self-contained sentence of at most 200 characters, written in the language the user uses with the bots (Chinese stays Chinese). Never store secrets (keys, passwords, tokens), one-off details or anything already in memory.',
+  'Each note is one self-contained sentence of at most 200 characters. Never store secrets (keys, passwords, tokens), one-off details or anything already in memory.',
 ].join('\n');
+
+const LANGUAGES = { zh: 'Simplified Chinese', en: 'English' };
+
+/**
+ * The language the user writes to the bots in, from what they wrote: `zh` when Han characters
+ * outweigh Latin words, `en` when Latin words do, '' when there is too little to tell. Code,
+ * links and @handles don't count.
+ * @param {Iterable<string>} texts
+ * @returns {'zh'|'en'|''}
+ */
+export function languageOf(texts) {
+  let han = 0;
+  let latin = 0;
+  for (const t of texts ?? []) {
+    const s = String(t ?? '').replace(/```[\s\S]*?```|`[^`\n]*`|https?:\/\/\S+|@[\w-]+/g, ' ');
+    han += (s.match(/[\u3400-\u9fff]/g) ?? []).length;
+    latin += (s.match(/[A-Za-z]{2,}/g) ?? []).length;
+  }
+  if (han + latin < 3) return '';
+  return han >= latin ? 'zh' : 'en';
+}
+
+/**
+ * The line telling a memory pass which language to write in. The model never sees the user's
+ * own words in a consolidation, so it is named; `fix` asks to rewrite notes left in another one.
+ */
+function languageLine(language, { fix = false } = {}) {
+  const name = LANGUAGES[language];
+  if (!name) return 'Write everything in the language the user writes to the bots in.';
+  return `Write everything in ${name}, the language the user writes to the bots in, whatever language the material below is in.${fix ? ` A note written in another language is rewritten in ${name} (an "update").` : ''}`;
+}
 
 const notesBlock = (notes) => (notes.length ? notes.map((n) => `[${n.id}]${n.pinned ? ' (pinned)' : ''} ${n.text}`).join('\n') : '(none)');
 
@@ -237,7 +268,7 @@ export function clip(text, max = 12_000) {
 }
 
 /** After a task: summarize it and update the bot's notes (and propose team notes). */
-export function reflectionPrompt({ bot, notes, team, transcript, trigger }) {
+export function reflectionPrompt({ bot, notes, team, transcript, trigger, language = '' }) {
   return {
     system: [
       `You keep the long-term memory of ${bot.name} (@${bot.handle}), one of the user's AI bots${bot.bio ? ` — ${bot.bio}` : ''}.`,
@@ -245,6 +276,7 @@ export function reflectionPrompt({ bot, notes, team, transcript, trigger }) {
       '{"summary": "<one or two sentences: what was asked and what came of it, with names, numbers and links that matter>", "notes": [<edits to the bot\'s own notes>], "team": [<edits to the team notes>]}',
       '',
       opsSpec,
+      languageLine(language),
       'Save only what will still matter in a week: stable preferences and facts about the user, people, projects and decisions; procedures that worked; lessons from mistakes. Most tasks need no note at all — then answer with empty lists. Team notes are only for what every bot should know.',
     ].join('\n'),
     user: [`# The bot's notes\n${notesBlock(notes)}`, `# Team notes\n${notesBlock(team)}`, `# The task (${trigger})\n${clip(transcript)}`].join('\n\n'),
@@ -289,7 +321,7 @@ export function searchTickets(query, tickets, { limit = 10 } = {}) {
 }
 
 /** Once a day per bot: tidy the notes with the last days of its journal. */
-export function dreamBotPrompt({ bot, notes, journal, tz = 0 }) {
+export function dreamBotPrompt({ bot, notes, journal, tz = 0, language = '' }) {
   return {
     system: [
       `You consolidate the long-term memory of ${bot.name} (@${bot.handle}), one of the user's AI bots${bot.bio ? ` — ${bot.bio}` : ''}, as it sleeps.`,
@@ -297,13 +329,14 @@ export function dreamBotPrompt({ bot, notes, journal, tz = 0 }) {
       'Answer with one JSON object and nothing else: {"notes": [<edits>]}',
       '',
       opsSpec,
+      languageLine(language, { fix: true }),
     ].join('\n'),
     user: [`# Notes\n${notesBlock(notes)}`, `# Journal of recent tasks\n${clip(journal.map((j) => `${stamp(j.at, tz)} ${j.summary || j.title}`).join('\n'), 14_000) || '(none)'}`].join('\n\n'),
   };
 }
 
 /** Once a day for the team: a digest of what every bot did, and the shared notes tidied. */
-export function dreamTeamPrompt({ bots, team, journal, date, tz = 0 }) {
+export function dreamTeamPrompt({ bots, team, journal, date, tz = 0, language = '' }) {
   const name = (id) => {
     const b = bots.find((x) => x.id === id);
     return b ? `@${b.handle}` : 'a removed bot';
@@ -311,10 +344,11 @@ export function dreamTeamPrompt({ bots, team, journal, date, tz = 0 }) {
   return {
     system: [
       "You keep the shared memory of the user's team of AI bots.",
-      `Write the team's digest for ${date}: what was done (by whom), results worth remembering, what is still open or blocked, and what comes next — in Markdown, at most 1000 characters, in the language the user uses with the bots. Then tidy the shared team notes: merge repeats, drop outdated ones, add facts every bot should know that the journal shows.`,
+      `Write the team's digest for ${date}: what was done (by whom), results worth remembering, what is still open or blocked, and what comes next — in Markdown, at most 1000 characters. Then tidy the shared team notes: merge repeats, drop outdated ones, add facts every bot should know that the journal shows.`,
       'Answer with one JSON object and nothing else: {"digest": "…", "team": [<edits>]}',
       '',
       opsSpec,
+      languageLine(language, { fix: true }),
     ].join('\n'),
     user: [
       `# Team: ${bots.map((b) => `@${b.handle} (${b.name})`).join(', ')}`,

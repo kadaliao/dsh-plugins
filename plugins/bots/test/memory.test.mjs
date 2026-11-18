@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { applyOps, createMemory, looksSecret, memoryText, normalizeOps, parseJsonReply, reflectionPrompt, dreamTeamPrompt, clip } from '../lib/memory.mjs';
+import { applyOps, createMemory, looksSecret, memoryText, normalizeOps, parseJsonReply, reflectionPrompt, dreamBotPrompt, dreamTeamPrompt, clip, languageOf } from '../lib/memory.mjs';
 import { createSettings, normalizeSettings } from '../lib/settings.mjs';
 import { compactPrices, costOf, priceOf } from '../lib/prices.mjs';
 import { rangeOf, report, todayByBot, usageRow, promptTokens } from '../lib/usage.mjs';
@@ -100,6 +100,33 @@ test('prompts carry the notes, the transcript and the expected JSON shape', () =
   const d = dreamTeamPrompt({ bots: [{ id: 'b1', handle: 'ada', name: 'Ada' }], team: [], journal: [{ at: 0, bot: 'b1', summary: 'did a thing' }], date: '2026-11-16' });
   assert.match(d.user, /@ada: did a thing/);
   assert.equal(clip('x'.repeat(100), 50).length < 120, true);
+});
+
+test('the user\'s language is told from what they wrote', () => {
+  assert.equal(languageOf(['帮我把 landing page 改一下']), 'zh');
+  assert.equal(languageOf(['用 Stripe 收款，年价 $33']), 'zh');
+  assert.equal(languageOf(['Fix the pricing on the landing page']), 'en');
+  assert.equal(languageOf(['Email 张三 about the launch']), 'en');
+  // Code, links and handles don't count; too little is no answer.
+  assert.equal(languageOf(['@forge `npm run build` https://example.com/some/long/path ok']), '');
+  assert.equal(languageOf([]), '');
+  assert.equal(languageOf(['Ship it', '好的', 'Send the invite emails today']), 'en');
+});
+
+test('memory prompts name the language to write in (an English team stays English)', () => {
+  const bot = { name: 'Ada', handle: 'ada' };
+  const journal = [{ at: 0, bot: 'b1', summary: 'Wrote the launch post.' }];
+  const team = dreamTeamPrompt({ bots: [{ id: 'b1', handle: 'ada', name: 'Ada' }], team: [], journal, date: '2026-11-18', language: 'en' });
+  assert.match(team.system, /in English, the language the user writes to the bots in/);
+  assert.match(team.system, /another language is rewritten in English/);
+  assert.doesNotMatch(team.system, /Chinese/);
+  const own = dreamBotPrompt({ bot, notes: [], journal, language: 'zh' });
+  assert.match(own.system, /in Simplified Chinese/);
+  const after = reflectionPrompt({ bot, notes: [], team: [], transcript: '[user] hi', trigger: 'a message from the user', language: 'en' });
+  assert.match(after.system, /in English/);
+  assert.doesNotMatch(after.system, /rewritten/);
+  // Not known: the old rule, without a guess.
+  assert.match(dreamBotPrompt({ bot, notes: [], journal }).system, /in the language the user writes to the bots in/);
 });
 
 // --- settings ---------------------------------------------------------------------------------

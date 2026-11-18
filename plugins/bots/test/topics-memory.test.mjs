@@ -411,6 +411,10 @@ test('dreaming consolidates each bot and writes the team digest once a day', asy
   assert.match(result.result.digest.text, /launch post/);
   assert.ok(api.memory.notes('team').some((n) => n.text === 'Launch is on Dec 1.' && n.source === 'dream'));
   assert.ok(api.ledger.calls().some((r) => r.r === 'dream'));
+  // The person writes in English here, so the consolidation is told to write in English.
+  const dreams = calls.filter((c) => c.purpose === 'bots-dream');
+  assert.ok(dreams.length >= 2);
+  for (const c of dreams) assert.match(c.system, /in English, the language the user writes to the bots in/);
   const team = get('memory', { bot: 'team' });
   assert.equal(team.digests[0].text.startsWith('## Today'), true);
   assert.ok(team.dream.lastDate);

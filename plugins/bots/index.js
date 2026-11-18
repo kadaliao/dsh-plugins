@@ -58,7 +58,7 @@ import { createSlots, createTickets, parkedOf, REPORT_STATUSES, sessionIdOf, sta
 import { assignmentText, clip, discussionNoteText, failedNoticeText, followUpNoticeText, NEWS_MESSAGES, nudgeText, panelHeaderText, PREVIEW_CHARS, readResource, recoveryNoteText, reminderText, reportRelayText, retryText, shownNoticeText, stalledNoticeText, threadNewsText } from './lib/cards.mjs';
 import { checkTickets, isTransient, requesterReminders, retryDelay } from './lib/watchdog.mjs';
 import { isLiveSubscriber, isPanelThread, isTopicThread, panelThreadKey, panelTopicOf, parseThreadKey, threadLabel, toThreadKey } from './lib/threads.mjs';
-import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
+import { createMemory, dreamBotPrompt, dreamTeamPrompt, KINDS as MEMORY_KINDS, languageOf, looksSecret, parseJsonReply, reflectionPrompt, searchTickets } from './lib/memory.mjs';
 import { createTopics, rotationReason } from './lib/topics.mjs';
 import { chatMessageRef, createDiscussions, forkPoint, messageRef, seqByTime } from './lib/discussions.mjs';
 import { API_KINDS, CODEX_ROUTE, PI_SCOPE, ROUTE_PREFIX, codexAuthFile, createCodexSync, detectLogins, discoverModels, endpointView, keyRefFor, profileFor, readCodexAuth, codexCredential } from './lib/models.mjs';
@@ -882,6 +882,15 @@ export function apply(ctx, config, deps = {}) {
           : task.trigger === 'chat'
             ? `a ${task.via ?? 'chat'} message from the user`
             : 'a message from the user';
+  /**
+   * The language the person writes to the bots in (`zh` | `en`), for memory written without them
+   * in view: their last messages (panel and chat apps), else `material` (the memory itself), else
+   * this machine's language.
+   */
+  function userLanguage(material = []) {
+    const said = store.messages({ limit: 2000, roots: false }).filter((m) => m.from === 'user').slice(-40).map((m) => m.text);
+    return languageOf(said) || languageOf(material) || (zh ? 'zh' : 'en');
+  }
   async function reflect(bot, task) {
     // A bot deleted while its summary waited keeps nothing.
     if (!store.get(bot.id)) return;
@@ -893,7 +902,7 @@ export function apply(ctx, config, deps = {}) {
     let summary = '';
     if (sel) {
       try {
-        const p = reflectionPrompt({ bot, notes: memory.notes(bot.id), team: memory.notes('team'), transcript, trigger: triggerWords(task) });
+        const p = reflectionPrompt({ bot, notes: memory.notes(bot.id), team: memory.notes('team'), transcript, trigger: triggerWords(task), language: userLanguage([transcript]) });
         const r = await complete(sel, p.system, p.user, { purpose: 'bots-memory', sessionId: task.s });
         ledger.record(usageRow({ botId: bot.id, sessionId: task.s, taskId: task.id, ticketId: task.ticket, kind: 'memory', provider: sel.provider, model: sel.model, usage: r.usage }));
         const parsed = parseJsonReply(r.text) ?? {};
@@ -911,6 +920,12 @@ export function apply(ctx, config, deps = {}) {
   }
 
   let dreaming = null;
+  /**
+   * Output budget of a consolidation call. A thinking model spends most of it reasoning (DeepSeek
+   * Flash: ~2–3K tokens on a 5-bot team), and rewriting notes left in another language adds to the
+   * answer; 4000 came back empty now and then.
+   */
+  const DREAM_TOKENS = 16_000;
   /** Consolidate every bot's notes and write the team digest (the daily "dream"). */
   function dream({ reason = 'schedule' } = {}) {
     if (dreaming) return dreaming;
@@ -921,6 +936,7 @@ export function apply(ctx, config, deps = {}) {
       const since = Number(before.lastAt) || now - DAY_MS;
       const bots = store.list();
       const result = { at: now, reason, bots: [], digest: null, errors: [] };
+      const language = userLanguage(memory.journal({ since: now - 7 * DAY_MS, limit: 300 }).map((j) => j.summary || j.title));
       for (const bot of bots) {
         const journal = memory.journal({ bot: bot.id, since: now - 7 * DAY_MS, limit: 300 });
         const fresh = journal.some((j) => j.at >= since);
@@ -929,8 +945,8 @@ export function apply(ctx, config, deps = {}) {
         const sel = memoryModelOf(bot);
         if (!sel) continue;
         try {
-          const p = dreamBotPrompt({ bot, notes, journal, tz });
-          const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: 4000, timeoutMs: 180_000 });
+          const p = dreamBotPrompt({ bot, notes, journal, tz, language });
+          const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
           ledger.record(usageRow({ botId: bot.id, kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
           const parsed = parseJsonReply(r.text);
           if (!parsed) throw new Error('the model did not answer with JSON');
@@ -946,8 +962,8 @@ export function apply(ctx, config, deps = {}) {
         const date = memory.dayOf(journal[journal.length - 1].at, tz);
         if (sel) {
           try {
-            const p = dreamTeamPrompt({ bots, team: memory.notes('team'), journal, date, tz });
-            const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: 4000, timeoutMs: 180_000 });
+            const p = dreamTeamPrompt({ bots, team: memory.notes('team'), journal, date, tz, language });
+            const r = await complete(sel, p.system, p.user, { purpose: 'bots-dream', maxTokens: DREAM_TOKENS, timeoutMs: 180_000 });
             ledger.record(usageRow({ botId: lead?.id ?? 'team', kind: 'dream', provider: sel.provider, model: sel.model, usage: r.usage }));
             const parsed = parseJsonReply(r.text);
             if (!parsed) throw new Error('the model did not answer with JSON');
