@@ -269,6 +269,13 @@
       },
       "versions": [
         {
+          "version": "0.5.6",
+          "publishTimestamp": 1795075422,
+          "source": {
+            "type": "npm"
+          }
+        },
+        {
           "version": "0.5.5",
           "publishTimestamp": 1794321708,
           "source": {
@@ -400,6 +407,13 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.2.1",
+          "publishTimestamp": 1795075478,
+          "source": {
+            "type": "npm"
+          }
+        },
         {
           "version": "0.2.0",
           "publishTimestamp": 1793099787,
