@@ -59,8 +59,8 @@
         "zh": "Bots"
       },
       "description": {
-        "en": "Grok-style bot teams for one-person companies and role-split work: hire a ready-made team (one-person company, software squad, content studio, research desk) in one click, each bot with its own persona, avatar, model, skills, abilities, apps and scheduled tasks, and its own memory, summarized after every task and consolidated nightly with the team's. Bots message each other and one dispatcher hands out the work of every team you hire; a Requests board shows everything you asked for, restated in a line, with how far each got. Built on Harness: reuse your installed skills, import skills from GitHub or a local folder or let a bot write its own, and import MCP servers from Codex, Claude Code or Cursor. Run a bot on your own endpoint or the Codex CLI's ChatGPT login; conversations start a new topic before they grow too big; a usage view counts tokens and cost by bot, task and day. Message the team from Feishu / Lark, Telegram, Slack or Discord and get the reports back in the chat.",
-        "zh": "把 Grok bot 搬进 DeepSeek Harness：给一人公司和分工协作场景的 bot 团队。一键雇用现成团队（一人公司、研发小队、内容工作室、研究台），每个 bot 有自己的人设、头像、模型、技能、能力、应用和定时任务，还有自己的记忆：每个任务后自动总结，每晚和团队共享记忆一起整理；bot 之间私信协作，雇几个团队都由同一个调度员分派；「需求」看板把你交给团队的每件事用一句话写清楚，标出做到了哪一步。充分复用 Harness：直接用已装的技能、从 GitHub 或本地文件夹导入、或让 bot 自己写技能，从 Codex、Claude Code、Cursor 导入 MCP 服务。bot 可以用自定义端点或 Codex CLI 的 ChatGPT 登录；对话太长前自动开新话题；用量页按 bot、任务、日期统计 tokens 和费用。在飞书、Telegram、Slack 或 Discord 里就能给团队派活，汇报回到聊天里。"
+        "en": "Grok-style bot teams for one-person companies and role-split work: hire a ready-made team (one-person company, software squad, content studio, research desk) in one click, each bot with its own persona, avatar, model, skills, abilities, apps and scheduled tasks, and its own memory, summarized after every task and consolidated nightly with the team's. Bots message each other; one dispatcher hands out the work of every team you hire, through a team's lead where it has one. A board shows everything you asked for as cards, restated in a line, with how far each got: filed under projects with their own folder and brief, numbered like OPC-12 so a message can name one; file a card yourself, let one wait for others, or turn labelled GitHub issues into cards. Built on Harness: reuse your installed skills, import skills from GitHub or a local folder or let a bot write its own, and import MCP servers from Codex, Claude Code or Cursor. Run a bot on your own endpoint or the Codex CLI's ChatGPT login; conversations start a new topic before they grow too big; a usage view counts tokens and cost by bot, task and day. Message the team from Feishu / Lark, Telegram, Slack or Discord and get the reports back in the chat.",
+        "zh": "把 Grok bot 搬进 DeepSeek Harness：给一人公司和分工协作场景的 bot 团队。一键雇用现成团队（一人公司、研发小队、内容工作室、研究台），每个 bot 有自己的人设、头像、模型、技能、能力、应用和定时任务，还有自己的记忆：每个任务后自动总结，每晚和团队共享记忆一起整理；bot 之间私信协作，雇几个团队都由同一个调度员分派，有负责人的团队交给负责人；看板把你交给团队的每件事做成卡片，用一句话写清楚、标出做到了哪一步，按项目归档（项目有自己的文件夹和简介），带 OPC-12 这样的编号，消息里提编号就能找到它；可以自己建卡、让卡片等别的卡做完再开始，也能把打了标签的 GitHub issue 变成卡片。充分复用 Harness：直接用已装的技能、从 GitHub 或本地文件夹导入、或让 bot 自己写技能，从 Codex、Claude Code、Cursor 导入 MCP 服务。bot 可以用自定义端点或 Codex CLI 的 ChatGPT 登录；对话太长前自动开新话题；用量页按 bot、任务、日期统计 tokens 和费用。在飞书、Telegram、Slack 或 Discord 里就能给团队派活，汇报回到聊天里。"
       },
       "icon": "https://raw.githubusercontent.com/kadaliao/dsh-bots/main/icon.svg",
       "author": "kadaliao",
@@ -75,6 +75,9 @@
           "agents",
           "multi-agent",
           "team",
+          "board",
+          "projects",
+          "github",
           "one-person company",
           "persona",
           "schedule",
@@ -95,6 +98,13 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.15.0",
+          "publishTimestamp": 1795058863,
+          "source": {
+            "type": "npm"
+          }
+        },
         {
           "version": "0.11.1",
           "publishTimestamp": 1795048587,
