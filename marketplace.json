@@ -71,8 +71,8 @@
         "zh": "Archify 图解"
       },
       "description": {
-        "en": "Ask for a diagram and get a checked, interactive page right in the conversation: Archify's architecture, workflow, sequence, data-flow, state, ER, class, tree, timeline and waterfall diagrams, from a description, Mermaid or your code, or a one-page explainer. Or skip the prompt: in the Archify panel, pick a diagram type (each card shows what it looks like, with a live example), optionally a project folder to draw from its code, and press Generate; the plugin scans the repository, starts the conversation and follows it, and the page lands in the panel's gallery. Under every architecture diagram, a review names shared databases, hotspots, cycles, long call chains and missing gateways, and one click asks the model for a deeper review. A Guide lists what Archify can do as prompts to copy. Fast by default: architecture diagrams are laid out by the plugin, schema slips and repository evidence are fixed before checking, and a one-call repository scan with a code map spares the model its exploring. Bundles the Archify skill by tt-a1i and renders it with the Harness's own runtime, no Node.js install needed. Bilingual.",
-        "zh": "说一句要什么图，对话里就出现一张检查过、能交互的页面：Archify 的架构图、流程图、时序图、数据流图、状态图、ER 图、类图、树图、时间线、瀑布图，照描述、Mermaid 或代码来画，也能把回答做成一页讲解。也可以不写提示词：在 Archify 面板里选图的类型（每种都配着示意图和可交互的示例），想从代码画就再选个项目文件夹，点「生成」，插件扫描仓库、开会话并跟进进度，画好的页面收进面板的图库。每张架构图下面有点评：指出共享数据库、热点、循环依赖、过长调用链、缺少网关等，一键让模型深入点评。「用法」页把 Archify 能做的事列成可以直接复制的提示词。默认就快：架构图由插件排版，格式小错和仓库证据在检查前就修好，一次调用的仓库扫描带代码地图，模型不用四处翻代码。内置 tt-a1i 的 Archify 技能，用 Harness 自带的运行时渲染，不用装 Node.js。中英双语。"
+        "en": "Ask for a diagram and get a checked, interactive page right in the conversation: Archify's architecture, workflow, sequence, data-flow, state, ER, class, tree, timeline and waterfall diagrams, from a description, Mermaid or your code, or a one-page explainer. Or skip the prompt: in the Archify panel, pick a diagram type (each card shows what it looks like, with a live example), optionally a project folder to draw from its code, and press Generate; the plugin scans the repository, starts the conversation and follows it, and the page lands in the panel's gallery. In the gallery, Edit changes a diagram through the conversation that drew it, and Review has the model review an architecture from its code: every point cites files and lines, and the plugin checks each citation. A How to use card takes you to where each thing is done. Fast by default: architecture diagrams are laid out by the plugin, schema slips and repository evidence are fixed before checking, and a one-call repository scan with a code map spares the model its exploring. Bundles the Archify skill by tt-a1i and renders it with the Harness's own runtime, no Node.js install needed. Bilingual.",
+        "zh": "说一句要什么图，对话里就出现一张检查过、能交互的页面：Archify 的架构图、流程图、时序图、数据流图、状态图、ER 图、类图、树图、时间线、瀑布图，照描述、Mermaid 或代码来画，也能把回答做成一页讲解。也可以不写提示词：在 Archify 面板里选图的类型（每种都配着示意图和可交互的示例），想从代码画就再选个项目文件夹，点「生成」，插件扫描仓库、开会话并跟进进度，画好的页面收进面板的图库。在图库里，「改图」交给画这张图的会话去改；「点评」让模型读代码评审架构，每条结论都附文件和行号，并经插件逐条核对。「怎么用」卡片把每件事列成一行，点了直接到做这件事的地方。默认就快：架构图由插件排版，格式小错和仓库证据在检查前就修好，一次调用的仓库扫描带代码地图，模型不用四处翻代码。内置 tt-a1i 的 Archify 技能，用 Harness 自带的运行时渲染，不用装 Node.js。中英双语。"
       },
       "icon": "https://raw.githubusercontent.com/kadaliao/dsh-archify/main/icon.svg",
       "author": "kadaliao",
@@ -104,6 +104,13 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.3.2",
+          "publishTimestamp": 1795138854,
+          "source": {
+            "type": "npm"
+          }
+        },
         {
           "version": "0.3.1",
           "publishTimestamp": 1795118248,
