@@ -11,6 +11,8 @@ This repository is the index of the collection. Each plugin has a repository of 
 
 | Plugin | Repository | npm package |
 | --- | --- | --- |
+| Archify | [kadaliao/dsh-archify](https://github.com/kadaliao/dsh-archify) | `@kadaliao/dsh-archify` |
+| Atlas | [kadaliao/dsh-atlas](https://github.com/kadaliao/dsh-atlas) | `@kadaliao/dsh-atlas` |
 | Bots | [kadaliao/dsh-bots](https://github.com/kadaliao/dsh-bots) | `@kadaliao/dsh-bots` |
 | Images | [kadaliao/dsh-images](https://github.com/kadaliao/dsh-images) | `@kadaliao/dsh-images` |
 | Prompt EN | [kadaliao/dsh-prompt-en](https://github.com/kadaliao/dsh-prompt-en) | `@kadaliao/dsh-prompt-en` |
@@ -78,6 +80,30 @@ export DSH_HOME=$(mktemp -d)
 
 It has no model credentials, so only UI that needs no model can be checked there.
 
+### Update reminders (shared code)
+
+Every plugin's `client.js` carries the same block between `// >>> kadaliao-dsh-updates` and
+`// <<< kadaliao-dsh-updates`, called once from `apply(ctx)`. It checks every installed
+`@kadaliao/dsh-*` plugin with Harness's plugin manager (`listVersions`, `updateBundle`) and shows one
+card for all of them, drawn by one copy (the newest `UPDATES_IMPL`, then the first loaded). The others
+stand by and take over when that copy is switched off or replaced, which is also how a plugin that
+updates itself shows the outcome: its new client half loads in place and finishes the card.
+
+The block is maintained here, in `shared/updates.js`, with its tests in `shared/updates.test.mjs`.
+Edit it here, then copy it into the clones beside this repository (`../dsh-<name>`):
+
+```bash
+node --test shared/updates.test.mjs
+node scripts/sync-updates.mjs          # writes client.js and test/updates.test.mjs in each clone
+node scripts/sync-updates.mjs --check  # exits 1 while a clone differs
+```
+
+A change to the card's behavior that older copies would get wrong goes with a higher `UPDATES_IMPL`,
+so the newest copy installed leads. The hub on `window.__kadaliaoDshUpdates` is shared across
+versions; add to its shape, never change it. To try a real update without publishing, install a
+test package from a local registry (verdaccio, `@kadaliao:registry=` in the throwaway profile's
+`.npmrc`), publish a newer version, and press **Update**.
+
 ## Add a plugin
 
 1. Create `kadaliao/dsh-<name>` on GitHub, starting from a copy of an existing plugin repository.
@@ -134,6 +160,10 @@ In the plugin's repository:
 2. Run the tests.
 3. Commit and push.
 4. `npm publish --access public`. The registry can take a few minutes to serve the new version.
+   The update card offers a version once it has been public for 30 minutes, so the tarball is served
+   by the time anyone presses **Update**.
+
+Before step 1, `node scripts/sync-updates.mjs --check` here should report the plugin up to date.
 
 Then in this repository:
 

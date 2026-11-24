@@ -45,6 +45,8 @@ repository, never changes an install you already have.
 - They run in the **Web UI** (the desktop app, or `dsh web`).
 - They are display-only unless their README says otherwise: no writes to the Session log and
   nothing added to what the conversation model reads.
+- They tell you when a new version is out: a card in the bottom-right corner, one for all of them,
+  whose **Update** has Harness install the new version (and put the old one back if that fails).
 - Plain JavaScript, MIT, source in each plugin's repository. Archify also bundles a copy of the
   Apache-2.0 Archify skill and the EPL-2.0 elkjs layout engine; its README says what is included.
 

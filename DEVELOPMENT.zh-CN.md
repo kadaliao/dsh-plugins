@@ -10,6 +10,8 @@
 
 | 插件 | 仓库 | npm 包 |
 | --- | --- | --- |
+| Archify 图解 | [kadaliao/dsh-archify](https://github.com/kadaliao/dsh-archify) | `@kadaliao/dsh-archify` |
+| 足迹 | [kadaliao/dsh-atlas](https://github.com/kadaliao/dsh-atlas) | `@kadaliao/dsh-atlas` |
 | Bots | [kadaliao/dsh-bots](https://github.com/kadaliao/dsh-bots) | `@kadaliao/dsh-bots` |
 | 图片 | [kadaliao/dsh-images](https://github.com/kadaliao/dsh-images) | `@kadaliao/dsh-images` |
 | Prompt EN | [kadaliao/dsh-prompt-en](https://github.com/kadaliao/dsh-prompt-en) | `@kadaliao/dsh-prompt-en` |
@@ -73,6 +75,28 @@ export DSH_HOME=$(mktemp -d)
 
 它没有模型凭据，只能检查不需要模型的界面。
 
+### 更新提醒（共用代码）
+
+每个插件的 `client.js` 里都有同一段代码，夹在 `// >>> kadaliao-dsh-updates` 和
+`// <<< kadaliao-dsh-updates` 之间，由 `apply(ctx)` 调用一次。它用 Harness 的插件管理（`listVersions`、
+`updateBundle`）检查所有已安装的 `@kadaliao/dsh-*` 插件，只出一张卡片，由其中一份负责画（`UPDATES_IMPL`
+最大的那份，相同时取最先加载的）。其余几份待命，负责的那份被关掉或换掉时接手；插件更新自己时也是这样：
+新版本的前端在原地加载，接着把卡片走完。
+
+这段代码在本仓库维护：`shared/updates.js`，测试是 `shared/updates.test.mjs`。在这里改，再复制到本仓库旁边的
+各个克隆（`../dsh-<name>`）：
+
+```bash
+node --test shared/updates.test.mjs
+node scripts/sync-updates.mjs          # 写入每个克隆的 client.js 和 test/updates.test.mjs
+node scripts/sync-updates.mjs --check  # 有克隆不一致时返回 1
+```
+
+卡片行为的改动如果旧版本会处理错，就把 `UPDATES_IMPL` 加一，让装着的最新那份来负责。
+`window.__kadaliaoDshUpdates` 上的 hub 是各版本共用的，只能往上加字段，不能改已有的。想在不发布的情况下
+试一次真实更新：在临时 profile 的 `.npmrc` 里写 `@kadaliao:registry=` 指向本地 registry（verdaccio），
+装一个测试包，再发一个新版本，点「更新」。
+
 ## 新增插件
 
 1. 在 GitHub 上建 `kadaliao/dsh-<name>`，复制一个现有插件仓库作为起点。
@@ -124,7 +148,10 @@ Unix **秒**。
    就更新 README。
 2. 跑测试。
 3. 提交并推送。
-4. `npm publish --access public`。registry 可能要几分钟才能拿到新版本。
+4. `npm publish --access public`。registry 可能要几分钟才能拿到新版本。更新卡片只提供发布满 30 分钟的
+   版本，所以有人点「更新」时 tarball 已经能下载了。
+
+第 1 步之前，先在本仓库跑 `node scripts/sync-updates.mjs --check`，确认这个插件是最新的。
 
 然后在本仓库：
 
