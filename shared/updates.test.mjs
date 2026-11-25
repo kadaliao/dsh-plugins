@@ -13,18 +13,17 @@ const text = readFileSync(source, 'utf8');
 const BEGIN = '// >>> kadaliao-dsh-updates';
 const END = '// <<< kadaliao-dsh-updates';
 
-function block(impl) {
+function block() {
   const start = text.indexOf(BEGIN);
   const end = text.indexOf(END);
   assert.ok(start >= 0 && end > start, `${source} has no update block`);
-  let body = text.slice(start, end);
-  if (impl !== undefined) body = body.replace('const UPDATES_IMPL = 1;', `const UPDATES_IMPL = ${impl};`);
-  return new Function(`${body}\nreturn kadaliaoUpdates;`)();
+  return new Function(`${text.slice(start, end)}\nreturn kadaliaoUpdates;`)();
 }
 
 const kadaliaoUpdates = block();
 
-/** Renders function components on the spot; hooks keep no state, which is all these tests need. */
+/** Renders function components on the spot; state never changes and effects wait in `effects` until a test runs them. */
+const effects = [];
 const React = {
   createElement(type, props, ...children) {
     const kids = children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false);
@@ -32,7 +31,9 @@ const React = {
     return { type, props: props ?? {}, children: kids };
   },
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
-  useEffect: () => {},
+  useEffect: (fn) => {
+    effects.push(fn);
+  },
 };
 
 function find(node, predicate, out = []) {
@@ -58,9 +59,10 @@ function storage() {
   };
 }
 
-const NOW = Date.parse('2026-11-24T12:00:00Z');
+const NOW = Date.parse('2026-11-25T12:00:00Z');
 const clock = { at: NOW };
 const HOUR = 3600e3;
+const MINUTE = 60e3;
 const ago = (ms) => new Date(NOW - ms).toISOString();
 
 function bundle(name, version, extra = {}) {
@@ -85,6 +87,7 @@ function fakeRemote({ bundles, versions, update }) {
       for (const fn of handlers.get(event) ?? []) fn(payload);
     },
     listeners: (event) => handlers.get(event)?.size ?? 0,
+    asked: () => calls.filter((c) => c[0] === 'listVersions').map((c) => c[1]),
     pluginManager: {
       async listBundles() {
         calls.push(['listBundles']);
@@ -105,10 +108,9 @@ function fakeRemote({ bundles, versions, update }) {
   };
 }
 
-/** One plugin's client half: its context, the slot it registers, and how to switch it off. */
-function plugin(name, remote, { impl, access = true, withRemote = true, resolve } = {}) {
-  const seen = { slots: [], access: [], disposers: [] };
-  const factory = impl === undefined ? kadaliaoUpdates : block(impl);
+/** One plugin's client half: its context, its own view wrapped by `opens`, and how to switch it off. */
+function plugin(name, remote, { access = true, withRemote = true, resolve } = {}) {
+  const seen = { access: [], disposers: [], reopened: 0 };
   let scopeDispose = null;
   const ctx = {
     effect(fn) {
@@ -121,16 +123,6 @@ function plugin(name, remote, { impl, access = true, withRemote = true, resolve 
       seen.injected = names;
       const scope = {
         remote: withRemote ? remote : undefined,
-        slots: {
-          inject: (_name, register) => register(),
-          register(definition, Component) {
-            const slot = { definition, Component };
-            seen.slots.push(slot);
-            return () => {
-              seen.slots.splice(seen.slots.indexOf(slot), 1);
-            };
-          },
-        },
         remoteAccess: {
           whenAccess(action, fn) {
             seen.access.push(action);
@@ -141,15 +133,28 @@ function plugin(name, remote, { impl, access = true, withRemote = true, resolve 
       scopeDispose = callback(scope);
     },
   };
-  const api = factory(ctx, { React, name, now: () => clock.at });
+  const api = kadaliaoUpdates(ctx, { React, name, now: () => clock.at, reopen: () => { seen.reopened += 1; } });
+  const View = (props) => ({ type: 'plugin-view', props, children: [] });
+  const Framed = api.opens(View);
+  const closers = [];
   return {
     api,
     seen,
-    render() {
-      const slot = seen.slots[0];
-      return slot === undefined ? null : slot.Component({});
+    frame: () => Framed({ hello: 1 }),
+    bar() {
+      return find(Framed({}), (n) => n.props?.['data-kadaliao-update'] !== undefined)[0] ?? null;
+    },
+    /** What mounting the view does: the frame's own effect. */
+    open() {
+      effects.length = 0;
+      Framed({});
+      const close = effects[0]();
+      effects.length = 0;
+      closers.push(close);
+      return close;
     },
     dispose() {
+      for (const close of closers.splice(0)) close();
       if (typeof scopeDispose === 'function') scopeDispose();
       scopeDispose = null;
       for (const dispose of seen.disposers.splice(0)) dispose();
@@ -159,7 +164,10 @@ function plugin(name, remote, { impl, access = true, withRemote = true, resolve 
 
 const navigation = { opened: [], openBundle(name) { this.opened.push(name); } };
 const live = [];
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+const settle = async () => {
+  for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+const action = (node, kind) => find(node, (n) => n.props?.['data-kadaliao-update-action'] === kind)[0];
 
 function start(...args) {
   const p = plugin(...args);
@@ -169,6 +177,7 @@ function start(...args) {
 
 beforeEach(() => {
   clock.at = NOW;
+  effects.length = 0;
   globalThis.window = { localStorage: storage(), document: { documentElement: { lang: 'zh-CN' }, hidden: false }, navigator: { language: 'zh-CN' } };
   navigation.opened = [];
 });
@@ -178,63 +187,107 @@ afterEach(() => {
   delete globalThis.window;
 });
 
-const twoPlugins = () => [
+const installedSet = () => [
   bundle('@kadaliao/dsh-bots', '0.17.2'),
   bundle('@kadaliao/dsh-images', '0.5.6'),
-  bundle('@kadaliao/dsh-archify', '0.4.0', { update: undefined, source: 'link:/somewhere' }),
-  bundle('@kadaliao/dsh-atlas', '0.1.4', { enabled: false }),
   bundle('@liaoxingyi/dsh-yushi', '1.0.0'),
 ];
 
 const newer = {
   '@kadaliao/dsh-bots': { status: 'listed', installed: '0.17.2', registry: 'https://registry.npmjs.org/', attempts: [], omitted: 0, versions: [version('0.18.0'), version('0.17.3')] },
   '@kadaliao/dsh-images': { status: 'listed', installed: '0.5.6', registry: null, attempts: [], omitted: 0, versions: [version('0.5.7')] },
-  '@kadaliao/dsh-atlas': { status: 'listed', installed: '0.1.4', registry: null, attempts: [], omitted: 0, versions: [version('0.2.0')] },
-  '@liaoxingyi/dsh-yushi': { status: 'listed', installed: '1.0.0', registry: null, attempts: [], omitted: 0, versions: [version('2.0.0')] },
 };
 
-test('one card for every installed kadaliao plugin, drawn by one copy', async () => {
-  const remote = fakeRemote({ bundles: twoPlugins, versions: newer, update: () => ({ ok: true, value: {} }) });
+test('nothing is asked until the view opens, and then only about this plugin', async () => {
+  const remote = fakeRemote({ bundles: installedSet, versions: newer, update: () => ({ ok: true, value: {} }) });
   const bots = start('@kadaliao/dsh-bots', remote);
-  const images = start('@kadaliao/dsh-images', remote);
+  start('@kadaliao/dsh-images', remote);
   assert.deepEqual(bots.seen.access, ['pluginManager/updateBundle']);
-  await bots.api.check(remote);
-  const offers = bots.api.state().offers;
-  assert.deepEqual(offers.map((o) => [o.name, o.installed, o.version]), [
-    ['@kadaliao/dsh-bots', '0.17.2', '0.18.0'],
-    ['@kadaliao/dsh-images', '0.5.6', '0.5.7'],
-  ]);
-  // Only registry copies that are switched on, and only kadaliao's, are asked about.
-  assert.deepEqual(remote.calls.filter((c) => c[0] === 'listVersions').map((c) => c[1]), ['@kadaliao/dsh-bots', '@kadaliao/dsh-images']);
-  assert.equal(images.render(), null, 'the second copy stands by');
-  const card = bots.render();
-  assert.ok(card, 'the first copy draws');
-  assert.match(textOf(card), /2 个插件有新版本/);
-  assert.match(textOf(card), /0\.17\.2 → 0\.18\.0/);
-  assert.match(textOf(card), /bots中/);
-  assert.equal(find(card, (n) => n.props?.['data-kadaliao-updates-row']).length, 2);
-  assert.equal(find(card, (n) => n.props?.['data-kadaliao-updates-action'] === 'primary' && textOf(n) === '全部更新').length, 1);
-  // The title opens the plugin's own page in Plugins.
-  find(card, (n) => n.type === 'button' && textOf(n) === 'bots中')[0].props.onClick();
+  await settle();
+  assert.deepEqual(remote.calls, [], 'loading a plugin asks nothing');
+  assert.equal(bots.bar(), null);
+  bots.open();
+  await settle();
+  assert.deepEqual(remote.asked(), ['@kadaliao/dsh-bots'], 'Images is not asked about from the Bots view');
+  const bar = bots.bar();
+  assert.match(textOf(bar), /bots中 有新版本 0\.18\.0/);
+  assert.match(textOf(bar), /0\.17\.2 → 0\.18\.0 · 2026-11-25 发布/);
+  assert.equal(textOf(action(bar, 'update')), '更新');
+  // The bar sits above the plugin's own view, which keeps its props.
+  const frame = bots.frame();
+  assert.equal(frame.props['data-kadaliao-update-frame'], '@kadaliao/dsh-bots');
+  assert.equal(frame.children.length, 2);
+  assert.deepEqual(find(frame, (n) => n.type === 'plugin-view')[0].props, { hello: 1 });
+  // The name opens the plugin's own page in Plugins.
+  find(bar, (n) => n.type === 'button' && /有新版本/.test(textOf(n)))[0].props.onClick();
   assert.deepEqual(navigation.opened, ['@kadaliao/dsh-bots']);
 });
 
-test('the offer is the newest installable version that has been public for half an hour', () => {
+test('the frame keeps its shape with or without the bar, so the view is not remounted', async () => {
+  const remote = fakeRemote({ bundles: installedSet, versions: newer, update: () => ({}) });
+  const p = start('@kadaliao/dsh-bots', remote);
+  const before = p.frame();
+  p.open();
+  await settle();
+  const after = p.frame();
+  assert.equal(before.children.length, 1, 'no bar yet: only the body');
+  assert.equal(after.children.length, 2);
+  assert.deepEqual(before.children.at(-1).props.style, after.children.at(-1).props.style);
+});
+
+test('opening again within a minute reuses the answer; after that it asks again', async () => {
+  const remote = fakeRemote({ bundles: installedSet, versions: newer, update: () => ({}) });
+  const p = start('@kadaliao/dsh-bots', remote);
+  const close = p.open();
+  await settle();
+  close();
+  clock.at += 30e3;
+  p.open();
+  await settle();
+  assert.equal(remote.asked().length, 1);
+  clock.at += 31e3;
+  p.open();
+  await settle();
+  assert.equal(remote.asked().length, 2);
+});
+
+test('no timers: hours pass without a single question', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const remote = fakeRemote({ bundles: installedSet, versions: newer, update: () => ({}) });
+  start('@kadaliao/dsh-bots', remote);
+  clock.at += 7 * HOUR;
+  t.mock.timers.tick(7 * HOUR);
+  await settle();
+  assert.deepEqual(remote.calls, []);
+});
+
+test('the offer is the newest installable version that has been public for ten minutes', () => {
   const remote = fakeRemote({ bundles: [], versions: {}, update: () => ({}) });
   const { api } = start('@kadaliao/dsh-bots', remote);
   const list = (versions) => ({ status: 'listed', installed: '1.0.0', registry: null, attempts: [], omitted: 0, versions });
-  const fresh = version('1.5.0', { publishedAt: ago(5 * 60e3) });
   const chosen = api.choose(list([
-    fresh,
+    version('1.5.0', { publishedAt: ago(5 * MINUTE) }),
     version('1.4.0', { prerelease: true }),
     version('1.3.0', { deprecated: 'broken' }),
     version('1.2.0', { incompatible: { version: '1.2.0' } }),
     version('1.1.5', { bundle: false }),
-    version('1.1.0'),
+    version('1.1.0', { publishedAt: ago(11 * MINUTE) }),
   ]), NOW);
-  assert.equal(chosen.offer.version, '1.1.0');
-  assert.equal(chosen.recheckAt, Date.parse(fresh.publishedAt) + 30 * 60e3);
-  assert.equal(api.choose({ status: 'refused', problem: 'network', reason: 'x', attempts: [] }, NOW).offer, undefined);
+  assert.equal(chosen.version, '1.1.0');
+  assert.equal(api.choose(list([version('1.0.1', { publishedAt: undefined })]), NOW).version, '1.0.1', 'no date: offered');
+  assert.equal(api.choose({ status: 'refused', problem: 'network', reason: 'x', attempts: [] }, NOW), undefined);
+});
+
+test('a folder, Git or switched-off install is not asked about', async () => {
+  for (const extra of [{ update: undefined, source: 'link:/somewhere' }, { update: 'git' }, { enabled: false }]) {
+    const remote = fakeRemote({ bundles: [bundle('@kadaliao/dsh-bots', '0.17.2', extra)], versions: newer, update: () => ({}) });
+    const p = start('@kadaliao/dsh-bots', remote);
+    p.open();
+    await settle();
+    assert.deepEqual(remote.asked(), [], JSON.stringify(extra));
+    assert.equal(p.bar(), null);
+    p.dispose();
+  }
 });
 
 test('Update hands the version to Harness with the registry that listed it and follows its steps', async () => {
@@ -245,9 +298,10 @@ test('Update hands the version to Harness with the registry that listed it and f
     versions: newer,
     update: () => new Promise((r) => { resolve = r; }),
   });
-  const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
-  const running = p.api.update(remote, '@kadaliao/dsh-images');
+  const p = start('@kadaliao/dsh-images', remote);
+  p.open();
+  await settle();
+  const running = p.api.update();
   await settle();
   const [, name, to, options] = remote.calls.find((c) => c[0] === 'updateBundle');
   assert.equal(name, '@kadaliao/dsh-images');
@@ -255,18 +309,19 @@ test('Update hands the version to Harness with the registry that listed it and f
   assert.equal(options.registry, null);
   assert.match(options.requestId, /^[0-9a-f-]{36}$/);
   remote.fire('plugin-manager/update-state', { requestId: options.requestId, step: 'installing' });
-  assert.match(textOf(p.render()), /正在安装 0\.5\.7/);
+  assert.match(textOf(p.bar()), /正在安装 0\.5\.7…/);
+  assert.match(textOf(p.bar()), /更新时images中会先关闭，装好后自动重新打开/);
+  remote.fire('plugin-manager/update-state', { requestId: 'someone-else', step: 'restoring' });
+  assert.match(textOf(p.bar()), /正在安装/, 'another update’s steps are not ours');
   // No buttons while it runs: nothing to start twice, nothing to close.
-  assert.equal(find(p.render(), (n) => n.type === 'button' && n.props['data-kadaliao-updates-action']).length, 0);
+  assert.equal(find(p.bar(), (n) => n.props['data-kadaliao-update-action']).length, 0);
   installed['@kadaliao/dsh-images'] = '0.5.7';
   resolve({ ok: true, value: { from: '0.5.6', to: '0.5.7', step: 'install', result: { changed: true, application: 'applied' } } });
   await running;
-  assert.equal(p.api.state().phases['@kadaliao/dsh-images'].step, 'done');
-  assert.match(textOf(p.render()), /插件已更新/);
-  assert.match(textOf(p.render()), /已更新到 0\.5\.7/);
-  assert.deepEqual(p.api.readStore().offers, [], 'a reload does not offer it again');
-  p.api.close();
-  assert.equal(p.render(), null);
+  assert.equal(p.api.handoff.phases['@kadaliao/dsh-images'].step, 'done');
+  assert.match(textOf(p.bar()), /images中 已更新到 0\.5\.7/);
+  action(p.bar(), 'close').props.onClick();
+  assert.equal(p.bar(), null);
 });
 
 test('how an update ended reads off its answer', () => {
@@ -290,12 +345,15 @@ test('a failed update says the old version is back and can be tried again', asyn
     versions: newer,
     update: () => ({ ok: true, value: { from: '0.5.6', to: '0.5.7', step: 'install', result: { application: 'failed', error: { diagnostic: 'ERR_PNPM_FETCH_404 tarball' } }, restore: { application: 'applied' } } }),
   });
-  const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
-  await p.api.update(remote, '@kadaliao/dsh-images');
-  const card = p.render();
-  assert.match(textOf(card), /没有更新，已装回 0\.5\.6：ERR_PNPM_FETCH_404 tarball/);
-  assert.equal(find(card, (n) => n.props?.['data-kadaliao-updates-action'] === 'primary' && textOf(n) === '更新').length, 1);
+  const p = start('@kadaliao/dsh-images', remote);
+  p.open();
+  await settle();
+  await p.api.update();
+  const bar = p.bar();
+  assert.match(textOf(bar), /没有更新，已装回 0\.5\.6：ERR_PNPM_FETCH_404 tarball/);
+  assert.equal(textOf(action(bar, 'update')), '再试一次');
+  await p.api.update();
+  assert.equal(remote.calls.filter((c) => c[0] === 'updateBundle').length, 2);
 });
 
 test('a failed install names the line of pnpm output that says why', () => {
@@ -318,12 +376,13 @@ test('an answer lost with the page is settled by what is installed', async () =>
     },
   });
   const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
-  await p.api.update(remote, '@kadaliao/dsh-bots');
-  assert.equal(p.api.state().phases['@kadaliao/dsh-bots'].step, 'done');
+  p.open();
+  await settle();
+  await p.api.update();
+  assert.equal(p.api.handoff.phases['@kadaliao/dsh-bots'].step, 'done');
 });
 
-test('a plugin that updates itself hands the card to the copy that comes next', async () => {
+test('a plugin that updates itself: the copy that comes next shows how it went', async () => {
   let resolve;
   const installed = { '@kadaliao/dsh-bots': '0.17.2' };
   const remote = fakeRemote({
@@ -332,54 +391,78 @@ test('a plugin that updates itself hands the card to the copy that comes next', 
     update: () => new Promise((r) => { resolve = r; }),
   });
   const old = start('@kadaliao/dsh-bots', remote);
-  await old.api.check(remote);
-  const running = old.api.update(remote, '@kadaliao/dsh-bots');
+  old.open();
   await settle();
+  const running = old.api.update();
+  await settle();
+  const { requestId } = remote.calls.find((c) => c[0] === 'updateBundle')[3];
   // Harness removes the running version: its client half leaves, mid-update.
   old.dispose();
   assert.equal(remote.listeners('plugin-manager/changed'), 0, 'the old copy stopped listening');
+  assert.equal(remote.listeners('plugin-manager/update-state'), 0);
+  const next = start('@kadaliao/dsh-bots', remote);
+  assert.equal(next.seen.reopened, 0, 'not while apply(ctx) may still be registering the view');
+  await settle();
+  assert.equal(next.seen.reopened, 1, 'Harness closed the view with the old copy: the new one opens it again');
+  assert.equal(next.api.handoff.phases['@kadaliao/dsh-bots'].reopen, false, 'once');
+  next.open();
+  await settle();
+  assert.match(textOf(next.bar()), /正在检查 0\.18\.0/, 'the new copy picks up the update in progress');
+  remote.fire('plugin-manager/update-state', { requestId, step: 'installing' });
+  assert.match(textOf(next.bar()), /正在安装 0\.18\.0/);
   installed['@kadaliao/dsh-bots'] = '0.18.0';
-  const next = start('@kadaliao/dsh-bots', remote, { impl: 2 });
-  assert.match(textOf(next.render()), /正在检查 0\.18\.0/, 'the new copy picks up the update in progress');
   resolve({ ok: true, value: { from: '0.17.2', to: '0.18.0', step: 'install', result: { application: 'applied' } } });
   await running;
-  assert.match(textOf(next.render()), /已更新到 0\.18\.0/);
+  assert.match(textOf(next.bar()), /bots中 已更新到 0\.18\.0/);
 });
 
-test('the newest copy leads, and the next one takes over when it leaves', () => {
-  const remote = fakeRemote({ bundles: [], versions: {}, update: () => ({}) });
-  const a = start('@kadaliao/dsh-images', remote);
-  const b = start('@kadaliao/dsh-bots', remote, { impl: 2 });
-  const c = start('@kadaliao/dsh-atlas', remote);
-  assert.equal(a.api.leader().name, '@kadaliao/dsh-bots');
-  assert.equal(a.api.hub.members.length, 3);
-  b.dispose();
-  assert.equal(a.api.leader().name, '@kadaliao/dsh-images', 'the first loaded among equals');
-  a.dispose();
-  assert.equal(c.api.leader().name, '@kadaliao/dsh-atlas');
+test('a lost answer arriving late does not undo what is installed', async () => {
+  let reject;
+  const installed = { '@kadaliao/dsh-bots': '0.17.2' };
+  const remote = fakeRemote({
+    bundles: () => [bundle('@kadaliao/dsh-bots', installed['@kadaliao/dsh-bots'])],
+    versions: newer,
+    update: () => new Promise((_, r) => { reject = r; }),
+  });
+  const old = start('@kadaliao/dsh-bots', remote);
+  old.open();
+  await settle();
+  const running = old.api.update();
+  await settle();
+  old.dispose();
+  installed['@kadaliao/dsh-bots'] = '0.18.0';
+  const next = start('@kadaliao/dsh-bots', remote);
+  await settle();
+  assert.equal(next.api.handoff.phases['@kadaliao/dsh-bots'].step, 'done', 'what is installed says it worked');
+  reject(new Error('socket closed'));
+  await running;
+  assert.equal(next.api.handoff.phases['@kadaliao/dsh-bots'].step, 'done');
 });
 
-test('Later hides the card for a day, Skip until a newer version', async () => {
+test('Later hides the bar for a day, Skip until a newer version', async () => {
   const lists = { ...newer };
   const remote = fakeRemote({ bundles: [bundle('@kadaliao/dsh-bots', '0.17.2')], versions: (name) => lists[name], update: () => ({}) });
   const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
-  assert.ok(p.render());
-  find(p.render(), (n) => n.props?.['data-kadaliao-updates-action'] === 'later')[0].props.onClick();
-  assert.equal(p.render(), null);
+  p.open();
+  await settle();
+  action(p.bar(), 'later').props.onClick();
+  assert.equal(p.bar(), null);
   assert.equal(p.api.readStore().snoozedUntil, NOW + 24 * HOUR);
-  window.localStorage.data.clear();
-  await p.api.check(remote);
-  find(p.render(), (n) => n.props?.['data-kadaliao-updates-action'] === 'skip')[0].props.onClick();
-  assert.equal(p.render(), null);
-  await p.api.check(remote);
-  assert.equal(p.render(), null, 'a skipped version stays away');
+  clock.at += 25 * HOUR;
+  assert.ok(p.bar(), 'back the next day');
+  action(p.bar(), 'skip').props.onClick();
+  assert.equal(p.bar(), null);
+  p.open();
+  await settle();
+  assert.equal(p.bar(), null, 'a skipped version stays away');
   lists['@kadaliao/dsh-bots'] = { ...newer['@kadaliao/dsh-bots'], versions: [version('0.18.1'), version('0.18.0')] };
-  await p.api.check(remote);
-  assert.match(textOf(p.render()), /bots中 有新版本 0\.18\.1/);
+  clock.at += 2 * MINUTE;
+  p.open();
+  await settle();
+  assert.match(textOf(p.bar()), /bots中 有新版本 0\.18\.1/);
 });
 
-test('a registry that does not answer keeps what the last check found', async () => {
+test('a registry that does not answer leaves the bar as it was and is asked again next time', async () => {
   let down = false;
   const remote = fakeRemote({
     bundles: [bundle('@kadaliao/dsh-bots', '0.17.2')],
@@ -387,69 +470,61 @@ test('a registry that does not answer keeps what the last check found', async ()
     update: () => ({}),
   });
   const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
+  p.open();
+  await settle();
   down = true;
-  await p.api.check(remote);
-  assert.deepEqual(p.api.readStore().offers.map((o) => o.version), ['0.18.0']);
+  clock.at += 2 * MINUTE;
+  p.open();
+  await settle();
+  assert.match(textOf(p.bar()), /0\.18\.0/);
+  p.open();
+  await settle();
+  assert.equal(remote.asked().length, 3, 'a failed answer is not reused');
 });
 
-test('an unreadable plugin list backs off instead of retrying at once', async () => {
-  const remote = fakeRemote({ bundles: new Error('no profile'), versions: {}, update: () => ({}) });
-  const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
-  assert.equal(p.api.readStore().failedAt, NOW);
-  assert.equal(p.api.readStore().checkedAt, 0);
-});
-
-test('offers another surface already applied leave the card', async () => {
+test('an offer another surface already applied leaves the bar', async () => {
   const installed = { '@kadaliao/dsh-bots': '0.17.2' };
-  const remote = fakeRemote({ bundles: () => [bundle('@kadaliao/dsh-bots', installed['@kadaliao/dsh-bots'])], versions: newer, update: () => ({}) });
+  const lists = { ...newer };
+  const remote = fakeRemote({ bundles: () => [bundle('@kadaliao/dsh-bots', installed['@kadaliao/dsh-bots'])], versions: (name) => lists[name], update: () => ({}) });
   const p = start('@kadaliao/dsh-bots', remote);
-  await p.api.check(remote);
-  assert.ok(p.render());
+  p.open();
+  await settle();
+  assert.ok(p.bar());
   installed['@kadaliao/dsh-bots'] = '0.18.0';
+  lists['@kadaliao/dsh-bots'] = { status: 'listed', installed: '0.18.0', registry: null, attempts: [], omitted: 0, versions: [] };
   remote.fire('plugin-manager/changed', { reason: 'install' });
   await settle();
-  assert.equal(p.render(), null);
-  assert.deepEqual(p.api.readStore().offers, []);
+  assert.equal(p.bar(), null);
 });
 
-test('a Peer that may not update plugins gets no card, and no Remote means nothing at all', () => {
-  const remote = fakeRemote({ bundles: [], versions: {}, update: () => ({}) });
+test('a Peer that may not update plugins is never asked, and no Remote means nothing at all', async () => {
+  const remote = fakeRemote({ bundles: installedSet, versions: newer, update: () => ({}) });
   const guest = start('@kadaliao/dsh-bots', remote, { access: false });
-  assert.deepEqual(guest.seen.access, ['pluginManager/updateBundle']);
-  assert.equal(guest.seen.slots.length, 0);
+  guest.open();
   const bare = start('@kadaliao/dsh-images', remote, { withRemote: false });
-  assert.equal(bare.seen.slots.length, 0);
-  assert.equal(bare.api.hub.members.length, 0);
+  bare.open();
+  await settle();
+  assert.deepEqual(guest.seen.access, ['pluginManager/updateBundle']);
+  assert.deepEqual(remote.calls, []);
+  assert.equal(guest.bar(), null);
+  assert.equal(bare.bar(), null);
+  assert.ok(bare.frame(), 'the view still renders');
 });
 
 test('the words follow the language Harness shows, not the browser', async () => {
   const remote = fakeRemote({ bundles: [bundle('@kadaliao/dsh-bots', '0.17.2')], versions: newer, update: () => ({}) });
   const p = start('@kadaliao/dsh-bots', remote, { resolve: (text) => text.en });
-  await p.api.check(remote);
-  assert.match(textOf(p.render()), /bots 0\.18\.0 is available/);
-  assert.match(textOf(p.render()), /Skip this version/);
+  p.open();
+  await settle();
+  assert.match(textOf(p.bar()), /bots 0\.18\.0 is available/);
+  assert.match(textOf(p.bar()), /Skip this version/);
 });
 
-test('the first check waits for the page to settle, then every six hours', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const remote = fakeRemote({ bundles: [bundle('@kadaliao/dsh-bots', '0.17.2')], versions: newer, update: () => ({}) });
-  start('@kadaliao/dsh-bots', remote);
+test('the old shared card of earlier versions is left alone', async () => {
+  const remote = fakeRemote({ bundles: installedSet, versions: newer, update: () => ({}) });
+  const p = start('@kadaliao/dsh-bots', remote);
+  p.open();
   await settle();
-  const checks = () => remote.calls.filter((c) => c[0] === 'listVersions').length;
-  assert.equal(checks(), 0);
-  const pass = async (ms) => {
-    clock.at += ms;
-    t.mock.timers.tick(ms);
-    for (let i = 0; i < 5; i += 1) await settle();
-  };
-  await pass(19e3);
-  assert.equal(checks(), 0);
-  await pass(1e3);
-  assert.equal(checks(), 1);
-  await pass(3 * HOUR);
-  assert.equal(checks(), 1, 'not again within six hours');
-  await pass(3 * HOUR);
-  assert.equal(checks(), 2);
+  assert.equal(window.__kadaliaoDshUpdates, undefined);
+  assert.equal(window.localStorage.getItem('kadaliao-dsh-updates'), null);
 });

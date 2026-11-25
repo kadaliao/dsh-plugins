@@ -83,11 +83,18 @@ It has no model credentials, so only UI that needs no model can be checked there
 ### Update reminders (shared code)
 
 Every plugin's `client.js` carries the same block between `// >>> kadaliao-dsh-updates` and
-`// <<< kadaliao-dsh-updates`, called once from `apply(ctx)`. It checks every installed
-`@kadaliao/dsh-*` plugin with Harness's plugin manager (`listVersions`, `updateBundle`) and shows one
-card for all of them, drawn by one copy (the newest `UPDATES_IMPL`, then the first loaded). The others
-stand by and take over when that copy is switched off or replaced, which is also how a plugin that
-updates itself shows the outcome: its new client half loads in place and finishes the card.
+`// <<< kadaliao-dsh-updates`. `apply(ctx)` calls it once,
+`const updates = kadaliaoUpdates(ctx, { React, name, reopen })`, and wraps the plugin's own view where it
+registers it: `updates.opens(withT(Panel))` (Prompt EN wraps its vocabulary tab). Each plugin checks only
+itself, and only when that view mounts: Harness's plugin manager (`listVersions`) is asked once, again
+only after a minute, and nothing runs on a timer. A newer version shows as a bar across the top of the
+view, and **Update** runs `updateBundle`.
+
+Harness closes the view when it removes the running version, so an update in progress lives on
+`window.__kadaliaoDshSelfUpdate`. The new client half finds it there, calls `reopen` (the plugin's own
+`openPanel`) and says how the update ended. That object is shared across versions: add to its shape,
+never change it. Versions before this block checked every installed plugin every six hours and drew
+one shared card (`window.__kadaliaoDshUpdates`); those copies keep doing so until they are updated.
 
 The block is maintained here, in `shared/updates.js`, with its tests in `shared/updates.test.mjs`.
 Edit it here, then copy it into the clones beside this repository (`../dsh-<name>`):
@@ -98,11 +105,10 @@ node scripts/sync-updates.mjs          # writes client.js and test/updates.test.
 node scripts/sync-updates.mjs --check  # exits 1 while a clone differs
 ```
 
-A change to the card's behavior that older copies would get wrong goes with a higher `UPDATES_IMPL`,
-so the newest copy installed leads. The hub on `window.__kadaliaoDshUpdates` is shared across
-versions; add to its shape, never change it. To try a real update without publishing, install a
-test package from a local registry (verdaccio, `@kadaliao:registry=` in the throwaway profile's
-`.npmrc`), publish a newer version, and press **Update**.
+To try a real update without publishing, publish the plugin to a local registry (verdaccio, with
+`@kadaliao:registry=` in the throwaway profile's `.npmrc`) at two versions, install the older one, set
+both versions' `time` in verdaccio's storage back past the ten minutes below, open the plugin and press
+**Update**.
 
 ## Add a plugin
 
@@ -160,8 +166,8 @@ In the plugin's repository:
 2. Run the tests.
 3. Commit and push.
 4. `npm publish --access public`. The registry can take a few minutes to serve the new version.
-   The update card offers a version once it has been public for 30 minutes, so the tarball is served
-   by the time anyone presses **Update**.
+   The update bar offers a version once it has been public for 10 minutes, so the tarball is served
+   by the time anyone presses **Update** (a failed install puts the old version back).
 
 Before step 1, `node scripts/sync-updates.mjs --check` here should report the plugin up to date.
 

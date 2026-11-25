@@ -7,8 +7,9 @@
 //   node scripts/sync-updates.mjs bots       only ../dsh-bots
 //
 // A client.js without the block gets it once, right before the module's `return {` and with a call after
-// the `ctx.locale.register(...)` line of `apply(ctx)`; check that diff by eye. Later runs replace only
-// what lies between the markers.
+// the `ctx.locale.register(...)` line of `apply(ctx)`; check that diff by eye, then wrap the plugin's own
+// view in `updates.opens(...)` where it is registered (the bar shows, and the check runs, only there).
+// Later runs replace only what lies between the markers.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,7 +48,7 @@ function withBlock(client, name) {
   while ((match = register.exec(next)) !== null) last = match;
   if (last === null) throw new Error(`${name}: no ctx.locale.register(NS, DICTIONARY) line in apply(ctx) to call it after`);
   const indent = last[1];
-  const call = `${indent}// Update reminders for every installed kadaliao plugin (see the block above).\n${indent}kadaliaoUpdates(ctx, { React, name: '${name}' });\n`;
+  const call = `${indent}// This plugin's update reminder, checked when its own view opens (see the block above).\n${indent}const updates = kadaliaoUpdates(ctx, { React, name: '${name}' });\n`;
   const after = last.index + last[0].length;
   next = next.slice(0, after) + call + next.slice(after);
   return next;
