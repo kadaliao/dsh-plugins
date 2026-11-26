@@ -1,10 +1,11 @@
 // Writes the shared update reminders (shared/updates.js) into every plugin's client.js and their test
 // (shared/updates.test.mjs) into its test/updates.test.mjs. Plugins are the index's @kadaliao/dsh-* entries,
-// cloned beside this repository as ../dsh-<name>.
+// cloned as dsh-<name> beside this repository (../dsh-<name>) or one folder further up (../../dsh-<name>);
+// a folder counts only when its package.json names that plugin, and the nearer one wins.
 //
 //   node scripts/sync-updates.mjs            write every clone that differs
 //   node scripts/sync-updates.mjs --check    only report; exits 1 when a clone differs
-//   node scripts/sync-updates.mjs bots       only ../dsh-bots
+//   node scripts/sync-updates.mjs bots       only the dsh-bots clone
 //
 // A client.js without the block gets it once, right before the module's `return {` and with a call after
 // the `ctx.locale.register(...)` line of `apply(ctx)`; check that diff by eye, then wrap the plugin's own
@@ -18,8 +19,26 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BEGIN = '    // >>> kadaliao-dsh-updates';
 const END = '    // <<< kadaliao-dsh-updates';
 const args = process.argv.slice(2);
+// Any other flag (--help, -n, a typo of --check) stops here rather than falling through to a write.
+const unknown = args.filter((arg) => arg.startsWith('-') && arg !== '--check');
+if (unknown.length > 0) {
+  console.error(`unknown option ${unknown.join(' ')}; usage: node scripts/sync-updates.mjs [--check] [name ...]`);
+  process.exit(2);
+}
 const checkOnly = args.includes('--check');
-const only = args.filter((arg) => !arg.startsWith('--'));
+const only = args.filter((arg) => !arg.startsWith('-'));
+
+function cloneOf(name, short) {
+  for (const dir of [join(root, '..', `dsh-${short}`), join(root, '..', '..', `dsh-${short}`)]) {
+    if (!existsSync(join(dir, 'client.js'))) continue;
+    try {
+      if (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).name === name) return dir;
+    } catch {
+      // No readable package.json: not a clone of this plugin.
+    }
+  }
+  return null;
+}
 
 const shared = readFileSync(join(root, 'shared', 'updates.js'), 'utf8');
 const sharedTest = readFileSync(join(root, 'shared', 'updates.test.mjs'), 'utf8');
@@ -58,9 +77,9 @@ let differs = 0;
 for (const name of names) {
   const short = name.replace('@kadaliao/dsh-', '');
   if (only.length > 0 && !only.includes(short)) continue;
-  const dir = join(root, '..', `dsh-${short}`);
-  if (!existsSync(join(dir, 'client.js'))) {
-    console.log(`${short}: no clone at ${dir}, skipped`);
+  const dir = cloneOf(name, short);
+  if (dir === null) {
+    console.log(`${short}: no clone of ${name} at ../dsh-${short} or ../../dsh-${short}, skipped`);
     continue;
   }
   const clientPath = join(dir, 'client.js');
