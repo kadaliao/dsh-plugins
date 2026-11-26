@@ -407,8 +407,8 @@
         "zh": "图片"
       },
       "description": {
-        "en": "Ask for a picture and get one: a generate_image tool for the model, backed by your provider's image model, with the picture shown in the conversation and an Images panel collecting everything drawn as a gallery to browse, enlarge and download. A settings drawer picks the provider, key and model (searchable as you type); every picture shows what it cost, with the public LiteLLM price list covering models the provider does not price. Ask for a GIF and it draws a sprite sheet and assembles a looping animated GIF from it; pass reference images (attachments, files, earlier results) to edit or build on them.",
-        "zh": "要一张图就给一张图：给模型一个 generate_image 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型（输入即可模糊搜索），每张图都标出费用；供应商不给价的模型用公开的 LiteLLM 价目表兜底。要动图时让模型画一张精灵图，自动拼成循环播放的 GIF；也能带参考图（对话附件、文件、之前生成的图）改图或接着画。"
+        "en": "Ask for a picture and get one: a generate_image tool for the model, backed by your provider's image model, with the picture shown in the conversation and an Images panel collecting everything drawn as a gallery to browse, enlarge and download. A settings drawer picks the provider, key and model (searchable as you type); every picture shows what it cost, with the public LiteLLM price list covering models the provider does not price. Ask for a GIF and it draws a sprite sheet and assembles a looping animated GIF from it; pass reference images (attachments, files, earlier results) to edit or build on them. New in 0.6: recipes — 40 built-in prompt templates adapted from the most-starred prompt collections (hand-drawn infographics, magazine covers, photo-to-figurine, stickers and GIFs…), your own saved from any picture, and community ones voted with 👍; fill the blanks and start a conversation, or share a recipe as a line of text, a picture that carries it, or a community submission.",
+        "zh": "要一张图就给一张图：给模型一个 generate_image 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型（输入即可模糊搜索），每张图都标出费用；供应商不给价的模型用公开的 LiteLLM 价目表兜底。要动图时让模型画一张精灵图，自动拼成循环播放的 GIF；也能带参考图（对话附件、文件、之前生成的图）改图或接着画。0.6 新增「玩法」：40 个内置提示词模板，改编自 star 最多的提示词合集（手绘信息图、杂志封面、照片变手办、表情包动图……），也能把任意一张图存成自己的玩法，还有大家 👍 投票的社区玩法；填好空一键开始创作，或者以一段文字、一张自带配方的图、一次社区投稿分享出去。"
       },
       "icon": "https://raw.githubusercontent.com/kadaliao/dsh-images/main/icon.svg",
       "author": "kadaliao",
@@ -426,7 +426,10 @@
           "tool",
           "draw",
           "gif",
-          "animation"
+          "animation",
+          "recipes",
+          "templates",
+          "prompts"
         ],
         "labels": [
           "tool"
@@ -434,6 +437,13 @@
         "sortKeys": {}
       },
       "versions": [
+        {
+          "version": "0.6.0",
+          "publishTimestamp": 1795680710,
+          "source": {
+            "type": "npm"
+          }
+        },
         {
           "version": "0.5.8",
           "publishTimestamp": 1795588556,
