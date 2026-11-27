@@ -528,3 +528,46 @@ test('the old shared card of earlier versions is left alone', async () => {
   assert.equal(window.__kadaliaoDshUpdates, undefined);
   assert.equal(window.localStorage.getItem('kadaliao-dsh-updates'), null);
 });
+
+test('About shows the version and links to the repository, in the language Harness shows', () => {
+  const zh = kadaliaoUpdates({ locale: { resolveText: (text) => text.zh } }, { React, name: '@kadaliao/dsh-example', version: '1.2.3' });
+  assert.equal(zh.version, '1.2.3');
+  assert.equal(zh.repo, 'https://github.com/kadaliao/dsh-example');
+  const node = React.createElement(zh.About, null);
+  assert.equal(node.props['data-kadaliao-about'], '@kadaliao/dsh-example');
+  assert.match(textOf(node), /^v1\.2\.3$/);
+  const link = find(node, (n) => n.type === 'a')[0];
+  assert.equal(link.props.href, 'https://github.com/kadaliao/dsh-example');
+  assert.equal(link.props.target, '_blank');
+  assert.equal(link.props.title, '在 GitHub 上查看源码');
+  assert.equal(find(node, (n) => n.props?.['data-kadaliao-version'] === '1.2.3')[0].props.title, '版本 1.2.3');
+
+  const en = kadaliaoUpdates({ locale: { resolveText: (text) => text.en } }, { React, name: '@kadaliao/dsh-example', version: '1.2.3', repo: 'https://github.com/someone/elsewhere' });
+  const enNode = React.createElement(en.About, { style: { color: 'red' } });
+  assert.equal(find(enNode, (n) => n.type === 'a')[0].props.href, 'https://github.com/someone/elsewhere');
+  assert.equal(find(enNode, (n) => n.type === 'a')[0].props.title, 'Source code on GitHub');
+  assert.equal(enNode.props.style.color, 'red');
+
+  const bare = kadaliaoUpdates({}, { React, name: '@kadaliao/dsh-example' });
+  const bareNode = React.createElement(bare.About, null);
+  assert.equal(textOf(bareNode), '', 'no version given, only the link');
+  assert.equal(find(bareNode, (n) => n.type === 'a').length, 1);
+});
+
+// In a plugin's repository this file sits in test/ beside client.js: the plugin must say its own version and show it.
+const pluginRoot = join(here, '..');
+const isPlugin = source === join(pluginRoot, 'client.js') && existsSync(join(pluginRoot, 'package.json'));
+
+test('this plugin passes its own version, equal to package.json, and shows About in its view', { skip: !isPlugin && 'not in a plugin repository' }, () => {
+  const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
+  const call = text.match(/kadaliaoUpdates\(ctx, \{([^}]*)\}\)/);
+  assert.ok(call, 'client.js calls kadaliaoUpdates(ctx, { ... })');
+  const given = call[1].match(/\bversion:\s*([A-Za-z_$][\w$]*|'[^']*')/);
+  assert.ok(given, 'kadaliaoUpdates is given the version');
+  const literal = given[1].startsWith("'")
+    ? given[1].slice(1, -1)
+    : text.match(new RegExp(`const ${given[1].replace(/\$/g, '\\$')} = '([^']*)'`))?.[1];
+  assert.equal(literal, pkg.version, 'the version client.js gives is the one in package.json: bump both');
+  const outside = text.slice(0, text.indexOf(BEGIN)) + text.slice(text.indexOf(END));
+  assert.match(outside, /\.About\b/, 'the plugin puts About in its view');
+});

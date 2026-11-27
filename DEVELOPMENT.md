@@ -90,6 +90,13 @@ itself, and only when that view mounts: Harness's plugin manager (`listVersions`
 only after a minute, and nothing runs on a timer. A newer version shows as a bar across the top of the
 view, and **Update** runs `updateBundle`.
 
+The same call also gives the plugin `updates.About`: its version and a GitHub mark that opens its repository
+(`https://github.com/kadaliao/<package>`; `repo` overrides it). **Every plugin shows it in its own view**,
+beside its title or wherever its header has room (Bots: the foot of the rail; Prompt EN: the vocabulary
+book's header). The version is a constant in `client.js` (`const VERSION = '…'`, Bots' `BOTS_VERSION`) passed
+as `kadaliaoUpdates(ctx, { React, name, version: VERSION, reopen })`; `test/updates.test.mjs` fails until it
+equals `package.json` and until `client.js` uses `.About`.
+
 Harness closes the view when it removes the running version, so an update in progress lives on
 `window.__kadaliaoDshSelfUpdate`. The new client half finds it there, calls `reopen` (the plugin's own
 `openPanel`) and says how the update ended. That object is shared across versions: add to its shape,
@@ -117,11 +124,17 @@ both versions' `time` in verdaccio's storage back past the ten minutes below, op
    `window.__ModuleLoader__.load({ id })` in `client.js`. The client module id must equal the
    package name. Point `repository`, `homepage` and `bugs` in `package.json` at the new repository.
 3. Add user-facing `README.md` and `README.zh-CN.md`, locale `meta.title`/`meta.description`, and an
-   original or licensed icon.
-4. Keep everything the model could see out of the Session log, and say in the README exactly what
+   original or licensed icon. Set `meta.detail` to `README.zh-CN.md` in **both** `locale/en.json` and
+   `locale/zh.json`: Discover and the Plugins page then show the Chinese README by default (Harness
+   reads the first locale file along `<language> → en` and falls back to `README.md` when it names none).
+4. Pass the plugin's version to `kadaliaoUpdates` and put `updates.About` in its view (see Update
+   reminders above).
+5. Keep everything the model could see out of the Session log, and say in the README exactly what
    the plugin reads and which model it calls.
-5. Run the tests, then install the directory and exercise the real UI before publishing.
-6. Publish it to npm and add an entry to `marketplace.json` and a row to both READMEs here.
+6. Run the tests, then install the directory and exercise the real UI before publishing.
+7. Publish it to npm and add an entry to `marketplace.json` and a row to both READMEs here. Its
+   `description` is Chinese by default: `en` carries the same Chinese text as `zh`, because Discover falls
+   back to `en` in every language but Chinese (CI rejects an `en` that differs).
 
 ## Market index
 
@@ -161,8 +174,8 @@ Leave those entries as they are. Validate the document with Harness's own parser
 
 In the plugin's repository:
 
-1. Bump `version` in `package.json` (Bots also keeps `BOTS_VERSION` in `client.js` and its test in
-   step) and update the README if behavior changed.
+1. Bump `version` in `package.json` and the version constant in `client.js` (`VERSION`; Bots'
+   `BOTS_VERSION` and its test), and update the README if behavior changed.
 2. Run the tests.
 3. Commit and push.
 4. `npm publish --access public`. The registry can take a few minutes to serve the new version.

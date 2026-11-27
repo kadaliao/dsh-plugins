@@ -84,6 +84,12 @@ export DSH_HOME=$(mktemp -d)
 问一次 Harness 的插件管理（`listVersions`），一分钟内再打开不重复问，没有任何定时器。有新版本时视图顶部出现
 一条提示，「更新」调用 `updateBundle`。
 
+同一次调用还给插件一个 `updates.About`：插件的版本号，加一个打开插件仓库的 GitHub 图标
+（`https://github.com/kadaliao/<包名>`，传 `repo` 可以改）。**每个插件都要把它放进自己的视图里**，放在标题旁边，
+或者标题栏放不下时放在别处（Bots 放在左栏最下面，Prompt EN 放在生词本的标题行）。版本号是 `client.js` 里的常量
+（`const VERSION = '…'`，Bots 是 `BOTS_VERSION`），通过 `kadaliaoUpdates(ctx, { React, name, version: VERSION, reopen })`
+传进去；它和 `package.json` 不一致、或者 `client.js` 没用 `.About` 时，`test/updates.test.mjs` 会失败。
+
 Harness 移除正在运行的版本时会关掉它的视图，所以进行中的更新记在 `window.__kadaliaoDshSelfUpdate` 上。
 新版本的前端加载后从这里读到它，调用 `reopen`（插件自己的 `openPanel`）重新打开视图，并显示结果。这个对象
 各版本共用，只能往上加字段，不能改已有的。这段代码之前的版本每 6 小时检查所有已装插件、共用一张卡片
@@ -109,10 +115,14 @@ node scripts/sync-updates.mjs --check  # 有克隆不一致时返回 1
    `window.__ModuleLoader__.load({ id })`。Client 模块 id 必须等于包名。`package.json` 里的
    `repository`、`homepage`、`bugs` 指向新仓库。
 3. 补上面向用户的 `README.md` 与 `README.zh-CN.md`、locale 的 `meta.title`/`meta.description`，以及
-   原创或有授权可再分发的图标。
-4. 不要把模型能看到的内容写进 Session 日志；在 README 里写清楚插件读什么、调用哪个模型。
-5. 跑测试，装目录，在真实 UI 里验证后再发布。
-6. 发布到 npm，在本仓库的 `marketplace.json` 加条目，两份 README 的表格各加一行。
+   原创或有授权可再分发的图标。在 `locale/en.json` 和 `locale/zh.json` **两个文件**里都把 `meta.detail` 设成
+   `README.zh-CN.md`，插件市场和插件页就默认显示中文说明（Harness 按 `<界面语言> → en` 读第一个存在的 locale
+   文件，里面没写 `meta.detail` 就用 `README.md`）。
+4. 把插件版本传给 `kadaliaoUpdates`，并把 `updates.About` 放进插件的视图（见上面的「更新提醒」）。
+5. 不要把模型能看到的内容写进 Session 日志；在 README 里写清楚插件读什么、调用哪个模型。
+6. 跑测试，装目录，在真实 UI 里验证后再发布。
+7. 发布到 npm，在本仓库的 `marketplace.json` 加条目，两份 README 的表格各加一行。条目的 `description`
+   默认用中文：`en` 和 `zh` 写同一段中文，因为界面不是中文时 Discover 一律回落到 `en`（`en` 和 `zh` 不一致时 CI 会报错）。
 
 ## 市场索引
 
@@ -149,8 +159,8 @@ Unix **秒**。
 
 在插件仓库里：
 
-1. 升 `package.json` 的 `version`（Bots 还要同步 `client.js` 里的 `BOTS_VERSION` 和它的测试）；行为有变
-   就更新 README。
+1. 升 `package.json` 的 `version` 和 `client.js` 里的版本常量（`VERSION`；Bots 是 `BOTS_VERSION` 和它的测试）；
+   行为有变就更新 README。
 2. 跑测试。
 3. 提交并推送。
 4. `npm publish --access public`。registry 可能要几分钟才能拿到新版本。更新提示只提供发布满 10 分钟的
