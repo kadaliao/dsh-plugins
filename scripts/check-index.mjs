@@ -1,6 +1,9 @@
 // Checks the basics of marketplace.json before it reaches users: it parses, every plugin has a
 // name, an English title and versions, every version's source is npm or a pinned Git commit, and
 // relative icons exist. Harness's own parser (@deepseek-ai/dsh-plugin-market-index) is stricter.
+//
+// Descriptions are Chinese by default: Discover shows `zh` in Chinese and falls back to `en` in every
+// other language, so `en` carries the same Chinese text as `zh`.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +15,7 @@ const fail = (where, what) => problems.push(`${where}: ${what}`);
 
 if (index.format !== 1) fail('index', 'format must be 1');
 if (!index.title?.en) fail('index', 'missing title.en');
+if (index.description && index.description.en !== index.description.zh) fail('index', 'description.en must be the Chinese description.zh');
 const names = new Set();
 for (const p of index.plugins ?? []) {
   const where = p.name ?? '(unnamed plugin)';
@@ -19,6 +23,8 @@ for (const p of index.plugins ?? []) {
   if (names.has(p.name)) fail(where, 'listed twice');
   names.add(p.name);
   if (!p.title?.en) fail(where, 'missing title.en');
+  if (!p.description?.zh) fail(where, 'missing description.zh');
+  else if (p.description.en !== p.description.zh) fail(where, 'description.en must be the Chinese description.zh (Chinese by default)');
   if (p.icon?.startsWith('./') && !existsSync(join(root, p.icon))) fail(where, `icon ${p.icon} does not exist`);
   if (!p.versions?.length) fail(where, 'no versions');
   const seen = new Set();
