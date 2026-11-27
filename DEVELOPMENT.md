@@ -1,156 +1,145 @@
-# Development
+# 开发
 
-English | [简体中文](DEVELOPMENT.zh-CN.md)
+简体中文 | [English](DEVELOPMENT.en.md)
 
-Maintainer notes for this collection. If you only want to use a plugin, the
-[README](README.md) is the page you want.
+这个合集的维护者笔记。只想用插件的话，看 [README](README.md) 就够了。
 
-## Where things live
+## 东西都在哪
 
-This repository is the index of the collection. Each plugin has a repository of its own:
+本仓库是合集的索引，每个插件有自己的仓库：
 
-| Plugin | Repository | npm package |
+| 插件 | 仓库 | npm 包 |
 | --- | --- | --- |
-| Archify | [kadaliao/dsh-archify](https://github.com/kadaliao/dsh-archify) | `@kadaliao/dsh-archify` |
-| Atlas | [kadaliao/dsh-atlas](https://github.com/kadaliao/dsh-atlas) | `@kadaliao/dsh-atlas` |
+| Archify 图解 | [kadaliao/dsh-archify](https://github.com/kadaliao/dsh-archify) | `@kadaliao/dsh-archify` |
+| 足迹 | [kadaliao/dsh-atlas](https://github.com/kadaliao/dsh-atlas) | `@kadaliao/dsh-atlas` |
 | Bots | [kadaliao/dsh-bots](https://github.com/kadaliao/dsh-bots) | `@kadaliao/dsh-bots` |
-| Images | [kadaliao/dsh-images](https://github.com/kadaliao/dsh-images) | `@kadaliao/dsh-images` |
+| 图片 | [kadaliao/dsh-images](https://github.com/kadaliao/dsh-images) | `@kadaliao/dsh-images` |
 | Prompt EN | [kadaliao/dsh-prompt-en](https://github.com/kadaliao/dsh-prompt-en) | `@kadaliao/dsh-prompt-en` |
 
-What stays here:
+留在本仓库的：
 
-- `marketplace.json`, the market index users add in Discover. Its URL never changes.
-- `plugins/<name>/README.md`, a pointer to the plugin's repository, so links in packages already
-  published and in older posts still lead somewhere.
-- The history. Until the move (commit `71d4c76`, 2026-11-18) every plugin's source lived under
-  `plugins/<name>/` here, and older index versions pin commits from that time. **Never rewrite or
-  force-push `main`**: an install pinned to one of those commits would stop resolving.
+- `marketplace.json`：用户在 Discover 里添加的市场索引，地址永远不变。
+- `plugins/<name>/README.md`：指向插件新仓库的说明，让已发布的包和以前的帖子里的链接还能找到地方。
+- 历史。拆分之前（commit `71d4c76`，2026-11-18）所有插件的源码都在本仓库 `plugins/<name>/` 下，
+  索引里较早的版本钉的就是那段历史里的 commit。**永远不要改写或强推 `main`**，否则钉在这些 commit 上的
+  安装就解析不到了。
 
-The plugin repositories were split out with their history (`git filter-repo --subdirectory-filter`),
-so `git log` and `git blame` there go back to the first commit.
+插件仓库是带着历史拆出来的（`git filter-repo --subdirectory-filter`），在那边 `git log`、`git blame`
+都能追到第一个 commit。
 
-## A plugin repository
+## 插件仓库
 
-Every plugin repository is one complete, independent DeepSeek Harness bundle at its root:
+每个插件仓库的根目录就是一个完整、独立的 DeepSeek Harness bundle：
 
 ```
-package.json         # name, exports, dsh.bundle.patch, dsh.client
-cordis.patch.yml     # Loader rows the bundle inserts
-index.js             # Host half (runs in the Harness process)
-client.js            # Web Client half (window.__ModuleLoader__)
-lib/                 # Host-side modules
-locale/*.json        # display metadata and UI dictionaries
+package.json         # 包名、exports、dsh.bundle.patch、dsh.client
+cordis.patch.yml     # bundle 插入的 Loader 行
+index.js             # Host 半（跑在 Harness 进程里）
+client.js            # Web Client 半（window.__ModuleLoader__）
+lib/                 # Host 侧模块
+locale/*.json        # 展示元数据与 UI 词典
 icon.svg
-README.md            # user-facing: behavior, install, settings, limits
-README.zh-CN.md
-test/                # pure-logic and client-render tests
+README.md            # 面向用户（中文，默认）：行为、安装、设置、限制
+README.en.md         # 英文版，两份开头互相链接切换
+test/                # 纯逻辑与客户端渲染测试
 ```
 
-The Host half registers routes and listeners on its plugin fiber. The Client half registers
-Conversation rows or slots. Neither writes to the Session log; derived text is cached outside it.
+Host 半在自己的插件 fiber 上注册路由和监听；Client 半注册 Conversation 行或插槽。两者都不写 Session
+日志；派生文本缓存在日志之外。
 
-Requirements: Node.js 22+ for the tests (no build step, no dependencies), and a DeepSeek Harness 0.2.x
-installation with the Web profile to load a working copy.
+环境：Node.js 22+，只用于跑测试（无构建步骤、无依赖）；加载工作副本需要装有 Web profile 的
+DeepSeek Harness 0.2.x。
 
-### Run the tests
+### 跑测试
 
 ```bash
 node --test test/*.test.mjs
 ```
 
-The client tests load `client.js` with a small module-loader and React stand-in, so they catch
-registration mistakes and rendering regressions without a browser. Each repository runs them in
-GitHub Actions on every push.
+客户端测试用很小的模块加载器和 React 替身加载 `client.js`，不依赖浏览器也能抓到注册错误和渲染回归。
+每个仓库每次推送都会在 GitHub Actions 里跑一遍。
 
-### Load a working copy
+### 加载工作副本
 
-Install the repository directory with the Harness plugin manager (Plugins → install from a folder,
-or the `plugin_manager` tool). A linked directory is picked up on the next plugin reload; a
-Client-half change also needs a page refresh unless the Web dev watcher is running.
+用 Harness 插件管理器安装仓库目录（Plugins → 从文件夹安装，或 `plugin_manager` 工具）。以 link 方式
+安装的目录在下次插件重载时生效；Client 半的改动还需要刷新页面，除非 Web 开发 watcher 正在运行。
 
-To try a change without touching your own profile, link the plugin into a throwaway Harness home
-with the desktop app's CLI, then boot it:
+想试改动又不碰自己的 profile，可以用桌面应用自带的 CLI 把插件 link 进一个临时的 Harness home，再启动它：
 
 ```bash
 DSH=/Applications/DeepSeek\ Harness.app/Contents/Resources/runtime/cli/bin/dsh
 export DSH_HOME=$(mktemp -d)
 "$DSH" plugin --profile web add "$PWD"
-"$DSH" web --no-open --port 3917   # open the printed URL
+"$DSH" web --no-open --port 3917   # 打开它打印出的 URL
 ```
 
-It has no model credentials, so only UI that needs no model can be checked there.
+它没有模型凭据，只能检查不需要模型的界面。
 
-### Update reminders (shared code)
+### 更新提醒（共用代码）
 
-Every plugin's `client.js` carries the same block between `// >>> kadaliao-dsh-updates` and
-`// <<< kadaliao-dsh-updates`. `apply(ctx)` calls it once,
-`const updates = kadaliaoUpdates(ctx, { React, name, reopen })`, and wraps the plugin's own view where it
-registers it: `updates.opens(withT(Panel))` (Prompt EN wraps its vocabulary tab). Each plugin checks only
-itself, and only when that view mounts: Harness's plugin manager (`listVersions`) is asked once, again
-only after a minute, and nothing runs on a timer. A newer version shows as a bar across the top of the
-view, and **Update** runs `updateBundle`.
+每个插件的 `client.js` 里都有同一段代码，夹在 `// >>> kadaliao-dsh-updates` 和
+`// <<< kadaliao-dsh-updates` 之间。`apply(ctx)` 调用一次
+`const updates = kadaliaoUpdates(ctx, { React, name, reopen })`，并在注册自己视图的地方包一层：
+`updates.opens(withT(Panel))`（Prompt EN 包的是生词本标签页）。每个插件只查自己，而且只在这个视图打开时查：
+问一次 Harness 的插件管理（`listVersions`），一分钟内再打开不重复问，没有任何定时器。有新版本时视图顶部出现
+一条提示，「更新」调用 `updateBundle`。
 
-The same call also gives the plugin `updates.About`: its version and a GitHub mark that opens its repository
-(`https://github.com/kadaliao/<package>`; `repo` overrides it). **Every plugin shows it in its own view**,
-beside its title or wherever its header has room (Bots: the foot of the rail; Prompt EN: the vocabulary
-book's header). The version is a constant in `client.js` (`const VERSION = '…'`, Bots' `BOTS_VERSION`) passed
-as `kadaliaoUpdates(ctx, { React, name, version: VERSION, reopen })`; `test/updates.test.mjs` fails until it
-equals `package.json` and until `client.js` uses `.About`.
+同一次调用还给插件一个 `updates.About`：插件的版本号，加一个打开插件仓库的 GitHub 图标
+（`https://github.com/kadaliao/<包名>`，传 `repo` 可以改）。**每个插件都要把它放进自己的视图里**，放在标题旁边，
+或者标题栏放不下时放在别处（Bots 放在左栏最下面，Prompt EN 放在生词本的标题行）。版本号是 `client.js` 里的常量
+（`const VERSION = '…'`，Bots 是 `BOTS_VERSION`），通过 `kadaliaoUpdates(ctx, { React, name, version: VERSION, reopen })`
+传进去；它和 `package.json` 不一致、或者 `client.js` 没用 `.About` 时，`test/updates.test.mjs` 会失败。
 
-Harness closes the view when it removes the running version, so an update in progress lives on
-`window.__kadaliaoDshSelfUpdate`. The new client half finds it there, calls `reopen` (the plugin's own
-`openPanel`) and says how the update ended. That object is shared across versions: add to its shape,
-never change it. Versions before this block checked every installed plugin every six hours and drew
-one shared card (`window.__kadaliaoDshUpdates`); those copies keep doing so until they are updated.
+Harness 移除正在运行的版本时会关掉它的视图，所以进行中的更新记在 `window.__kadaliaoDshSelfUpdate` 上。
+新版本的前端加载后从这里读到它，调用 `reopen`（插件自己的 `openPanel`）重新打开视图，并显示结果。这个对象
+各版本共用，只能往上加字段，不能改已有的。这段代码之前的版本每 6 小时检查所有已装插件、共用一张卡片
+（`window.__kadaliaoDshUpdates`），那些版本在更新之前还会照旧这样做。
 
-The block is maintained here, in `shared/updates.js`, with its tests in `shared/updates.test.mjs`.
-Edit it here, then copy it into the clones beside this repository (`../dsh-<name>`):
+这段代码在本仓库维护：`shared/updates.js`，测试是 `shared/updates.test.mjs`。在这里改，再复制到本仓库旁边的
+各个克隆（`../dsh-<name>`）：
 
 ```bash
 node --test shared/updates.test.mjs
-node scripts/sync-updates.mjs          # writes client.js and test/updates.test.mjs in each clone
-node scripts/sync-updates.mjs --check  # exits 1 while a clone differs
+node scripts/sync-updates.mjs          # 写入每个克隆的 client.js 和 test/updates.test.mjs
+node scripts/sync-updates.mjs --check  # 有克隆不一致时返回 1
 ```
 
-To try a real update without publishing, publish the plugin to a local registry (verdaccio, with
-`@kadaliao:registry=` in the throwaway profile's `.npmrc`) at two versions, install the older one, set
-both versions' `time` in verdaccio's storage back past the ten minutes below, open the plugin and press
-**Update**.
+想在不发布的情况下试一次真实更新：在临时 profile 的 `.npmrc` 里写 `@kadaliao:registry=` 指向本地 registry
+（verdaccio），把插件发两个版本上去，装旧的那个，把 verdaccio 存储里两个版本的 `time` 改到 10 分钟以前，
+打开插件，点「更新」。
 
-## Add a plugin
+## 新增插件
 
-1. Create `kadaliao/dsh-<name>` on GitHub, starting from a copy of an existing plugin repository.
-2. Rename the package (`@kadaliao/dsh-<name>`), the bundle row in `cordis.patch.yml`, and the
-   `window.__ModuleLoader__.load({ id })` in `client.js`. The client module id must equal the
-   package name. Point `repository`, `homepage` and `bugs` in `package.json` at the new repository.
-3. Add user-facing `README.md` and `README.zh-CN.md`, locale `meta.title`/`meta.description`, and an
-   original or licensed icon. Set `meta.detail` to `README.zh-CN.md` in **both** `locale/en.json` and
-   `locale/zh.json`: Discover and the Plugins page then show the Chinese README by default (Harness
-   reads the first locale file along `<language> → en` and falls back to `README.md` when it names none).
-4. Pass the plugin's version to `kadaliaoUpdates` and put `updates.About` in its view (see Update
-   reminders above).
-5. Keep everything the model could see out of the Session log, and say in the README exactly what
-   the plugin reads and which model it calls.
-6. Run the tests, then install the directory and exercise the real UI before publishing.
-7. Publish it to npm and add an entry to `marketplace.json` and a row to both READMEs here. Its
-   `description` is Chinese by default: `en` carries the same Chinese text as `zh`, because Discover falls
-   back to `en` in every language but Chinese (CI rejects an `en` that differs).
+1. 在 GitHub 上建 `kadaliao/dsh-<name>`，复制一个现有插件仓库作为起点。
+2. 改包名（`@kadaliao/dsh-<name>`）、`cordis.patch.yml` 里的 bundle 行，以及 `client.js` 里的
+   `window.__ModuleLoader__.load({ id })`。Client 模块 id 必须等于包名。`package.json` 里的
+   `repository`、`homepage`、`bugs` 指向新仓库。
+3. 补上面向用户的 `README.md`（中文，默认）与 `README.en.md`（英文），开头一行
+   `简体中文 | [English](README.en.md)` / `[简体中文](README.md) | English` 互相切换；还有 locale 的
+   `meta.title`/`meta.description`，以及原创或有授权可再分发的图标。在 `locale/en.json` 和 `locale/zh.json`
+   **两个文件**里都把 `meta.detail` 设成 `README.md`，插件市场和插件页就显示中文说明（不写的话 Harness
+   也会退回到 `README.md`，写明了就不依赖这条退路）。
+   其他成对的文档也一样：`X.md` 是中文，`X.en.md` 是英文（Bots 的 `CHANGELOG`、Archify 的 `docs/details`、
+   本仓库的 `DEVELOPMENT`）。以前的 `X.zh-CN.md` 只留一行指向新文件，别删，外面还有链接。
+4. 把插件版本传给 `kadaliaoUpdates`，并把 `updates.About` 放进插件的视图（见上面的「更新提醒」）。
+5. 不要把模型能看到的内容写进 Session 日志；在 README 里写清楚插件读什么、调用哪个模型。
+6. 跑测试，装目录，在真实 UI 里验证后再发布。
+7. 发布到 npm，在本仓库的 `marketplace.json` 加条目，两份 README 的表格各加一行。条目的 `description`
+   默认用中文：`en` 和 `zh` 写同一段中文，因为界面不是中文时 Discover 一律回落到 `en`（`en` 和 `zh` 不一致时 CI 会报错）。
 
-## Market index
+## 市场索引
 
-`marketplace.json` is the format-1 index the Discover tab reads. Each plugin entry lists every
-version with its own source, so a release never changes how an earlier one installs. Releases go
-to npm:
+`marketplace.json` 是 Discover 读取的 format-1 索引。每个插件条目列出所有版本，每个版本有自己的来源，
+所以发新版本不会改变旧版本的安装方式。新版本都发到 npm：
 
 ```json
 { "version": "0.2.0", "publishTimestamp": 1794700000, "source": { "type": "npm" } }
 ```
 
-Discover installs that as `<name>@<version>`, so the entry's `name` must be the package name on the
-registry. `publishTimestamp` is Unix **seconds**.
+Discover 会按 `<name>@<version>` 安装，所以条目的 `name` 必须是 npm 上的包名。`publishTimestamp` 是
+Unix **秒**。
 
-Older versions keep the Git source they were released with — a commit in this repository and the
-plugin's path at that time:
+较早的版本保留发布时的 Git 来源——本仓库里的一个 commit，加上插件当时所在的路径：
 
 ```json
 {
@@ -165,34 +154,33 @@ plugin's path at that time:
 }
 ```
 
-Leave those entries as they are. Validate the document with Harness's own parser
-(`@deepseek-ai/dsh-plugin-market-index`) before pushing — it rejects a non-canonical URL, a missing
-`en` title, a bad commit, or a path segment with unsupported characters. CI here checks the basics
-(`node scripts/check-index.mjs`).
+这些条目保持原样。推送前用 Harness 自带的解析器（`@deepseek-ai/dsh-plugin-market-index`）校验：它会拒绝
+非规范 URL、缺 `en` 标题、错误 commit 以及带不支持字符的路径段。本仓库的 CI 会检查基本结构
+（`node scripts/check-index.mjs`）。
 
-## Release checklist
+## 发布清单
 
-In the plugin's repository:
+在插件仓库里：
 
-1. Bump `version` in `package.json` and the version constant in `client.js` (`VERSION`; Bots'
-   `BOTS_VERSION` and its test), and update the README if behavior changed.
-2. Run the tests.
-3. Commit and push.
-4. `npm publish --access public`. The registry can take a few minutes to serve the new version.
-   The update bar offers a version once it has been public for 10 minutes, so the tarball is served
-   by the time anyone presses **Update** (a failed install puts the old version back).
+1. 升 `package.json` 的 `version` 和 `client.js` 里的版本常量（`VERSION`；Bots 是 `BOTS_VERSION` 和它的测试）；
+   行为有变就更新 README。
+2. 跑测试。
+3. 提交并推送。
+4. `npm publish --access public`。registry 可能要几分钟才能拿到新版本。更新提示只提供发布满 10 分钟的
+   版本，所以有人点「更新」时 tarball 已经能下载了（装失败也会把旧版本装回去）。
 
-Before step 1, `node scripts/sync-updates.mjs --check` here should report the plugin up to date.
+第 1 步之前，先在本仓库跑 `node scripts/sync-updates.mjs --check`，确认这个插件是最新的。
 
-Then in this repository:
+然后在本仓库：
 
-5. Add the version to the plugin's `versions` in `marketplace.json` with `"source": { "type": "npm" }`,
-   and update the version and description in `README.md` / `README.zh-CN.md`.
-6. Commit and push.
-7. Install from the index in a clean profile and confirm the plugin appears and works.
-8. Never rewrite a published commit, here or in a plugin repository; publish a new version instead.
+5. 在 `marketplace.json` 对应插件的 `versions` 里加上这个版本，`"source": { "type": "npm" }`；更新
+   `README.md` / `README.en.md` 里的版本号和介绍。
+6. 提交并推送。
+7. 在干净 profile 里从索引安装，确认插件出现且可用。
+8. 不要改写已发布的 commit（本仓库和插件仓库都一样）；发新版本。
 
-## License
+## 许可
 
-MIT. Prompt EN is a DeepSeek Harness port of the same author's Claude Code mod
-[prompt-en](https://github.com/kadaliao/claude-mods/tree/main/prompt-en), also MIT.
+MIT。Prompt EN 是同一作者的 Claude Code mod
+[prompt-en](https://github.com/kadaliao/claude-mods/tree/main/prompt-en)（同样 MIT）的 DeepSeek
+Harness 移植版。

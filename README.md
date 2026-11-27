@@ -1,80 +1,72 @@
 # DSH Plugins
 
-English | [简体中文](README.zh-CN.md)
+简体中文 | [English](README.en.md)
 
 [![index](https://github.com/kadaliao/dsh-plugins/actions/workflows/test.yml/badge.svg)](https://github.com/kadaliao/dsh-plugins/actions/workflows/test.yml)
 
-A growing collection of plugins for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) —
-small, focused additions to the chat, the composer, and the workspace. This repository is the index;
-each plugin lives in a repository of its own.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的插件合集——每个插件都很小，只增强
+对话、输入框或工作区里的一个点。本仓库是索引，每个插件有自己的仓库。
 
-## Install
+## 安装
 
-1. Turn on the marketplace once: **Plugins → Experimental plugins → Custom plugin markets**.
-2. Open the new **Discover** tab, then **Sources**, and add:
+1. 先启用一次市场：**Plugins → Experimental plugins → Custom plugin markets**。
+2. 打开新出现的 **Discover** 标签页，在 **Sources** 里加入：
 
    ```
    https://raw.githubusercontent.com/kadaliao/dsh-plugins/main/marketplace.json
    ```
 
-3. Install the plugin you want from Discover.
+3. 在 Discover 里安装想要的插件。
 
-Already know what you want? Paste the plugin's package name into the plugin manager instead:
+已经知道要装什么，也可以直接把插件的包名贴进插件管理器：
 
 ```
 @kadaliao/dsh-prompt-en
 ```
 
-## Plugins
+## 插件
 
-| Plugin | What it does |
+| 插件 | 作用 |
 | --- | --- |
-| [Archify](https://github.com/kadaliao/dsh-archify) · 0.4.4 | Ask for a diagram and get a checked, interactive page right in the conversation: [Archify](https://github.com/tt-a1i/archify)'s architecture, workflow, sequence, data-flow, state, ER, class, tree, timeline and waterfall diagrams, from a description, Mermaid or your code, or a one-page explainer. Or skip the prompt: in the Archify panel, pick a type (each card shows what it looks like, with a live example), optionally a project folder to draw from its code, and press Generate; the plugin scans the repository, starts the conversation and follows it. In the gallery, Edit changes a diagram through the conversation that drew it, and Review has the model review an architecture from its code: every point cites files and lines, and the plugin checks each citation. Fast by default: architecture diagrams are laid out by the plugin, schema slips and repository evidence are fixed before checking, and a one-call repository scan with a code map spares the model its exploring. Bundles the Archify skill and runs on the Harness's own runtime (no Node.js install). Bilingual. |
-| [Atlas](https://github.com/kadaliao/dsh-atlas) · 0.1.7 | Your Photos library on a night globe that zooms to street level: glowing footprints, thumbnails where you were, 3D terrain and buildings, the venues and landmarks from your own photos, and Wikipedia nearby. Trips you can replay as a story, a replay of your years chapter by chapter, and on this day in your photos and in world history near places you have been. The best photos come first wherever you look; search like you talk (Chinese words can run together), and the model can search your photos and move the map. Night OpenStreetMap, Amap (China in full detail), satellite or offline. macOS Photos, read-only. Bilingual. |
-| [Bots](https://github.com/kadaliao/dsh-bots) · 0.20.1 | Grok-style bot teams for one-person companies and role-split work: hire a ready-made team (one-person company, software squad, content studio, research desk) in one click, each bot with its own persona, avatar, model, skills, abilities, apps and scheduled tasks — and its own memory, summarized after every task and consolidated nightly with the team's shared notes and each project's own memory (notes about something with a date are forgotten after it). Bots message each other and one dispatcher hands out the work of every team you hire, through the team's lead; a bot you make yourself joins any team you hired, or a team of your own with your name, description and colour: each piece of delegated work is a task in a conversation of its own, so one bot works on several at once, the dispatcher stays free to answer you, results return to the chat that asked, and a watchdog catches stuck tasks. A board, one level above the tasks, shows everything you asked the team for as a card, restated in a line by the dispatcher, with how far it got and what waits for you; cards are filed under projects with their own folder and brief and numbered like OPC-12, so a message can name one, a card can wait for others, and labelled GitHub issues become cards, on github.com or GitHub Enterprise; filter the board by date, words and project, and archive what is finished. The panel chat reads like a chat app, the bot on the left and you on the right, and takes images you paste or drop, which the bot sees and hands on with the work: reply to any message and your reply quotes it, while the bot answers in a thread that sees the chat up to that message and nothing after; the bot doing the work answers in the chat or thread the request came from. Built on Harness: reuse your installed skills, import skills from GitHub a local folder or Magpie's library, or let a bot write its own, and import MCP servers from Codex, Claude Code or Cursor. Run a bot on your own endpoint or the Codex CLI's ChatGPT login; conversations start a new topic before they grow too big; a usage view counts tokens and cost by bot, task and day. Message the team from Feishu / Lark, Telegram, Slack or Discord. Bilingual. |
-| [Images](https://github.com/kadaliao/dsh-images) · 0.9.1 | Ask for a picture and get one: a `generate_image` tool for the model, backed by your provider's image model, with the picture shown in the conversation and an **Images** panel collecting everything drawn as a gallery to browse, enlarge and download. A settings drawer picks the provider, key and model (searchable as you type), and every picture shows what it cost, with the public LiteLLM price list covering models the provider does not price. Ask for a GIF and it draws a sprite sheet and assembles a looping animated GIF from it; pass reference images (attachments, files, earlier results) to edit or build on them. **Recipes**: 191 built-in prompt templates adapted from the most-starred prompt collections, your own saved from any picture (the model picks out the blanks to fill), community ones voted with 👍, and any GitHub repository as a recipe source; fill the blanks and start a conversation, or share a recipe as a line of text, a picture that carries it, or a community submission. |
-| [Prompt EN](https://github.com/kadaliao/dsh-prompt-en) · 0.2.4 | English under every prompt: a translation when you write in another language, or a review with corrections and better alternatives when you write in English. What it teaches goes into a vocabulary book you review with `/vocab`. |
+| [Archify 图解](https://github.com/kadaliao/dsh-archify/blob/main/README.md) · 0.4.4 | 说一句要什么图，对话里就出现一张检查过、能交互的页面：[Archify](https://github.com/tt-a1i/archify) 的架构图、流程图、时序图、数据流图、状态图、ER 图、类图、树图、时间线、瀑布图，照描述、Mermaid 或代码来画，也能把回答做成一页讲解。也可以不写提示词：在 Archify 面板里选图的类型（每种都配着示意图和可交互的示例），想从代码画就再选个项目文件夹，点「生成」，插件扫描仓库、开会话并跟进进度。在图库里，「改图」交给画这张图的会话去改；「点评」让模型读代码评审架构，每条结论都附文件和行号，并经插件逐条核对。默认就快：架构图由插件排版，格式小错和仓库证据在检查前就修好，一次调用的仓库扫描带代码地图，模型不用四处翻代码。内置 Archify 技能，用 Harness 自带的运行时，不用装 Node.js。中英双语。 |
+| [足迹](https://github.com/kadaliao/dsh-atlas/blob/main/README.md) · 0.1.7 | 把“照片”图库放到一颗能放大到街道的夜色地球上：拍过照的地方发光，缩略图从去过的地方冒出来，放大后有 3D 地形和建筑、你照片里认出的店铺景点、附近的维基百科条目。旅行可以用故事模式回放，这些年按章节一段段回放，每天翻出往年今天的照片和你去过的地方附近的历史上的今天。到哪里都先看精选的好照片；像说话一样搜索（中文连着写也行），模型能搜你的照片、移动地图。底图可选夜景 OpenStreetMap、高德（国内最详细）、卫星或离线。只读 macOS“照片”图库，中英双语。 |
+| [Bots](https://github.com/kadaliao/dsh-bots/blob/main/README.md) · 0.20.1 | 给一人公司和分工协作场景的 Grok 式 bot 团队：一键雇用现成团队（一人公司、研发小队、内容工作室、研究台），每个 bot 有自己的人设、头像、模型、技能、能力、应用和定时任务，还有自己的记忆：每个任务后自动总结，每晚和团队的共享笔记、每个项目自己的记忆一起整理（有日期的笔记过了日期就忘掉）；bot 之间私信协作，雇几个团队都由同一个调度员分派，交给各团队的负责人，自己建的 bot 也能放进任意已雇的团队，也可以自己建团队（自己起名字、写简介、选颜色）：每件分派出去的工作都是一个任务，在自己的会话里进行，一个 bot 可以同时做几件事，调度员随时能回你的话，结果回到发起它的那个聊天，卡住的任务会被看门狗发现。任务之上还有看板：你交给团队的每件事是一张卡片，调度员用一句话写清楚，标出做到了哪一步、哪些在等你；卡片按项目归档（项目有自己的文件夹和简介），带 OPC-12 这样的编号，消息里提编号就能找到它，卡片可以等别的卡做完再开始，打了标签的 GitHub issue（github.com 或 GitHub Enterprise）也会变成卡片；看板能按日期、关键词和项目筛选，做完的卡可以归档。面板聊天像聊天软件一样 bot 在左、你在右，能粘贴或拖入图片，bot 看得到，转出去的活也带着：回复任何一条消息就引用它，bot 在这条消息的讨论串里回答，只看得到这条消息和它之前的内容，看不到后来的；干活的 bot 直接在请求来的对话或讨论串里回复。充分复用 Harness：直接用你已装的技能、从 GitHub、本地文件夹或 Magpie 技能库导入、或让 bot 自己写技能，从 Codex、Claude Code、Cursor 导入 MCP 服务。bot 可以用自定义端点或 Codex CLI 的 ChatGPT 登录；对话太长前自动开新话题；用量页按 bot、任务、日期统计 tokens 和费用。在飞书、Telegram、Slack 或 Discord 里就能给团队派活。中英双语。 |
+| [图片](https://github.com/kadaliao/dsh-images/blob/main/README.md) · 0.9.1 | 要一张图就给一张图：给模型一个 `generate_image` 工具，用你供应商的生图模型出图，图直接显示在对话里；「图片」面板把画过的都收成图库，可浏览、放大、下载。设置抽屉里选供应商、密钥和模型（输入即可模糊搜索），每张图都标出费用；供应商不给价的模型用公开的 LiteLLM 价目表兜底。要动图时让模型画一张精灵图，自动拼成循环播放的 GIF；也能带参考图（对话附件、文件、之前生成的图）改图或接着画。**玩法**：191 个内置提示词模板，改编自 star 最多的提示词合集；任意一张图都能存成自己的玩法、让模型挑出可填的空，还有大家 👍 投票的社区玩法，任何一个 GitHub 仓库也能当玩法源；填好空一键开始创作，或者以一段文字、一张自带配方的图、一次社区投稿分享出去。 |
+| [Prompt EN](https://github.com/kadaliao/dsh-prompt-en/blob/main/README.md) · 0.2.4 | 在每条 prompt 下方写一行英文：用其他语言写的给出译文，用英文写的给出纠错和更地道的替代说法。教过你的说法收进生词本，用 `/vocab` 复习。 |
 
-More plugins are added here as they are ready. Each one has its own repository, installs and is
-versioned on its own, and every version in the index pins its own source — an npm package version
-now, a Git commit in this repository for older releases — so adding a plugin, or moving one to its own
-repository, never changes an install you already have.
+之后做好的插件会陆续加进来。每个插件有自己的仓库，独立安装、独立版本；索引为每个版本钉死来源（新的
+版本走 npm 包，早期版本走本仓库的 Git 提交），所以新增插件、把插件搬到自己的仓库，都不会改变已有的安装。
 
-## What they have in common
+## 共同点
 
-- They run in the **Web UI** (the desktop app, or `dsh web`).
-- They are display-only unless their README says otherwise: no writes to the Session log and
-  nothing added to what the conversation model reads.
-- Each tells you when a new version of it is out, when you open it: a bar across the top of its panel,
-  whose **Update** has Harness install the new version (and put the old one back if that fails).
-- Each shows its version in its own view, with a GitHub mark that opens its repository.
-- Plain JavaScript, MIT, source in each plugin's repository. Archify also bundles a copy of the
-  Apache-2.0 Archify skill and the EPL-2.0 elkjs layout engine; its README says what is included.
+- 都在 **Web UI** 里工作（桌面 App 或 `dsh web`）。
+- 除非插件 README 另有说明，都只做展示：不写 Session 日志，也不往对话模型读到的内容里加东西。
+- 有新版本会提醒：打开哪个插件，它就查自己有没有新版本，有就在面板顶部出一条提示；点「更新」由 Harness 装上新版本（装失败会把原来的装回去）。
+- 插件里都写着当前版本，旁边的 GitHub 图标打开它的仓库。
+- 纯 JavaScript，MIT，源码在各插件自己的仓库。Archify 图解另外内置了一份 Apache-2.0 的 Archify 技能和 EPL-2.0 的
+  elkjs 排版引擎，具体见它的 README。
 
-## Requirements
+## 环境要求
 
-- DeepSeek Harness 0.2.x with the Web UI.
-- A model configured in Harness. Plugins reuse your session's model unless their README says
-  otherwise.
+- DeepSeek Harness 0.2.x，并使用 Web UI。
+- Harness 里已配置模型。除非插件 README 另有说明，插件默认复用当前会话的模型。
 
-## Common questions
+## 常见问题
 
-**The Discover tab is missing.** Custom markets are an experimental feature in DeepSeek Harness.
-Enable **Custom plugin markets** under **Plugins → Experimental plugins** first.
+**找不到 Discover 标签页。** 自定义市场在 DeepSeek Harness 里是实验功能，先在
+**Plugins → Experimental plugins** 里打开 **Custom plugin markets**。
 
-**A plugin installed but does nothing.** Check it is enabled in **Plugins → Installed**. Client-side
-plugins need one page refresh after installation; prompts sent before the install are not
-backfilled.
+**插件装了却没反应。** 到 **Plugins → Installed** 确认它是启用状态。Client 侧插件安装后需要刷新一次
+页面；安装之前已经发过的 prompt 不会补跑。
 
-**What gets sent where?** Each plugin's README states exactly what it reads and which model it
-calls. Nothing a plugin computes is added to your conversation unless the README says so.
+**会把这些内容发到哪里？** 每个插件的 README 都会写清楚它读什么、调用哪个模型。除非 README 明确说明，
+插件算出来的东西不会进入你的对话。
 
-## Contributing
+## 参与开发
 
-Issues and pull requests about a plugin go to its repository; plugin ideas and anything about the
-index, here. Where things live, how to add a plugin, tests, and the release checklist are in
-[DEVELOPMENT.md](DEVELOPMENT.md).
+某个插件的 issue 和 PR 请提到它自己的仓库；插件想法和索引相关的事提到这里。东西都在哪、如何新增插件、
+测试和发布清单都在 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
-## License
+## 许可
 
-MIT.
+MIT。
